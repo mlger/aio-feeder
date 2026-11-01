@@ -47,7 +47,12 @@ the PIN pad became a single `lv_btnmatrix` (12 separate buttons cost
 ~1.5 KB of pool for widgets the shot never touches). Shrinking the pool
 to 70 KB got the link through but left only 2.2 KB free at boot and the
 first dashboard render died in `lv_memset(NULL)` (StoreProhibited — the
-same failure mode the 64 KB pool hit on the seventh screen). Final fix:
-the shot framebuffer dropped 384 → 352 px wide (2 × 170 px cards),
-freeing ~15 KB of .bss — the pool now runs 84 KB with real headroom.
+same failure mode the 64 KB pool hit on the seventh screen). The framebuffer then
+dropped 384 → 352 px (2 × 170 px cards, ~15 KB of .bss back) — but the
+real discovery was that the component CAPS `CONFIG_LV_MEM_SIZE_KILOBYTES`
+at 64 (`lv pool total` printed 63196 B no matter what was requested), so
+the ten screens kept exhausting a 64 KiB pool mid-draw (the PIN pad
+rendered fewer buttons every frame). Final fix: `CONFIG_LV_USE_STDLIB_MALLOC=y`
+— LVGL allocates from the IDF heap, ~64 KiB leave .bss, and draw
+allocations ride the ~200 KB of heap the shot build has free.
 `tools/qemu/capture.py` carries the same FB_W/FB_H constants.
