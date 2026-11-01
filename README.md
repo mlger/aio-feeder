@@ -102,16 +102,18 @@ built from, so a tagged build displays its own release number.
 
 ## Status
 
-M2 — Link (PLAN.md §12). On top of the M1 bench node (HAL v1 on both node
-MCUs, hard relay-off timer, watchdog, DS3231, A/B config slots, feed journal,
-actuator FSM, serial CLI — host-tested), the ESP-NOW link now exists on hub
-and both node MCUs: the frame MAC (truncated HMAC-SHA256), per-peer seq with
-replay window, FEED/ACK/RESULT with the §6.6 retry policy, heartbeat +
-STATUS_REQ ack, channel scan (§6.2), schedule push with `skip_until` /
-`hold_until`, and a bench hub CLI (`feed`, `feedloop`, `peer`, `chan`, …).
-Host-tested in CI (39 tests incl. RFC 4231 vectors); all three firmware
-targets build. Hardware verification: `docs/bench-m1.md` (node) and
-`docs/bench-m2.md` (radio + 1000-feed loopback). Next: M3 hub core.
+M3 — Hub core (PLAN.md §12). On top of M1 (bench node) and M2 (ESP-NOW link),
+the hub now runs the real core, host-tested in CI (64 tests total): schedule
+engine with fire-once occurrences across reboots (§12 M3 exit criterion),
+§9.4 missed-feed policy (skip / catch-up once within window, never stack),
+§9.9 skip/hold gates, DST-correct local time (UTC/Manila/EU/US rules),
+feed_manager as the single FEED originator (§7.2 FSM, §6.6 WAL intent →
+FEED_UNKNOWN on hub death mid-feed, §9.5 stagger), CRC'd NVS persistence
+(registry, keys, profiles, schedules, occurrence state), PCF85063 RTC
+fallback + NTP, TIME_SYNC push on drift, and a bench CLI (`sched`, `time`,
+`tz`, `stagger`, `events`). Hardware verification: `docs/bench-m1.md` (node),
+`docs/bench-m2.md` (radio), `docs/bench-m3.md` (scheduler + reboots).
+Next: M4a hub UI — operate.
 
 Releases: **v0.1.0** was the first tagged release. Cut the next one the same
 way — `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the
