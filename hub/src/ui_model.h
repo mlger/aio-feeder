@@ -871,6 +871,57 @@ static inline void pair_capacity_summary(PairingView *v) {
            pair_template_unit(v->mech_sel));
 }
 
+/* --- calibration wizard (§8.4, §9.3; FR4, D27) --------------------------------------- */
+
+constexpr uint8_t CAL_MAX_SAMPLES = 5; /* §9.3.5: repeat, use the median */
+/* §9.3.3: anything under 5 g (or ml) is too small to weigh reliably. */
+constexpr uint32_t CAL_MIN_WEIGH_X100 = 500;
+
+/* The steps of the calibration screen, one CalibView snapshot per step.
+ * CAL_IDLE = no wizard session open. */
+enum CalStep : uint8_t {
+  CAL_IDLE = 0,
+  CAL_RUNTIME,  /* pick the test length; shows commanded grams + samples */
+  CAL_DISPENSE, /* test FEED in flight, waiting for FEED_RESULT */
+  CAL_WEIGH,    /* enter the weighed amount for the run that just landed */
+  CAL_DONE,     /* median saved into the profile and pushed */
+};
+
+struct CalSampleRow {
+  uint32_t on_ms;      /* actual_on_ms the node reported for the run */
+  uint32_t grams_x100; /* weighed amount × 100 */
+  uint16_t rate_x100;  /* ms per unit × 100 derived from this run */
+};
+
+struct CalibView {
+  CalStep step = CAL_IDLE;
+  uint8_t node_id = 0;
+  char name[13] = "";          /* profile name, NUL-terminated */
+  uint8_t mech_sel = 0;        /* mech_t order: 0 gate · 1 auger · 2 pump */
+  uint16_t old_rate_x100 = 0;  /* profile rate when the wizard opened */
+  uint32_t test_s = 2;         /* chosen test run length */
+  uint32_t max_test_s = 10;    /* node max on-time (SR2/D27) */
+  uint32_t test_grams = 0;     /* commanded amount for test_s at old_rate */
+  uint32_t left_s = 0;         /* dispense timeout countdown */
+  uint32_t weigh_on_ms = 0;    /* on-time held for the weigh step */
+  uint8_t sample_count = 0;
+  CalSampleRow samples[CAL_MAX_SAMPLES];
+  uint16_t median_x100 = 0;    /* median of the samples so far (0 = none) */
+  uint8_t saved_node_id = 0;   /* DONE step */
+  char note[48] = "";          /* last rejection / timeout, amber in the UI */
+};
+
+/* Rate for display as g/s ×10 (§8.4: "results show as g/s").
+ * rate_x100 = ms per unit × 100 → g/s ×10 = 1,000,000 / rate_x100. */
+static inline uint32_t cal_g_per_s_x10(uint16_t rate_x100) {
+  return rate_x100 ? 1000000u / rate_x100 : 0;
+}
+
+/* Unit label for a mech selection (matches the pairing form: pump = ml). */
+static inline const char *cal_unit_label(uint8_t mech_sel) {
+  return mech_sel == 2 ? "ml" : "g";
+}
+
 }  // namespace ui
 }  // namespace aio
 
