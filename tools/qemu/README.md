@@ -22,11 +22,13 @@ framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, converting each frame to
 `screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). Captured:
 `dashboard`, `node_detail`, `sched_editor`, `history`, `alerts` — the five
 M4a screens — plus the M4b pairing steps `pairing`, `pairing_code`,
-`pairing_form`, `pairing_done` and the calibration wizard steps `calib`,
-`calib_weigh`, `calib_done` (the firmware rotates screens on a fixed 25 s
-× 7-slot schedule; the pairing and calibration flows auto-play inside their
-slots, driven by the sim candidate's `PAIR_REQ` beacons and sim-node FEED
-results — see `docs/bench-m4b.md`).
+`pairing_form`, `pairing_done`, the calibration wizard steps `calib`,
+`calib_weigh`, `calib_done`, and the M4b settings trio `settings`,
+`settings_security`, `settings_backup`, the PIN pad states `pin_entry`,
+`pin_typing`, `pin_wrong`, `pin_ok` and the setup wizard steps `wizard`,
+`wizard_node`, `wizard_cap`, `wizard_sched`, `wizard_done` (the firmware
+rotates screens on a fixed 25 s × 10-slot schedule; the pairing, calibration,
+PIN and wizard flows auto-play inside their slots — see `docs/bench-m4b.md`).
 
 RAM budget: the esp32s3 QEMU machine has no PSRAM, so the 176 KB LVGL
 framebuffer (384×240×2 — 400-wide overflowed `dram0_0_seg` by ~14 KB when
