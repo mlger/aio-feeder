@@ -199,6 +199,149 @@ static inline Dashboard build_dashboard(const HubRegistry &reg, const EventLog &
   return d;
 }
 
+/* --- node detail (§8.2) --------------------------------------------------------- */
+
+constexpr uint8_t UI_DETAIL_MAX_EVENTS = 5;   /* newest terminal events shown */
+constexpr uint8_t UI_DETAIL_MAX_ENTRIES = 6;  /* schedule rows shown */
+
+struct DetailEvent {
+  uint8_t kind = 0;
+  uint8_t result = 0;
+  uint16_t amount = 0;
+  uint32_t unix = 0;
+  uint32_t age_s = 0;
+};
+
+struct DetailSchedEntry {
+  uint16_t min_of_day = 0;
+  uint16_t amount = 0;
+  uint8_t days_mask = 0;
+};
+
+struct NodeDetail {
+  bool found = false; /* false → "unknown node" */
+  NodeState state = NODE_OFFLINE;
+  uint16_t vin_mv = 0;
+  uint8_t flags = 0;
+  bool heard = false;   /* any valid frame this boot */
+  uint32_t last_rx_age_s = 0;
+
+  bool sched_enabled = false;
+  uint8_t entry_count = 0; /* min(UI_DETAIL_MAX_ENTRIES, n) */
+  DetailSchedEntry entries[UI_DETAIL_MAX_ENTRIES]; /* sorted by min_of_day */
+
+  bool has_skip = false; /* skip_until > unix_now */
+  bool has_hold = false; /* hold_until > unix_now */
+  uint32_t gate_until = 0;   /* later of the two (unix) */
+  int32_t gate_left_min = 0; /* minutes left on the active gate */
+
+  bool has_next = false;
+  uint16_t next_min_of_day = 0;
+  int32_t next_in_min = 0;
+  uint16_t next_amount = 0;
+
+  uint8_t event_count = 0; /* newest first */
+  DetailEvent events[UI_DETAIL_MAX_EVENTS];
+
+  bool time_ok = false;
+  char clock[24] = "--:--";
+  char pushed[24] = "never pushed"; /* schedule push freshness */
+};
+
+/* Node detail snapshot: schedule (sorted), active gates, next occurrence and
+ * the newest terminal events for one node. Pure; host-tested. */
+static inline NodeDetail build_node_detail(const HubRegistry &reg, const EventLog &log,
+                                           uint8_t node_id, int64_t unix_now,
+                                           uint32_t now_ms, const PeerFresh *fresh,
+                                           uint8_t fresh_count) {
+  NodeDetail d;
+  const HubNode *n = reg.by_id(node_id);
+  if (!n) return d;
+  d.found = true;
+
+  for (int f = 0; f < fresh_count; f++) {
+    if (fresh[f].node_id == node_id) {
+      d.state = state_of(now_ms, fresh[f].last_rx_ms);
+      d.vin_mv = fresh[f].vin_mv;
+      d.flags = fresh[f].flags;
+      d.heard = fresh[f].last_rx_ms != 0;
+      if (d.heard)
+        d.last_rx_age_s = (uint32_t)(now_ms - fresh[f].last_rx_ms);
+    }
+  }
+
+  d.sched_enabled = n->sched.enabled != 0;
+  /* entries sorted by min_of_day (insertion sort, capped display list) */
+  for (uint8_t i = 0; i < n->sched.entry_count; i++) {
+    const sched_entry_t &e = n->sched.entries[i];
+    uint8_t pos = d.entry_count;
+    if (pos >= UI_DETAIL_MAX_ENTRIES) {
+      /* full: keep it only if it sorts before the newest kept row */
+      if (e.min_of_day >= d.entries[pos - 1].min_of_day) continue;
+      pos = (uint8_t)(pos - 1);
+    } else {
+      d.entry_count++;
+    }
+    while (pos > 0 && d.entries[pos - 1].min_of_day > e.min_of_day) {
+      d.entries[pos] = d.entries[pos - 1];
+      pos--;
+    }
+    d.entries[pos].min_of_day = e.min_of_day;
+    d.entries[pos].amount = e.amount;
+    d.entries[pos].days_mask = e.days_mask;
+  }
+
+  if (unix_now >= 1600000000) {
+    const LocalTime t = local_from_unix(unix_now, reg.data().tz_rule);
+    d.time_ok = true;
+    snprintf(d.clock, sizeof(d.clock), "%02u:%02u",
+             (unsigned)(t.min_of_day / 60), (unsigned)(t.min_of_day % 60));
+
+    if (n->sched.skip_until > (uint32_t)unix_now) {
+      d.has_skip = true;
+      d.gate_until = n->sched.skip_until;
+    }
+    if (n->sched.hold_until > (uint32_t)unix_now) {
+      d.has_hold = true;
+      if (n->sched.hold_until > d.gate_until) d.gate_until = n->sched.hold_until;
+    }
+    if (d.gate_until)
+      d.gate_left_min = (int32_t)((d.gate_until - (uint32_t)unix_now + 59) / 60);
+
+    if (n->sched.enabled &&
+        next_occurrence(*n, t.min_of_day, t.wday, &d.next_min_of_day, &d.next_in_min,
+                        &d.next_amount))
+      d.has_next = true;
+
+    if (n->sched.pushed_at) {
+      const uint32_t age = (uint32_t)(unix_now - (int64_t)n->sched.pushed_at);
+      if (age < 90)
+        snprintf(d.pushed, sizeof(d.pushed), "pushed just now");
+      else if (age < 86400)
+        snprintf(d.pushed, sizeof(d.pushed), "pushed %lu h ago",
+                 (unsigned long)(age / 3600));
+      else
+        snprintf(d.pushed, sizeof(d.pushed), "pushed %lu d ago",
+                 (unsigned long)(age / 86400));
+    }
+  }
+
+  for (uint16_t k = log.count(); k > 0 && d.event_count < UI_DETAIL_MAX_EVENTS; k--) {
+    const HubEvent *e = log.at((uint16_t)(k - 1));
+    if (e->node != node_id) continue;
+    if (e->kind != EV_FEED_OK && e->kind != EV_FEED_FAIL && e->kind != EV_FEED_REJ &&
+        e->kind != EV_FEED_UNKNOWN)
+      continue;
+    DetailEvent &de = d.events[d.event_count++];
+    de.kind = e->kind;
+    de.result = e->result;
+    de.amount = e->amount;
+    de.unix = e->unix;
+    de.age_s = (unix_now > (int64_t)e->unix) ? (uint32_t)(unix_now - (int64_t)e->unix) : 0;
+  }
+  return d;
+}
+
 }  // namespace ui
 }  // namespace aio
 

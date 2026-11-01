@@ -656,7 +656,7 @@ static void aio_loop_task(void *) {
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
       sim::tick_nodes(now); /* node engines + hub → node sim frames */
 
-      /* dashboard snapshot → UI task every 400 ms */
+      /* dashboard + detail snapshots → UI task every 400 ms */
       static uint32_t ui_ms = 0;
       if (now - ui_ms >= 400) {
         ui_ms = now;
@@ -671,6 +671,9 @@ static void aio_loop_task(void *) {
                                         p ? p->last_hb.flags : (uint8_t)0};
         }
         aio::ui::publish(aio::ui::build_dashboard(reg, evlog, hub_unix_now(), now, fr, fn));
+        aio::ui::publish_detail(
+            aio::ui::build_node_detail(reg, evlog, aio::ui::detail_node(), hub_unix_now(),
+                                       now, fr, fn));
       }
 #endif
 

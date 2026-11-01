@@ -162,6 +162,117 @@ static void test_state_boundaries(void) {
                         aio::ui::state_of(60000, 60000 - 3 * aio::ui::UI_FRESH_WINDOW_MS - 1));
 }
 
+/* --- node detail ------------------------------------------------------------------ */
+
+static void test_detail_unknown_node(void) {
+  add_node(0xA5, 450, 40);
+  const aio::ui::NodeDetail d =
+      aio::ui::build_node_detail(reg, log_, 99, g_unix, g_now_ms, nullptr, 0);
+  TEST_ASSERT_FALSE(d.found);
+}
+
+static void test_detail_schedule_sorted_and_next(void) {
+  HubNode *n = add_node(0xA5, 540, 10); /* 09:00 added first */
+  n->sched.entry_count = 3;
+  n->sched.entries[1].min_of_day = 420; /* 07:00 */
+  n->sched.entries[1].days_mask = 0x7F;
+  n->sched.entries[1].amount = 8;
+  n->sched.entries[2].min_of_day = 780; /* 13:00 */
+  n->sched.entries[2].days_mask = 0x7F;
+  n->sched.entries[2].amount = 12;
+
+  uint8_t fc;
+  const PeerFresh *f = fresh_table(&fc);
+  const aio::ui::NodeDetail d =
+      aio::ui::build_node_detail(reg, log_, 1, g_unix, g_now_ms, f, fc);
+
+  TEST_ASSERT_TRUE(d.found);
+  TEST_ASSERT_TRUE(d.sched_enabled);
+  TEST_ASSERT_EQUAL_UINT8(3, d.entry_count);
+  TEST_ASSERT_EQUAL_UINT16(420, d.entries[0].min_of_day);
+  TEST_ASSERT_EQUAL_UINT16(540, d.entries[1].min_of_day);
+  TEST_ASSERT_EQUAL_UINT16(780, d.entries[2].min_of_day);
+
+  TEST_ASSERT_TRUE(d.has_next);
+  TEST_ASSERT_EQUAL_UINT16(540, d.next_min_of_day); /* 09:00 is next after 07:21 */
+  TEST_ASSERT_EQUAL_INT32(99, d.next_in_min);
+  TEST_ASSERT_EQUAL_UINT16(10, d.next_amount);
+  TEST_ASSERT_FALSE(d.has_skip);
+  TEST_ASSERT_FALSE(d.has_hold);
+}
+
+static void test_detail_gates_skip_and_hold(void) {
+  HubNode *n = add_node(0xA5, 450, 40);
+  n->sched.skip_until = (uint32_t)(g_unix + 45 * 60);
+  n->sched.hold_until = (uint32_t)(g_unix + 90 * 60);
+  n->sched.pushed_at = (uint32_t)(g_unix - 3 * 3600);
+
+  const aio::ui::NodeDetail d =
+      aio::ui::build_node_detail(reg, log_, 1, g_unix, g_now_ms, nullptr, 0);
+  TEST_ASSERT_TRUE(d.has_skip);
+  TEST_ASSERT_TRUE(d.has_hold);
+  TEST_ASSERT_EQUAL_UINT32((uint32_t)g_unix + 90 * 60, d.gate_until);
+  TEST_ASSERT_EQUAL_INT32(90, d.gate_left_min); /* ceil to the minute */
+  TEST_ASSERT_EQUAL_STRING("pushed 3 h ago", d.pushed);
+}
+
+static void test_detail_expired_gate_not_shown(void) {
+  HubNode *n = add_node(0xA5, 450, 40);
+  n->sched.hold_until = (uint32_t)(g_unix - 60);
+  const aio::ui::NodeDetail d =
+      aio::ui::build_node_detail(reg, log_, 1, g_unix, g_now_ms, nullptr, 0);
+  TEST_ASSERT_FALSE(d.has_hold);
+  TEST_ASSERT_EQUAL_INT32(0, d.gate_left_min);
+}
+
+static void test_detail_events_newest_first_capped(void) {
+  add_node(0xA5, 450, 40);
+  /* 6 terminal events for node 1; push oldest first so ring order == time order */
+  for (int i = 6; i >= 1; i--)
+    log_.push((uint32_t)(g_unix - i * 600), 1, EV_FEED_OK, FEED_OK, 2000 + i, 10, 0);
+  log_.push((uint32_t)(g_unix - 30), 2, EV_FEED_OK, FEED_OK, 2006, 5, 0); /* other node */
+
+  const aio::ui::NodeDetail d =
+      aio::ui::build_node_detail(reg, log_, 1, g_unix, g_now_ms, nullptr, 0);
+  TEST_ASSERT_EQUAL_UINT8(aio::ui::UI_DETAIL_MAX_EVENTS, d.event_count);
+  /* newest first: node-1 events at ages 600, 1200, ... (node-2 event excluded) */
+  TEST_ASSERT_EQUAL_UINT32(600, d.events[0].age_s);
+  TEST_ASSERT_EQUAL_UINT16(10, d.events[0].amount);
+  for (int i = 0; i < d.event_count; i++)
+    TEST_ASSERT_EQUAL_UINT32(600 * (i + 1), d.events[i].age_s);
+}
+
+static void test_detail_state_freshness_and_offline(void) {
+  add_node(0xA5, 450, 40);
+  add_node(0x66, 410, 30);
+  add_node(0x77, 400, 20); /* id 3 exists but is absent from the fresh table */
+  uint8_t fc;
+  const PeerFresh *f = fresh_table(&fc);
+  const aio::ui::NodeDetail d1 =
+      aio::ui::build_node_detail(reg, log_, 1, g_unix, g_now_ms, f, fc);
+  TEST_ASSERT_EQUAL_INT(aio::ui::NODE_ONLINE, d1.state);
+  TEST_ASSERT_EQUAL_UINT32(5000, d1.last_rx_age_s);
+  TEST_ASSERT_TRUE(d1.heard);
+
+  const aio::ui::NodeDetail d3 =
+      aio::ui::build_node_detail(reg, log_, 3, g_unix, g_now_ms, f, fc);
+  TEST_ASSERT_EQUAL_INT(aio::ui::NODE_OFFLINE, d3.state);
+  TEST_ASSERT_FALSE(d3.heard);
+  TEST_ASSERT_TRUE(d3.time_ok); /* wall clock still valid for an offline node */
+  TEST_ASSERT_EQUAL_STRING("07:21", d3.clock);
+}
+
+static void test_detail_time_invalid_keeps_defaults(void) {
+  add_node(0xA5, 450, 40);
+  const aio::ui::NodeDetail d =
+      aio::ui::build_node_detail(reg, log_, 1, 0 /* unix far too small */, g_now_ms, nullptr, 0);
+  TEST_ASSERT_TRUE(d.found);
+  TEST_ASSERT_FALSE(d.time_ok);
+  TEST_ASSERT_EQUAL_STRING("--:--", d.clock);
+  TEST_ASSERT_FALSE(d.has_next);
+  TEST_ASSERT_EQUAL_STRING("never pushed", d.pushed);
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_empty_registry_renders_safe_defaults);
@@ -171,5 +282,12 @@ int main(void) {
   RUN_TEST(test_last_event_and_alert);
   RUN_TEST(test_clock_format_manila);
   RUN_TEST(test_state_boundaries);
+  RUN_TEST(test_detail_unknown_node);
+  RUN_TEST(test_detail_schedule_sorted_and_next);
+  RUN_TEST(test_detail_gates_skip_and_hold);
+  RUN_TEST(test_detail_expired_gate_not_shown);
+  RUN_TEST(test_detail_events_newest_first_capped);
+  RUN_TEST(test_detail_state_freshness_and_offline);
+  RUN_TEST(test_detail_time_invalid_keeps_defaults);
   return UNITY_END();
 }

@@ -30,6 +30,9 @@
 
 #include "ui.h"
 
+namespace aio {
+namespace ui {
+
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
 
 #define UI_W 400
@@ -51,16 +54,32 @@ static const uint32_t C_STALE = 0xE0A458;
 static const uint32_t C_OFFLINE = 0x676B70;
 static const uint32_t C_ALERT = 0xE0A458;
 
-/* --- snapshot inbox (lock-free double buffer) ------------------------------------ */
+/* --- snapshot inbox (lock-free double buffers) ------------------------------------ */
 
 static Dashboard s_snap[2];
+static NodeDetail s_det_snap[2];
 static volatile uint32_t s_seq = 0;
+static volatile uint32_t s_det_seq = 0;
 static uint32_t s_seen = 0;
+static uint32_t s_det_seen = 0;
+static volatile uint8_t s_detail_id = 1; /* which node the detail screen shows */
 
 void publish(const Dashboard &d) {
   const uint32_t s = s_seq;
   s_snap[s & 1] = d;
   s_seq = s + 1;
+}
+
+void publish_detail(const NodeDetail &d) {
+  const uint32_t s = s_det_seq;
+  s_det_snap[s & 1] = d;
+  s_det_seq = s + 1;
+}
+
+uint8_t detail_node() { return s_detail_id; }
+
+void set_detail_node(uint8_t node_id) {
+  if (node_id) s_detail_id = node_id;
 }
 
 /* --- view state ------------------------------------------------------------------ */
@@ -69,6 +88,18 @@ static lv_display_t *s_disp = nullptr;
 static lv_obj_t *s_scr = nullptr;
 static lv_obj_t *s_clock_lbl = nullptr;
 static lv_obj_t *s_footer_lbl = nullptr;
+
+/* node detail screen (§8.2) */
+static lv_obj_t *s_det_scr = nullptr;
+static lv_obj_t *s_det_clock_lbl = nullptr;
+static lv_obj_t *s_det_title_lbl = nullptr;
+static lv_obj_t *s_det_status_lbl = nullptr;
+static lv_obj_t *s_det_next_lbl = nullptr;
+static lv_obj_t *s_det_gate_lbl = nullptr;   /* hidden unless a gate is active */
+static lv_obj_t *s_det_sched_panel = nullptr;
+static lv_obj_t *s_det_sched_rows[UI_DETAIL_MAX_ENTRIES];
+static lv_obj_t *s_det_ev_panel = nullptr;
+static lv_obj_t *s_det_ev_rows[UI_DETAIL_MAX_EVENTS];
 
 struct Card {
   lv_obj_t *root = nullptr;
@@ -113,6 +144,28 @@ static const char *alert_text(uint8_t kind) {
     case EV_FEED_UNKNOWN: return "feed not confirmed";
     case EV_SKIPPED_MISSED: return "feed missed";
     default: return "check feeder";
+  }
+}
+
+static void days_text(uint8_t mask, char *buf, size_t n) {
+  static const char *WD[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+  if (mask == 0x7F) {
+    snprintf(buf, n, "daily");
+    return;
+  }
+  if (mask == 0x1F) { /* Mon–Fri */
+    snprintf(buf, n, "weekdays");
+    return;
+  }
+  if (mask == 0x60) { /* Sat+Sun */
+    snprintf(buf, n, "weekends");
+    return;
+  }
+  size_t off = 0;
+  buf[0] = 0;
+  for (int d = 0; d < 7 && off < n - 4; d++) {
+    if (!(mask & (1u << d))) continue;
+    off += (size_t)snprintf(buf + off, n - off, "%s%s", off ? "," : "", WD[d]);
   }
 }
 
@@ -259,16 +312,229 @@ static void update_dashboard(const Dashboard &d) {
   if (s_footer_lbl) {
     char buf[80];
     if (d.has_alert)
-      snprintf(buf, sizeof(buf), "Feeder %u: %s — check feeder", (unsigned)d.alert_node,
+      snprintf(buf, sizeof(buf), "Feeder %u: %s - check feeder", (unsigned)d.alert_node,
                alert_text(d.alert_kind));
     else if (d.row_count == 0)
-      snprintf(buf, sizeof(buf), "No feeders yet — pair one to start");
+      snprintf(buf, sizeof(buf), "No feeders yet - pair one to start");
     else
       snprintf(buf, sizeof(buf), "%u feeders, %u online, next feed in %ld min",
                (unsigned)d.total, (unsigned)d.online, (long)d.next_in_min);
     lv_label_set_text(s_footer_lbl, buf);
     lv_obj_set_style_text_color(s_footer_lbl,
                                 lv_color_hex(d.has_alert ? C_ALERT : C_MUTED), 0);
+  }
+}
+
+/* --- node detail screen (§8.2) ----------------------------------------------------- */
+
+static void build_detail_screen() {
+  s_det_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_det_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_det_scr, 0, 0);
+
+  /* header: back affordance + title + clock */
+  lv_obj_t *header = new_panel(s_det_scr, UI_W, 32, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_right(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  s_det_title_lbl = new_label(header, "Feeder", &lv_font_montserrat_16, C_TEXT);
+  lv_obj_t *spacer = lv_obj_create(header);
+  lv_obj_set_size(spacer, 1, 1);
+  lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(spacer, 0, 0);
+  lv_obj_set_flex_grow(spacer, 1);
+  s_det_clock_lbl = new_label(header, "--:--", &lv_font_montserrat_14, C_MUTED);
+
+  /* scrollable content column */
+  lv_obj_t *col = lv_obj_create(s_det_scr);
+  lv_obj_set_size(col, UI_W, UI_H - 32);
+  lv_obj_set_pos(col, 0, 32);
+  lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(col, 0, 0);
+  lv_obj_set_style_pad_all(col, 0, 0);
+  lv_obj_set_style_pad_column(col, 0, 0);
+  lv_obj_set_style_pad_row(col, 4, 0);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                        LV_FLEX_ALIGN_START);
+  lv_obj_set_scroll_dir(col, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_AUTO);
+
+  /* status strip */
+  lv_obj_t *status = new_panel(col, UI_W, 24, C_PANEL);
+  lv_obj_set_style_pad_left(status, 10, 0);
+  lv_obj_set_flex_flow(status, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(status, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(status, 6, 0);
+  s_det_status_lbl = new_label(status, "-", &lv_font_montserrat_12, C_TEXT);
+
+  /* next feed + schedule push freshness */
+  lv_obj_t *nextrow = new_panel(col, UI_W, 22, C_BG);
+  lv_obj_set_style_pad_left(nextrow, 10, 0);
+  lv_obj_set_flex_flow(nextrow, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(nextrow, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  s_det_next_lbl = new_label(nextrow, "no schedule", &lv_font_montserrat_12, C_TEXT);
+
+  /* gate banner (skip/hold), hidden by default */
+  s_det_gate_lbl = new_label(col, "", &lv_font_montserrat_12, C_ALERT);
+  lv_obj_set_style_pad_left(s_det_gate_lbl, 10, 0);
+  lv_obj_add_flag(s_det_gate_lbl, LV_OBJ_FLAG_HIDDEN);
+
+  /* schedule panel: header + up to UI_DETAIL_MAX_ENTRIES rows */
+  s_det_sched_panel = new_panel(col, UI_W, 0, C_PANEL);
+  lv_obj_set_size(s_det_sched_panel, UI_W - 20, 0);
+  lv_obj_set_style_pad_all(s_det_sched_panel, 6, 0);
+  lv_obj_set_flex_flow(s_det_sched_panel, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(s_det_sched_panel, 2, 0);
+  lv_obj_t *sh = new_label(s_det_sched_panel, "SCHEDULE", &lv_font_montserrat_12, C_MUTED);
+  (void)sh;
+  for (int i = 0; i < UI_DETAIL_MAX_ENTRIES; i++) {
+    lv_obj_t *row = lv_obj_create(s_det_sched_panel);
+    lv_obj_set_size(row, UI_W - 32 - 12, 18);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_set_style_pad_column(row, 8, 0);
+    lv_obj_t *t = new_label(row, "", &lv_font_montserrat_14, C_TEXT);
+    lv_obj_set_width(t, 64);
+    lv_obj_t *w = new_label(row, "", &lv_font_montserrat_12, C_MUTED);
+    lv_obj_set_flex_grow(w, 1);
+    lv_obj_t *a = new_label(row, "", &lv_font_montserrat_14, C_TEXT);
+    s_det_sched_rows[i] = row;
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  /* recent feeds panel: header + up to UI_DETAIL_MAX_EVENTS rows */
+  s_det_ev_panel = new_panel(col, UI_W, 0, C_PANEL);
+  lv_obj_set_size(s_det_ev_panel, UI_W - 20, 0);
+  lv_obj_set_style_pad_all(s_det_ev_panel, 6, 0);
+  lv_obj_set_flex_flow(s_det_ev_panel, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(s_det_ev_panel, 2, 0);
+  lv_obj_t *eh = new_label(s_det_ev_panel, "RECENT FEEDS", &lv_font_montserrat_12, C_MUTED);
+  (void)eh;
+  for (int i = 0; i < UI_DETAIL_MAX_EVENTS; i++) {
+    lv_obj_t *row = lv_obj_create(s_det_ev_panel);
+    lv_obj_set_size(row, UI_W - 32 - 12, 18);
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_TEXT);
+    (void)l;
+    s_det_ev_rows[i] = row;
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  /* footer actions (static in the shot build; wired to the engine in M4b) */
+  lv_obj_t *actions = new_panel(s_det_scr, UI_W, 26, C_PANEL);
+  lv_obj_set_pos(actions, 0, UI_H - 26);
+  lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  const char *labels[3] = {"Feed now (hold)", "Skip next", "Hold 1 h"};
+  for (int i = 0; i < 3; i++) {
+    lv_obj_t *btn = lv_btn_create(actions);
+    lv_obj_set_size(btn, 118, 20);
+    lv_obj_set_style_bg_color(btn, lv_color_hex(C_CARD), 0);
+    new_label(btn, labels[i], &lv_font_montserrat_12, C_TEXT);
+  }
+}
+
+static void update_detail(const NodeDetail &d) {
+  char buf[64];
+  if (s_det_clock_lbl) lv_label_set_text(s_det_clock_lbl, d.clock);
+  snprintf(buf, sizeof(buf), "Feeder %u", (unsigned)s_detail_id);
+  if (s_det_title_lbl) lv_label_set_text(s_det_title_lbl, buf);
+
+  if (!s_det_status_lbl) return;
+  if (!d.found) {
+    lv_label_set_text(s_det_status_lbl, "unknown node");
+    return;
+  }
+
+  const char *st = d.state == NODE_ONLINE ? "online" : d.state == NODE_STALE ? "stale" : "offline";
+  const uint32_t dotc = (d.state == NODE_ONLINE)   ? C_ONLINE
+                        : (d.state == NODE_STALE)  ? C_STALE
+                                                   : C_OFFLINE;
+  if (d.heard) {
+    char age[24];
+    fmt_age(age, sizeof(age), d.last_rx_age_s);
+    snprintf(buf, sizeof(buf), "%s - %u.%u V - seen %s",
+             st, (unsigned)(d.vin_mv / 1000), (unsigned)((d.vin_mv % 1000) / 100), age);
+  } else {
+    snprintf(buf, sizeof(buf), "%s - %u.%u V - not heard this boot",
+             st, (unsigned)(d.vin_mv / 1000), (unsigned)((d.vin_mv % 1000) / 100));
+  }
+  lv_label_set_text(s_det_status_lbl, buf);
+  lv_obj_set_style_text_color(s_det_status_lbl, lv_color_hex(dotc), 0);
+
+  if (d.has_next)
+    snprintf(buf, sizeof(buf), "next %02u:%02u - %u g - %s",
+             (unsigned)(d.next_min_of_day / 60), (unsigned)(d.next_min_of_day % 60),
+             (unsigned)d.next_amount, d.pushed);
+  else
+    snprintf(buf, sizeof(buf), "no schedule - %s", d.pushed);
+  lv_label_set_text(s_det_next_lbl, buf);
+
+  if (d.has_skip || d.has_hold) {
+    snprintf(buf, sizeof(buf), "%s active - %ld min left",
+             d.has_hold ? "hold" : "skip", (long)d.gate_left_min);
+    lv_label_set_text(s_det_gate_lbl, buf);
+    lv_obj_remove_flag(s_det_gate_lbl, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    lv_obj_add_flag(s_det_gate_lbl, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  for (int i = 0; i < UI_DETAIL_MAX_ENTRIES; i++) {
+    lv_obj_t *row = s_det_sched_rows[i];
+    if (!row) continue;
+    if (!d.sched_enabled || i >= d.entry_count) {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *t = lv_obj_get_child(row, 0);
+    lv_obj_t *w = lv_obj_get_child(row, 1);
+    lv_obj_t *a = lv_obj_get_child(row, 2);
+    const DetailSchedEntry &e = d.entries[i];
+    snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(e.min_of_day / 60),
+             (unsigned)(e.min_of_day % 60));
+    if (t) lv_label_set_text((lv_obj_t *)t, buf);
+    days_text(e.days_mask, buf, sizeof(buf));
+    if (w) lv_label_set_text((lv_obj_t *)w, buf);
+    snprintf(buf, sizeof(buf), "%u g", (unsigned)e.amount);
+    if (a) lv_label_set_text((lv_obj_t *)a, buf);
+  }
+
+  for (int i = 0; i < UI_DETAIL_MAX_EVENTS; i++) {
+    lv_obj_t *row = s_det_ev_rows[i];
+    if (!row) continue;
+    if (i >= d.event_count) {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+    const DetailEvent &ev = d.events[i];
+    char age[24];
+    fmt_age(age, sizeof(age), ev.age_s);
+    snprintf(buf, sizeof(buf), "%s - %u g - %s", kind_short(ev.kind),
+             (unsigned)ev.amount, age);
+    lv_obj_t *l = lv_obj_get_child(row, 0);
+    if (l) {
+      lv_label_set_text((lv_obj_t *)l, buf);
+      lv_obj_set_style_text_color(
+          (lv_obj_t *)l, lv_color_hex(ev.kind == EV_FEED_OK ? C_TEXT : C_ALERT), 0);
+    }
   }
 }
 
@@ -290,6 +556,7 @@ static void ui_task(void *) {
   lv_display_set_full_refresh(s_disp, true);
 
   build_screen();
+  build_detail_screen();
   lv_screen_load(s_scr);
 
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -297,15 +564,36 @@ static void ui_task(void *) {
   printf("ui: LVGL %d.%d.%d ready (%dx%d shot framebuffer)\n", LVGL_VERSION_MAJOR,
          LVGL_VERSION_MINOR, LVGL_VERSION_PATCH, UI_W, UI_H);
 
+  /* deterministic rotation for the QEMU screenshot run: dashboard first,
+   * node detail after SHOT_ROTATE_MS, then back. On hardware this is
+   * replaced by touch navigation (M4b); the shot build only needs every
+   * screen to appear on a fixed schedule. */
+  enum ShotScreen { SH_DASH = 0, SH_DETAIL = 1 };
+  constexpr uint32_t SHOT_ROTATE_MS = 25000;
+  ShotScreen shot = SH_DASH;
+  ShotScreen loaded = SH_DASH;
+
   for (;;) {
     const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
     lv_tick_inc(now - last_tick);
     last_tick = now;
 
+    shot = (now - boot_ms >= SHOT_ROTATE_MS) ? SH_DETAIL : SH_DASH;
+    if (shot != loaded) {
+      lv_screen_load(shot == SH_DASH ? s_scr : s_det_scr);
+      loaded = shot;
+      s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
+    }
+
     const uint32_t s = s_seq;
     if (s != s_seen) {
       update_dashboard(s_snap[(s - 1) & 1]);
       s_seen = s;
+    }
+    const uint32_t ds = s_det_seq;
+    if (ds != s_det_seen) {
+      update_detail(s_det_snap[(ds - 1) & 1]);
+      s_det_seen = ds;
     }
 
     lv_timer_handler();
@@ -314,7 +602,7 @@ static void ui_task(void *) {
      * g_shot_fb after each marker; repeats every 5 s for reliability) */
     if (now - boot_ms > 6000 && s_last_flush_ms > 0 &&
         now - s_last_flush_ms > 400 && now - s_last_marker_ms > 5000) {
-      printf("\nAIO_SHOT dashboard\n");
+      printf("\nAIO_SHOT %s\n", loaded == SH_DASH ? "dashboard" : "node_detail");
       fflush(stdout);
       s_last_marker_ms = now;
     }
@@ -331,5 +619,11 @@ void start() {
 
 void start() {}
 void publish(const Dashboard &) {}
+void publish_detail(const NodeDetail &) {}
+uint8_t detail_node() { return 1; }
+void set_detail_node(uint8_t) {}
 
 #endif /* CONFIG_AIO_UI_SHOT */
+
+}  // namespace ui
+}  // namespace aio

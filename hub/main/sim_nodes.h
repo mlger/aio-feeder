@@ -233,14 +233,31 @@ static void seed(HubRegistry &reg, EventLog &evlog) {
     n->sched.entries[0].min_of_day = defs[i].min_of_day;
     n->sched.entries[0].days_mask = 0x7F;
     n->sched.entries[0].amount = defs[i].amount;
+    n->sched.pushed_at = (uint32_t)(unix - 3 * 3600); /* "pushed 3 h ago" */
     /* mark everything through yesterday handled → no boot catch-up feeds */
     n->run.last_done[0].day_start = (uint32_t)yday_start;
     n->run.last_done[0].min_of_day = 1439;
     if (i < SIM_NODES) memcpy(g_keys[i], n->key, 32);
   }
+  /* node 1 gets a second daily entry (17:30 @ 25 g) for a fuller detail shot */
+  {
+    HubNode *n = reg.by_id(1);
+    if (n) {
+      n->sched.entries[1].min_of_day = 17 * 60 + 30;
+      n->sched.entries[1].days_mask = 0x7F;
+      n->sched.entries[1].amount = 25;
+      n->sched.entry_count = 2;
+    }
+  }
+  /* node 2: skip gate active for the next 2 h (detail gate banner state) */
+  {
+    HubNode *n = reg.by_id(2);
+    if (n) n->sched.skip_until = (uint32_t)(unix + 2 * 3600);
+  }
 
-  /* history: #1 fed OK 40 min ago, #2 fed OK 26 h ago */
+  /* history: #1 fed OK 40 min ago + 5 h ago, #2 fed OK 26 h ago */
   evlog.push((uint32_t)(unix - 2400), 1, EV_FEED_OK, FEED_OK, 1001, 40, 0);
+  evlog.push((uint32_t)(unix - 5 * 3600), 1, EV_FEED_OK, FEED_OK, 1003, 25, 0);
   evlog.push((uint32_t)(unix - 26 * 3600), 2, EV_FEED_OK, FEED_OK, 1002, 25, 0);
 
   printf("sim: clock pinned to %lld, registry seeded (3 nodes, 2 live)\n",

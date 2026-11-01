@@ -125,18 +125,19 @@ DST-correct local time (UTC/Manila/EU/US rules), feed_manager as the single
 FEED originator (§7.2 FSM, §6.6 WAL intent → FEED_UNKNOWN on hub death
 mid-feed, §9.5 stagger), CRC'd NVS persistence, PCF85063 RTC fallback + SNTP,
 TIME_SYNC push on drift, and the bench CLI as an `esp_console` REPL.
-Host-tested in CI (75 tests incl. a UDP e2e sim: hub core ↔ fake node over
+Host-tested in CI (82 tests incl. a UDP e2e sim: hub core ↔ fake node over
 real loopback sockets, retry/repeat policy exercised); QEMU boot smoke in CI.
 Hardware verification: `docs/bench-m1.md` (node), `docs/bench-m2.md` (radio),
 `docs/bench-m3.md` (scheduler + reboots), `docs/bench-sim.md` (fake node).
-M4a phase 1 — dashboard UI: host-tested `ui_model` (registry + event log +
-peer freshness → flat snapshot, §7.2/§8), LVGL 9 view (hub/main/ui, warm dark
-theme) rendering into an offscreen RGB565 framebuffer, in-firmware sim nodes
-(two real LinkEngine node instances over a loopback transport + one silent
-node for offline/alert states), and `tools/qemu/capture.py` dumping the
-framebuffer per `AIO_SHOT` serial marker in the CI `qemu-hub` job (screenshots
-uploaded as artifacts). Next: node detail / schedule editor / history screens,
-then M4b pairing.
+M4a hub UI in progress (LVGL 9 on ESP-IDF, warm dark theme, offscreen RGB565
+framebuffer, host-tested `ui_model` presenters §7.2/§8): **dashboard** (node
+cards, clock, alert footer) and **node detail** (state/vin/last-seen, next
+feed, skip/hold gate banner, sorted schedule, recent feeds) are in, with
+in-firmware sim nodes (two real LinkEngine instances over loopback + one
+silent node) driving them under QEMU; `tools/qemu/capture.py` dumps the
+framebuffer per `AIO_SHOT` marker in the CI `qemu-hub` job (screenshots
+uploaded as artifacts). Next: schedule editor / history screens, then M4b
+pairing.
 
 Releases: **v0.1.0**, **v0.2.0**. Cut the next one the same way —
 `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the firmware zips
