@@ -39,6 +39,7 @@ Vendored in this repo so every agent gets it with zero setup:
 | `espressif-documentation` | `https://mcp.espressif.com/docs` | Semantic search over Espressif docs — ESP-IDF, Arduino-ESP32, ESP-AT (`search_espressif_sources`). OAuth on first connect; 40 req/h rate limit |
 | `espressif-components` | `https://components.espressif.com/mcp` | ESP Component Registry — search managed components, usage docs (`idf.py add-dependency` targets) |
 | `espressif-engineering` | `https://ts-mcp.espressif.com/mcp` | Espressif troubleshooting workflows — environment setup, Wi-Fi debugging, schematic/PCB review. OAuth on first connect |
+| `esp-pilot` | `https://mcp.esp-pilot.espressif.com/mcp` | Espressif ESP-Pilot — agentic embedded copilot for ESP-IDF/Arduino-ESP32 projects (project scaffolding, coding and debugging assistance) |
 | `context7` | `https://mcp.context7.com/mcp` | Up-to-date docs for PlatformIO, LVGL, Arduino cores, etc. (https://github.com/upstash/context7) |
 | `lvgl` | `https://lvgl.mcp.kapa.ai/` | Official LVGL docs MCP — mandated by PLAN.md §7.1 / D26 |
 
@@ -51,6 +52,7 @@ the path Claude Code actually reads, so that is what ships. Other clients:
 claude mcp add --transport http espressif-documentation https://mcp.espressif.com/docs
 claude mcp add --transport http espressif-components https://components.espressif.com/mcp
 claude mcp add --transport http espressif-engineering https://ts-mcp.espressif.com/mcp
+claude mcp add --transport http esp-pilot https://mcp.esp-pilot.espressif.com/mcp
 claude mcp add --transport http context7 https://mcp.context7.com/mcp
 claude mcp add --transport http lvgl https://lvgl.mcp.kapa.ai/
 ```
@@ -100,5 +102,5 @@ Notes:
 | CI builds all targets | ✅ `.github/workflows/ci.yml` |
 | Web flasher deployed to GitHub Pages | ✅ live: https://mlger.github.io/aio-feeder/ |
 | QEMU job boots hub + C3 images in CI | ⏳ deferred — needs ESP-IDF hub build (D6) |
-| LVGL docs MCP config | ✅ `.mcp.json` (LVGL + context7 + 3 Espressif servers) |
+| LVGL docs MCP config | ✅ `.mcp.json` (LVGL + context7 + 4 Espressif servers incl. esp-pilot) |
 | M1 bench node firmware (hard timer, serial CLI, HAL v1) | ✅ code; hardware verification per `docs/bench-m1.md` |

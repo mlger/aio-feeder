@@ -19,6 +19,10 @@
     "espressif-engineering": {
       "type": "http",
       "url": "https://ts-mcp.espressif.com/mcp"
+    },
+    "esp-pilot": {
+      "type": "http",
+      "url": "https://mcp.esp-pilot.espressif.com/mcp"
     }
   }
 }
