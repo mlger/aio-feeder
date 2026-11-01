@@ -115,7 +115,10 @@ struct LinkAdapter : aio::IHubLink {
 };
 static LinkAdapter link_adapter;
 
-/* feedloop state (M2 1000-feed loopback, §12 M2 exit criterion) */
+/* feedloop state (M2 1000-feed loopback, §12 M2 exit criterion) — REPL-only,
+ * compiled out of the QEMU shot build (~4.2 KB of static DRAM goes to the
+ * LVGL pool there instead; the REPL is skipped so nothing can reach it) */
+#if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
 static uint32_t loop_target = 0;
 static uint32_t loop_sent = 0;
 static uint32_t loop_ok = 0;
@@ -123,9 +126,6 @@ static uint32_t loop_dup_errors = 0;
 static uint32_t loop_last_feed_id = 0;
 static uint32_t loop_next_ms = 0;
 static uint8_t loop_node = 0;
-/* feedloop dedup table — 4 KB of static DRAM the QEMU shot build spends on
- * the LVGL pool instead (the REPL / cmd_feedloop does not exist there) */
-#if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
 static uint32_t seen_results[1024];
 #endif
 static uint32_t last_full_hb_push_ms = 0;
@@ -444,6 +444,7 @@ static int cmd_feed(int argc, char **argv) {
 }
 
 static int cmd_feedloop(int argc, char **argv) {
+#if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
   if (argc != 3) { printf("usage: feedloop <node_id> <count>\n"); return 1; }
   StateLock lock;
   loop_node = (uint8_t)parse_num(argv[1]);
@@ -456,6 +457,9 @@ static int cmd_feedloop(int argc, char **argv) {
   memset(seen_results, 0, sizeof(seen_results));
   printf("feedloop start: node=%u n=%u (bench radio mode on the node!)\n", loop_node,
          (unsigned)loop_target);
+#else
+  (void)argc; (void)argv;
+#endif
   return 0;
 }
 
@@ -974,7 +978,8 @@ static void aio_loop_task(void *) {
 
       /* feedloop driver: one feed in flight at a time (§9.5) — M2 bench path,
        * deliberately bypassing feed_manager so the radio loopback measures the
-       * link alone. */
+       * link alone. REPL-only: compiled out of the QEMU shot build. */
+#if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
       if (loop_target && loop_sent < loop_target && !eng.feed_pending() &&
           (int32_t)(now - loop_next_ms) >= 0) {
         const feed_payload_t f{++reg.data().feed_id_seq, 1, UNIT_GRAMS, 0};
@@ -990,6 +995,7 @@ static void aio_loop_task(void *) {
                (unsigned)loop_sent, (unsigned)loop_ok, (unsigned)loop_dup_errors);
         loop_target = 0;
       }
+#endif
     }
     vTaskDelay(pdMS_TO_TICKS(1));
   }
