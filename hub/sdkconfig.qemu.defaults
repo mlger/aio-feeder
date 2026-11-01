@@ -8,9 +8,10 @@ CONFIG_AIO_NO_RADIO=y
 # markers (tools/qemu/capture.py dumps the framebuffer per marker).
 CONFIG_AIO_UI_SHOT=y
 
-# The 64 KB default lv_malloc pool fit six screens; the seventh (calibration
+# The default 64 KB lv_malloc pool fit six screens; the seventh (calibration
 # wizard, M4b) tipped the first dashboard render into lv_memset(NULL)
-# (StoreProhibited, lv_draw_sw_fill). The expand pool is the same static DRAM
-# cost wherever it is declared — +16 KB lets all seven screens' objects plus
-# per-render draw allocations fit. Revisit with the hardware 800×480 path.
-CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=16
+# (StoreProhibited in lv_draw_sw_fill — the rounded-corner mask_buf
+# allocation came back NULL). CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES is a
+# no-op in 9.2.2 (it only feeds TLSF_MAX_POOL_SIZE), so raise the pool
+# itself. Hardware (PSRAM) is untouched; revisit with the 800×480 path.
+CONFIG_LV_MEM_SIZE_KILOBYTES=80

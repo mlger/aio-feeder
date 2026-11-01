@@ -1422,6 +1422,14 @@ static void ui_task(void *) {
   build_calib_screen();
   lv_screen_load(s_scr);
 
+  /* pool pressure at boot (the 7-screen QEMU build runs against the 64 KB
+   * default ceiling — this line makes the serial log tell us where we are) */
+  lv_mem_monitor_t mon;
+  lv_mem_monitor(&mon);
+  printf("ui: lv pool total=%u free=%u used=%u%% frag=%u%%\n",
+         (unsigned)mon.total_size, (unsigned)mon.free_size,
+         (unsigned)mon.used_pct, (unsigned)mon.frag_pct);
+
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
   uint32_t last_tick = boot_ms;
   printf("ui: LVGL %d.%d.%d ready (%dx%d shot framebuffer)\n", LVGL_VERSION_MAJOR,
