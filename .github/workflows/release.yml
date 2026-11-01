@@ -40,6 +40,7 @@ jobs:
       - name: Create GitHub Release (notes from commits since previous tag)
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}  # no checkout in this job — tell gh where to act
         run: |
           TAG="${GITHUB_REF_NAME}"
           if gh release view "$TAG" >/dev/null 2>&1; then

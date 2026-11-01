@@ -113,5 +113,6 @@ Host-tested in CI (39 tests incl. RFC 4231 vectors); all three firmware
 targets build. Hardware verification: `docs/bench-m1.md` (node) and
 `docs/bench-m2.md` (radio + 1000-feed loopback). Next: M3 hub core.
 
-Releases: none tagged yet — cut the first one with `git tag v0.1.0 && git
-push origin v0.1.0`.
+Releases: **v0.1.0** was the first tagged release. Cut the next one the same
+way — `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the
+firmware zips to a GitHub Release automatically.
