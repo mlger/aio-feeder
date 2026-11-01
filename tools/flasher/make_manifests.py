@@ -112,23 +112,19 @@ def main() -> int:
             return 1
         out_dir = args.out / site_dir
         out_dir.mkdir()
-        written = []
         for name, _offset in parts:
             src = env_dir / name
             if src.is_file():  # boot_app0.bin may be absent on IDF builds
                 shutil.copy2(src, out_dir / name)
-                written.append(name)
-            else:
-                bin_names.discard(name)
         # keep the manifest consistent with what was actually written
         manifest = build_manifest(args.version, env)
         manifest["builds"][0]["parts"] = [
             {"path": n, "offset": o}
             for n, o in parts
-            if n in bin_names and (out_dir / n).is_file()
+            if (out_dir / n).is_file()
         ]
         (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
-        print(f"{env}: {out_dir / 'manifest.json'} ({len(written)} parts)")
+        print(f"{env}: {out_dir / 'manifest.json'} ({len(manifest['builds'][0]['parts'])} parts)")
 
     (args.out / "build-info.json").write_text(json.dumps({"version": args.version}) + "\n")
     print(f"site ready: {args.out} (version {args.version})")
