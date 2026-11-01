@@ -23,7 +23,7 @@
 
 #include "../../node_core/actuator.h"
 #include "../../node_core/feed_journal.h"
-#include "../../node_core/limits.h"
+#include "../../node_core/node_limits.h"
 #include "../../node_core/time_validity.h"
 #include "cli.h"
 

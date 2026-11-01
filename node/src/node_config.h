@@ -9,7 +9,7 @@
 #include "../../lib/proto/profile.h"
 #include "../../node_core/config_slots.h"
 #include "../../node_core/feed_journal.h"
-#include "../../node_core/limits.h"
+#include "../../node_core/node_limits.h"
 #include "../../node_core/time_validity.h"
 
 #define CONFIG_SLOT_SIZE 512
