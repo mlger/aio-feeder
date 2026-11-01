@@ -331,7 +331,7 @@ static void pair_tick(uint32_t vms) {
   pr.caps = 0x01;
   const uint8_t nonce[8] = {0xA1, 0x55, 0x00, 0x0B, 0x5E, 0xED, 0x01, 0x42};
   memcpy(pr.node_nonce, nonce, 8);
-  g_pair_eng.emit(LINK_BROADCAST, AIO_ZERO_KEY, MSG_PAIR_REQ, 0, &pr, sizeof(pr), vms);
+  g_pair_eng.send_pair_req(pr, vms);
 }
 
 /* --- per-iteration drive (called under the state mutex) -------------------------- */

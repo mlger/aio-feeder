@@ -273,6 +273,20 @@ class LinkEngine {
     return emit_raw(LINK_BROADCAST, AIO_ZERO_KEY, MSG_HELLO, self_node_id_, bcast_seq_++,
                     &pl, sizeof(pl), now_ms);
   }
+  /* Hub → unpaired node, §6.3.5: PAIR_ACCEPT is a discovery frame (zero
+   * key) and its recipient is not a peer yet, so it bypasses the peer
+   * table and uses the broadcast seq. */
+  bool send_pair_accept(const uint8_t mac[6], const pair_accept_payload_t &pl,
+                        uint32_t now_ms) {
+    return emit_raw(mac, AIO_ZERO_KEY, MSG_PAIR_ACCEPT, pl.node_id, bcast_seq_++, &pl,
+                    sizeof(pl), now_ms);
+  }
+  /* Node → broadcast, §6.3.2: an unpaired node announces itself so a hub
+   * with an open pairing window can discover it (zero key, node_id 0). */
+  bool send_pair_req(const pair_req_payload_t &pl, uint32_t now_ms) {
+    return emit_raw(LINK_BROADCAST, AIO_ZERO_KEY, MSG_PAIR_REQ, self_node_id_, bcast_seq_++,
+                    &pl, sizeof(pl), now_ms);
+  }
   /* Bench loss test: keyed frame on the normal path (§11.2). */
   bool send_test(uint32_t counter, uint32_t now_ms) {
     return node_send(MSG_TARE_OR_CAL, &counter, sizeof(counter), now_ms);
