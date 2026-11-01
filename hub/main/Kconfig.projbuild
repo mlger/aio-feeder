@@ -1,0 +1,33 @@
+# AIO Feeder hub — build-time options (menuconfig: "AIO Feeder hub").
+menu "AIO Feeder hub"
+
+    config AIO_WIFI_SSID
+        string "Wi-Fi SSID (empty = no Wi-Fi, RTC-only time)"
+        default ""
+        help
+            When set, the hub joins this network at boot and enables SNTP
+            (pool.ntp.org). Leave empty for bench/QEMU use.
+
+    config AIO_WIFI_PASS
+        string "Wi-Fi password"
+        default ""
+
+    config AIO_RTC_SDA
+        int "I2C SDA GPIO for the onboard PCF85063"
+        default 8
+        help
+            Waveshare ESP32-S3-Touch-LCD-4.3B: touch/RTC I2C bus is GPIO8/9.
+
+    config AIO_RTC_SCL
+        int "I2C SCL GPIO for the onboard PCF85063"
+        default 9
+
+    config AIO_NO_RADIO
+        bool "Skip ESP-NOW/Wi-Fi bring-up entirely (QEMU smoke build)"
+        default n
+        help
+            The QEMU machine model has no Wi-Fi peripheral; a hung or
+            panicking esp_wifi init would break the CI boot smoke. The qemu
+            sdkconfig overlay enables this; the hub then runs core+console.
+
+endmenu

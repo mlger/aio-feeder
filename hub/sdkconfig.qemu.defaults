@@ -1,0 +1,5 @@
+# QEMU (ci.yml qemu-hub boot smoke): the esp32s3 machine model has no octal
+# PSRAM (failed init aborts the boot) and no Wi-Fi peripheral (esp_wifi init
+# may hang or panic) — so this overlay tests the app, not the silicon.
+# CONFIG_SPIRAM is not set
+CONFIG_AIO_NO_RADIO=y

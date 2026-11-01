@@ -14,6 +14,46 @@ jobs:
     name: Tests & firmware
     uses: ./.github/workflows/build.yml
 
+  qemu-hub:
+    name: QEMU boot smoke (hub ESP32-S3)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (QEMU sdkconfig — no octal PSRAM)
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py -C hub -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu.defaults" set-target esp32s3
+          idf.py -C hub -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu.defaults" build
+      - name: Merge flash image
+        run: |
+          . $IDF_PATH/export.sh
+          esptool.py --chip esp32s3 merge_bin -o hub/build/flash.img \
+            --fill-flash-size 16MB \
+            0x0 hub/build/bootloader/bootloader.bin \
+            0x8000 hub/build/partition_table/partition-table.bin \
+            0x10000 hub/build/aio-feeder-hub.bin
+      - name: Boot in QEMU and check markers
+        run: |
+          # QEMU runtime deps (the espressif/idf container may lack pixman/glib)
+          (sudo apt-get update -qq && sudo apt-get install -y -qq \
+             libglib2.0-0 libpixman-1-0 >/dev/null 2>&1) || true
+          # pinned release asset — verified against the espressif/qemu releases API;
+          # bump deliberately when the fork moves.
+          curl -sL -o /tmp/qemu.tar.xz \
+            https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
+          mkdir -p /tmp/qemu && tar -xf /tmp/qemu.tar.xz -C /tmp/qemu
+          QEMU_BIN=$(find /tmp/qemu -name qemu-system-xtensa -type f | head -1)
+          echo "qemu binary: $QEMU_BIN"
+          timeout 40 "$QEMU_BIN" -M esp32s3 \
+            -drive file=hub/build/flash.img,if=mtd,format=raw \
+            -display none -monitor none -serial file:serial.log || true
+          tail -60 serial.log
+          grep -q "aio-feeder-hub" serial.log
+          grep -q "core ready" serial.log
+          ! grep -q "Guru Meditation" serial.log
+
   pages:
     name: Deploy web flasher to GitHub Pages
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'

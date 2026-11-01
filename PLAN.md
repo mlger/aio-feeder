@@ -813,7 +813,7 @@ or `claude mcp add --transport http lvgl https://lvgl.mcp.kapa.ai/`.
 | D3 | Transport = ESP-NOW (Wi-Fi/MQTT fallback) | Proposed |
 | D4 | Node enforces safety caps; hub is advisory | Proposed |
 | D5 | Single node firmware + hub-managed profiles | Proposed |
-| D6 | Pure ESP-IDF vs Arduino-compat on hub (`idf.py qemu` favours an ESP-IDF build, with Arduino as a component if needed) | Open |
+| D6 | Hub = **pure ESP-IDF** (v5.4, CMake project in `hub/`, esp_console REPL bench CLI, native ESP-NOW/NVS/SNTP); nodes stay Arduino/PlatformIO via HAL | **Decided** (v0.3): unlocked by the user's ESP-IDF+QEMU direction; `idf.py` path is also what M4a LVGL and the QEMU boot smoke (ci.yml `qemu-hub`) build on |
 | D7 | Metering chamber vs timed gate | Open — prototype both |
 | D8 | Node MCU = ESP8266 **or** ESP32-C3 SuperMini via HAL; C3 preferred for new builds | Proposed |
 | D9 | Relay default-OFF enforced by external pull resistor, not firmware alone | Proposed |
@@ -832,7 +832,7 @@ or `claude mcp add --transport http lvgl https://lvgl.mcp.kapa.ai/`.
 | D22 | Stock left = storage capacity minus amounts actually dispensed, computed on the hub and keyed by `feed_id` | Proposed |
 | D23 | ESP8266 pin map: relay on GPIO14, optional inputs on GPIO13 / GPIO16, GPIO4 / GPIO5 for I²C | Proposed |
 | D24 | Hub time uses the onboard PCF85063 RTC; no external DS3231 on the hub | Decided |
-| D25 | Hub UI, networking and storage tested in Espressif QEMU in CI, with a `udp` transport to a fake node; ESP-NOW and safety stay on the bench | Proposed |
+| D25 | Hub UI, networking and storage tested in Espressif QEMU in CI, with a `udp` transport to a fake node; ESP-NOW and safety stay on the bench | Partially done (v0.3): QEMU boot smoke in CI (serial markers, no-panic); hub↔fake-node pipeline e2e runs on the host over loopback UDP (`test/test_e2e_sim`, `tools/sim`) since QEMU has no Wi-Fi/ESP-NOW; in-QEMU serial/chardev transport to the fake node deferred to M4a |
 | D26 | LVGL docs MCP server (`lvgl.mcp.kapa.ai`) is part of the dev setup, checked into `.claude/.mcp.json` | Proposed |
 | D27 | The hub prototype calibrates a gate node by open time (g/s) with a 10 s max on-time; the pulse-count metering-chamber design stays preferred pending D7 | Proposed — **[VERIFY]** |
 | D28 | Storage capacity is user-entered (size and amount now) at pairing, in the wizard and on the node page, not fixed by template | Proposed |

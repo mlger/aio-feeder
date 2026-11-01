@@ -2,6 +2,11 @@ name: Build & test
 
 # Reusable workflow: host unit tests + all firmware targets.
 # Called by ci.yml (every push/PR) and release.yml (semver tags).
+#
+# Hub = ESP-IDF (decision D6) in the espressif/idf container; nodes stay on
+# PlatformIO/Arduino. Flashable parts are collected into one artifact per
+# target with identical names (bootloader/partitions/firmware) so the Pages
+# job and release zips stay schema-stable.
 
 on:
   workflow_call:
@@ -20,8 +25,34 @@ jobs:
           python-version: "3.12"
       - name: Install PlatformIO
         run: pip install platformio
-      - name: Run host tests (Unity, native)
+      - name: Run host tests (Unity, native, incl. UDP e2e sim)
         run: pio test -d test
+
+  hub-idf:
+    name: Build hub_esp32s3 (ESP-IDF)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py -C hub set-target esp32s3
+          idf.py -C hub build
+      - name: Collect flashable parts
+        run: |
+          mkdir -p collect
+          cp hub/build/bootloader/bootloader.bin collect/bootloader.bin
+          cp hub/build/partition_table/partition-table.bin collect/partitions.bin
+          cp hub/build/aio-feeder-hub.bin collect/firmware.bin
+          ls -la collect
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fw-hub_esp32s3
+          path: collect
+          if-no-files-found: error
 
   firmware:
     name: Build ${{ matrix.env }}
@@ -30,7 +61,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { project: hub, env: hub_esp32s3 }
           - { project: node, env: node_esp8266 }
           - { project: node, env: node_esp32c3 }
     steps:

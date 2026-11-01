@@ -3,20 +3,32 @@
 Everything needed to build, test, flash and work on AIO Feeder. Status against
 the M0 exit criteria (PLAN.md §12) is at the bottom.
 
-## 1. Firmware toolchain (PlatformIO)
+## 1. Firmware toolchains
 
 ```bash
+# Hub — ESP-IDF v5.4 (decision D6: pure ESP-IDF project in hub/)
+# install esp-idf per https://docs.espressif.com/projects/esp-idf (or use the
+# espressif/idf:v5.4 container, which is what CI does)
+. $IDF_PATH/export.sh
+idf.py -C hub set-target esp32s3
+idf.py -C hub build
+idf.py -C hub -p /dev/ttyUSB0 flash monitor   # bench CLI is an esp_console REPL
+idf.py -C hub qemu monitor                    # boot the hub in QEMU (needs idf.py qemu)
+
+# Nodes — PlatformIO/Arduino
 pip install platformio        # pio CLI; VS Code users: PlatformIO IDE extension
-pio run -d hub -e hub_esp32s3
 pio run -d node -e node_esp8266
 pio run -d node -e node_esp32c3
-pio test -d test              # host unit tests (Unity, native)
-pio device monitor -d hub     # serial console, 115200
+pio test -d test              # host unit tests (Unity, native, incl. UDP e2e sim)
+
+# Host tests where the PlatformIO CDN is unreachable:
+tools/test-local/run.sh       # same sources, g++ + vendored Unity shim
 ```
 
-Environments live in `hub/platformio.ini` and `node/platformio.ini`. The hub
-env is an Arduino stub; if D6 lands on pure ESP-IDF, the LVGL/esp_lcd work
-moves into an ESP-IDF project and QEMU (§3 below) comes with it.
+Node environments live in `node/platformio.ini`; the hub is an ESP-IDF
+CMake project (`hub/CMakeLists.txt`, sources in `hub/main/`, portable core
+in `hub/src/`). Wi-Fi credentials for NTP go through `idf.py menuconfig` →
+"AIO Feeder hub" (they are build-time Kconfig, never committed).
 
 ## 2. AI agent tooling
 
@@ -96,12 +108,12 @@ Notes:
 | Criterion | Status |
 |---|---|
 | Repo + plan + prototype checked in | ✅ |
-| PlatformIO envs (hub_esp32s3, node_esp8266, node_esp32c3) | ✅ (hub = M2 bench link host; node = M2 link firmware) |
+| PlatformIO envs (node_esp8266, node_esp32c3) + ESP-IDF hub project | ✅ (hub = ESP-IDF v5.4 since D6 was decided; node = M2 link firmware) |
 | Shared proto lib | ✅ `lib/proto/proto.h` + messages/sha256/pairing |
-| Host unit tests in CI | ✅ `test/` (Unity, native): proto + node_core safety + link_core (39 tests) |
-| CI builds all targets | ✅ `.github/workflows/ci.yml` |
+| Host unit tests in CI | ✅ `test/` (Unity, native): proto + node_core + link_core + hub_core + UDP e2e sim (68 tests) |
+| CI builds all targets | ✅ `.github/workflows/ci.yml` (hub via espressif/idf:v5.4 container) |
 | Web flasher deployed to GitHub Pages | ✅ live: https://mlger.github.io/aio-feeder/ |
-| QEMU job boots hub + C3 images in CI | ⏳ deferred — needs ESP-IDF hub build (D6) |
+| QEMU job boots hub image in CI | ✅ `ci.yml` `qemu-hub` — merges flash image, boots `qemu-system-xtensa -M esp32s3`, checks boot markers + no panic (D6 decided) |
 | LVGL docs MCP config | ✅ `.mcp.json` (LVGL + context7 + 4 Espressif servers incl. esp-pilot) |
 | M1 bench node firmware (hard timer, serial CLI, HAL v1) | ✅ code; hardware verification per `docs/bench-m1.md` |
 | M2 link (ESP-NOW, HMAC frames, retries, channel scan, skip/hold) | ✅ code, all 3 targets build; hardware verification per `docs/bench-m2.md` |
