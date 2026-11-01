@@ -32,4 +32,10 @@ RAM budget: the esp32s3 QEMU machine has no PSRAM, so the 176 KB LVGL
 framebuffer (384×240×2 — 400-wide overflowed `dram0_0_seg` by ~14 KB when
 the fifth screen landed) plus sim rings and the app's statics must all fit
 internal DRAM. Keep new statics in the shot build small; the ui/sim code
-documents the cuts (`UI_W 384`, `SimRing::CAP = 4`, 2-slot ESP-NOW ring).
+documents the cuts (`UI_W 384`, `SimRing::CAP = 3`, 2-slot ESP-NOW ring).
+Static DRAM ran out again twice with the seventh screen: the feedloop
+dedup table (4 KB, REPL-only) is compiled out of the shot build and the
+LVGL pool is raised 64 → 72 KB (`CONFIG_LV_MEM_SIZE_KILOBYTES` in
+`sdkconfig.qemu.defaults`; note `LV_MEM_POOL_EXPAND_SIZE` is a no-op in
+9.2.2). The ui task prints `lv pool total/free` at boot — watch it before
+adding screens.

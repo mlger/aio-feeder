@@ -1387,7 +1387,7 @@ static void update_calib(const CalibView &v) {
         break;
       case CAL_DONE:
         snprintf(buf, sizeof(buf),
-                 "Feeder #%u calibrated — saved\nto the profile and pushed.\n\nRe-run when the food or the\nhopper changes.",
+                 "Feeder #%u calibrated, saved\nto the profile and pushed.\n\nRe-run when the food or the\nhopper changes.",
                  (unsigned)v.saved_node_id);
         break;
     }
