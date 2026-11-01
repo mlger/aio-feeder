@@ -188,24 +188,24 @@ static lv_obj_t *s_scr = nullptr;
 static lv_obj_t *s_clock_lbl = nullptr;
 static lv_obj_t *s_footer_lbl = nullptr;
 
-/* node detail screen (§8.2) */
+/* node detail screen (§8.2) — schedule + recent-feeds lanes are single
+ * multi-line labels (the 64 KiB LVGL pool is the hard budget; per-row
+ * widgets blew it on the eighth screen) */
 static lv_obj_t *s_det_scr = nullptr;
 static lv_obj_t *s_det_clock_lbl = nullptr;
 static lv_obj_t *s_det_title_lbl = nullptr;
 static lv_obj_t *s_det_status_lbl = nullptr;
 static lv_obj_t *s_det_next_lbl = nullptr;
 static lv_obj_t *s_det_gate_lbl = nullptr;   /* hidden unless a gate is active */
-static lv_obj_t *s_det_sched_panel = nullptr;
-static lv_obj_t *s_det_sched_rows[UI_DETAIL_MAX_ENTRIES];
-static lv_obj_t *s_det_ev_panel = nullptr;
-static lv_obj_t *s_det_ev_rows[UI_DETAIL_MAX_EVENTS];
+static lv_obj_t *s_det_sched_lbl = nullptr;
+static lv_obj_t *s_det_ev_lbl = nullptr;
 
 /* schedule editor screen (§8.3) */
 static lv_obj_t *s_ed_scr = nullptr;
 static lv_obj_t *s_ed_title_lbl = nullptr;
 static lv_obj_t *s_ed_clock_lbl = nullptr;
 static lv_obj_t *s_ed_tz_lbl = nullptr;
-static lv_obj_t *s_ed_rows[UI_DETAIL_MAX_ENTRIES];     /* entry list rows */
+static lv_obj_t *s_ed_list_lbl = nullptr;              /* entry list, one label */
 static lv_obj_t *s_ed_time_lbl = nullptr;              /* draft time */
 static lv_obj_t *s_ed_amt_lbl = nullptr;               /* draft amount */
 static lv_obj_t *s_ed_day_btns[7];                     /* weekday chips */
@@ -219,7 +219,7 @@ static lv_obj_t *s_hi_clock_lbl = nullptr;
 static lv_obj_t *s_hi_bars[UI_HISTORY_DAYS];
 static lv_obj_t *s_hi_day_lbls[UI_HISTORY_DAYS];
 static lv_obj_t *s_hi_nodes_lbl = nullptr;
-static lv_obj_t *s_hi_ev_rows[UI_HISTORY_ROWS];
+static lv_obj_t *s_hi_ev_lbl = nullptr; /* event list, one label */
 static lv_obj_t *s_hi_footer_lbl = nullptr;
 
 /* alerts screen (§8.7) */
@@ -227,8 +227,7 @@ static lv_obj_t *s_alr_scr = nullptr;
 static lv_obj_t *s_alr_clock_lbl = nullptr;
 static lv_obj_t *s_alr_summary_lbl = nullptr;
 static lv_obj_t *s_alr_rows[UI_ALERTS_MAX_ACTIVE];
-static lv_obj_t *s_alr_acked_hdr_lbl = nullptr;
-static lv_obj_t *s_alr_acked_rows[UI_ALERTS_MAX_ACKED];
+static lv_obj_t *s_alr_acked_lbl = nullptr; /* acked list, one label */
 static lv_obj_t *s_alr_footer_lbl = nullptr;
 
 /* pairing screen (§8.5, M4b) */
@@ -534,51 +533,19 @@ static void build_detail_screen() {
   lv_obj_set_style_pad_left(s_det_gate_lbl, 10, 0);
   lv_obj_add_flag(s_det_gate_lbl, LV_OBJ_FLAG_HIDDEN);
 
-  /* schedule panel: header + up to UI_DETAIL_MAX_ENTRIES rows */
-  s_det_sched_panel = new_panel(col, UI_W, 0, C_PANEL);
-  lv_obj_set_size(s_det_sched_panel, UI_W - 20, 0);
+  /* schedule + recent-feeds panels: one multi-line label each — the pool
+   * budget forbids per-row widgets (see the statics note) */
+  s_det_sched_panel = new_panel(col, UI_W - 20, 0, C_PANEL);
   lv_obj_set_style_pad_all(s_det_sched_panel, 6, 0);
-  lv_obj_set_flex_flow(s_det_sched_panel, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_row(s_det_sched_panel, 2, 0);
-  lv_obj_t *sh = new_label(s_det_sched_panel, "SCHEDULE", &lv_font_montserrat_12, C_MUTED);
-  (void)sh;
-  for (int i = 0; i < UI_DETAIL_MAX_ENTRIES; i++) {
-    lv_obj_t *row = lv_obj_create(s_det_sched_panel);
-    lv_obj_set_size(row, UI_W - 32 - 12, 18);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_set_style_pad_column(row, 8, 0);
-    lv_obj_t *t = new_label(row, "", &lv_font_montserrat_14, C_TEXT);
-    lv_obj_set_width(t, 64);
-    lv_obj_t *w = new_label(row, "", &lv_font_montserrat_12, C_MUTED);
-    lv_obj_set_flex_grow(w, 1);
-    lv_obj_t *a = new_label(row, "", &lv_font_montserrat_14, C_TEXT);
-    s_det_sched_rows[i] = row;
-    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-  }
+  s_det_sched_lbl = new_label(s_det_sched_panel, "", &lv_font_montserrat_12, C_TEXT);
+  lv_label_set_long_mode(s_det_sched_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_det_sched_lbl, UI_W - 44);
 
-  /* recent feeds panel: header + up to UI_DETAIL_MAX_EVENTS rows */
-  s_det_ev_panel = new_panel(col, UI_W, 0, C_PANEL);
-  lv_obj_set_size(s_det_ev_panel, UI_W - 20, 0);
+  s_det_ev_panel = new_panel(col, UI_W - 20, 0, C_PANEL);
   lv_obj_set_style_pad_all(s_det_ev_panel, 6, 0);
-  lv_obj_set_flex_flow(s_det_ev_panel, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_row(s_det_ev_panel, 2, 0);
-  lv_obj_t *eh = new_label(s_det_ev_panel, "RECENT FEEDS", &lv_font_montserrat_12, C_MUTED);
-  (void)eh;
-  for (int i = 0; i < UI_DETAIL_MAX_EVENTS; i++) {
-    lv_obj_t *row = lv_obj_create(s_det_ev_panel);
-    lv_obj_set_size(row, UI_W - 32 - 12, 18);
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_TEXT);
-    (void)l;
-    s_det_ev_rows[i] = row;
-    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-  }
+  s_det_ev_lbl = new_label(s_det_ev_panel, "", &lv_font_montserrat_12, C_TEXT);
+  lv_label_set_long_mode(s_det_ev_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_det_ev_lbl, UI_W - 44);
 
   /* footer actions (static in the shot build; wired to the engine in M4b) */
   lv_obj_t *actions = new_panel(s_det_scr, UI_W, 26, C_PANEL);
@@ -640,71 +607,48 @@ static void update_detail(const NodeDetail &d) {
     lv_obj_add_flag(s_det_gate_lbl, LV_OBJ_FLAG_HIDDEN);
   }
 
-  for (int i = 0; i < UI_DETAIL_MAX_ENTRIES; i++) {
-    lv_obj_t *row = s_det_sched_rows[i];
-    if (!row) continue;
-    if (!d.sched_enabled || i >= d.entry_count) {
-      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-      continue;
+  if (s_det_sched_lbl) {
+    char lane[192];
+    size_t off = 0;
+    if (d.sched_enabled && d.entry_count) {
+      off += (size_t)snprintf(lane + off, sizeof(lane) - off, "SCHEDULE\n");
+      for (int i = 0; i < d.entry_count && off + 36 < sizeof(lane); i++) {
+        const DetailSchedEntry &e = d.entries[i];
+        char days[24];
+        days_text(e.days_mask, days, sizeof(days));
+        off += (size_t)snprintf(lane + off, sizeof(lane) - off,
+                                "%02u:%02u  %-9s %u g\n",
+                                (unsigned)(e.min_of_day / 60),
+                                (unsigned)(e.min_of_day % 60), days,
+                                (unsigned)e.amount);
+      }
+    } else {
+      snprintf(lane, sizeof(lane), "SCHEDULE%s\n(no entries)",
+               d.sched_enabled ? "" : " (paused)");
     }
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t *t = lv_obj_get_child(row, 0);
-    lv_obj_t *w = lv_obj_get_child(row, 1);
-    lv_obj_t *a = lv_obj_get_child(row, 2);
-    const DetailSchedEntry &e = d.entries[i];
-    snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(e.min_of_day / 60),
-             (unsigned)(e.min_of_day % 60));
-    if (t) lv_label_set_text((lv_obj_t *)t, buf);
-    days_text(e.days_mask, buf, sizeof(buf));
-    if (w) lv_label_set_text((lv_obj_t *)w, buf);
-    snprintf(buf, sizeof(buf), "%u g", (unsigned)e.amount);
-    if (a) lv_label_set_text((lv_obj_t *)a, buf);
+    lv_label_set_text(s_det_sched_lbl, lane);
   }
 
-  for (int i = 0; i < UI_DETAIL_MAX_EVENTS; i++) {
-    lv_obj_t *row = s_det_ev_rows[i];
-    if (!row) continue;
-    if (i >= d.event_count) {
-      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-      continue;
+  if (s_det_ev_lbl) {
+    char lane[224];
+    size_t off = 0;
+    off += (size_t)snprintf(lane + off, sizeof(lane) - off, "RECENT FEEDS\n");
+    if (!d.event_count) {
+      off += (size_t)snprintf(lane + off, sizeof(lane) - off, "(none yet)\n");
     }
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
-    const DetailEvent &ev = d.events[i];
-    char age[24];
-    fmt_age(age, sizeof(age), ev.age_s);
-    snprintf(buf, sizeof(buf), "%s - %u g - %s", kind_short(ev.kind),
-             (unsigned)ev.amount, age);
-    lv_obj_t *l = lv_obj_get_child(row, 0);
-    if (l) {
-      lv_label_set_text((lv_obj_t *)l, buf);
-      lv_obj_set_style_text_color(
-          (lv_obj_t *)l, lv_color_hex(ev.kind == EV_FEED_OK ? C_TEXT : C_ALERT), 0);
+    for (int i = 0; i < d.event_count && off + 36 < sizeof(lane); i++) {
+      const DetailEvent &ev = d.events[i];
+      char age[24];
+      fmt_age(age, sizeof(age), ev.age_s);
+      off += (size_t)snprintf(lane + off, sizeof(lane) - off, "%s - %u g - %s\n",
+                              kind_short(ev.kind), (unsigned)ev.amount, age);
     }
+    lv_label_set_text(s_det_ev_lbl, lane);
+    lv_obj_set_style_text_color(s_det_ev_lbl, lv_color_hex(C_TEXT), 0);
   }
 }
 
 /* --- schedule editor screen (§8.3) -------------------------------------------------- */
-
-static lv_obj_t *ed_row(lv_obj_t *parent, lv_obj_t **t, lv_obj_t **a) {
-  lv_obj_t *row = lv_obj_create(parent);
-  lv_obj_set_size(row, UI_W - 20, 20);
-  lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(row, 0, 0);
-  lv_obj_set_style_pad_all(row, 0, 0);
-  lv_obj_set_style_pad_left(row, 8, 0);
-  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
-                        LV_FLEX_ALIGN_CENTER);
-  lv_obj_set_style_pad_column(row, 8, 0);
-  lv_obj_t *tl = new_label(row, "", &lv_font_montserrat_14, C_TEXT);
-  lv_obj_set_width(tl, 58);
-  lv_obj_t *w = new_label(row, "", &lv_font_montserrat_12, C_MUTED);
-  lv_obj_set_flex_grow(w, 1);
-  lv_obj_t *al = new_label(row, "", &lv_font_montserrat_14, C_TEXT);
-  if (t) *t = tl;
-  if (a) *a = al;
-  return row;
-}
 
 static void build_edit_screen() {
   s_ed_scr = lv_obj_create(nullptr);
@@ -747,17 +691,9 @@ static void build_edit_screen() {
 
   lv_obj_t *list = new_panel(col, UI_W - 20, 0, C_PANEL);
   lv_obj_set_style_pad_all(list, 4, 0);
-  lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_row(list, 2, 0);
-  lv_obj_t *lh = new_label(list, "ENTRIES", &lv_font_montserrat_12, C_MUTED);
-  (void)lh;
-  for (int i = 0; i < UI_DETAIL_MAX_ENTRIES; i++) {
-    lv_obj_t *t = nullptr, *a = nullptr;
-    s_ed_rows[i] = ed_row(list, &t, &a);
-    (void)t;
-    (void)a;
-    lv_obj_add_flag(s_ed_rows[i], LV_OBJ_FLAG_HIDDEN);
-  }
+  s_ed_list_lbl = new_label(list, "", &lv_font_montserrat_12, C_TEXT);
+  lv_label_set_long_mode(s_ed_list_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_ed_list_lbl, UI_W - 40);
 
   lv_obj_t *edit = new_panel(col, UI_W - 20, 96, C_PANEL);
   lv_obj_set_style_pad_all(edit, 6, 0);
@@ -812,33 +748,25 @@ static void update_edit(const SchedEditor &e) {
   snprintf(buf, sizeof(buf), "Feeder %u schedule", (unsigned)e.node_id);
   if (s_ed_title_lbl) lv_label_set_text(s_ed_title_lbl, buf);
 
-  for (int i = 0; i < UI_DETAIL_MAX_ENTRIES; i++) {
-    lv_obj_t *row = s_ed_rows[i];
-    if (!row) continue;
-    if (!e.found || i >= e.entry_count) {
-      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-      continue;
+  if (s_ed_list_lbl) {
+    char lane[224];
+    size_t off = 0;
+    if (!e.found || !e.entry_count)
+      snprintf(lane, sizeof(lane), "ENTRIES\n(none - add one below)");
+    else {
+      off += (size_t)snprintf(lane + off, sizeof(lane) - off, "ENTRIES\n");
+      for (int i = 0; i < e.entry_count && off + 36 < sizeof(lane); i++) {
+        const DetailSchedEntry &en = e.entries[i];
+        char days[24];
+        days_text(en.days_mask, days, sizeof(days));
+        off += (size_t)snprintf(lane + off, sizeof(lane) - off, "%s%02u:%02u  %-9s %u g\n",
+                                i == e.selected ? "> " : "   ",
+                                (unsigned)(en.min_of_day / 60),
+                                (unsigned)(en.min_of_day % 60), days,
+                                (unsigned)en.amount);
+      }
     }
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_set_style_bg_color(row, lv_color_hex(i == e.selected ? C_SEL : C_PANEL), 0);
-    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-    lv_obj_t *t = lv_obj_get_child(row, 0);
-    lv_obj_t *w = lv_obj_get_child(row, 1);
-    lv_obj_t *a = lv_obj_get_child(row, 2);
-    const DetailSchedEntry &en = e.entries[i];
-    if (t) {
-      snprintf(buf, sizeof(buf), "%s%02u:%02u", i == e.selected ? "> " : "  ",
-               (unsigned)(en.min_of_day / 60), (unsigned)(en.min_of_day % 60));
-      lv_label_set_text((lv_obj_t *)t, buf);
-    }
-    if (w) {
-      days_text(en.days_mask, buf, sizeof(buf));
-      lv_label_set_text((lv_obj_t *)w, buf);
-    }
-    if (a) {
-      snprintf(buf, sizeof(buf), "%u g", (unsigned)en.amount);
-      lv_label_set_text((lv_obj_t *)a, buf);
-    }
+    lv_label_set_text(s_ed_list_lbl, lane);
   }
 
   if (s_ed_time_lbl) {
@@ -934,19 +862,11 @@ static void build_history_screen() {
   s_hi_nodes_lbl = new_label(s_hi_scr, "", &lv_font_montserrat_12, C_TEXT);
   lv_obj_set_pos(s_hi_nodes_lbl, 10, 32 + HI_CHART_H + 26);
 
-  /* event list rows */
-  for (int i = 0; i < UI_HISTORY_ROWS; i++) {
-    lv_obj_t *row = lv_obj_create(s_hi_scr);
-    lv_obj_set_size(row, UI_W - 20, 15);
-    lv_obj_set_pos(row, 10, (int32_t)(32 + HI_CHART_H + 42 + i * 15));
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_TEXT);
-    (void)l;
-    s_hi_ev_rows[i] = row;
-    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-  }
+  /* event list — one multi-line label (pool budget) */
+  s_hi_ev_lbl = new_label(s_hi_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_label_set_long_mode(s_hi_ev_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_hi_ev_lbl, UI_W - 20);
+  lv_obj_set_pos(s_hi_ev_lbl, 10, 32 + HI_CHART_H + 42);
 
   /* footer */
   s_hi_footer_lbl = new_label(s_hi_scr, "", &lv_font_montserrat_12, C_MUTED);
@@ -985,25 +905,21 @@ static void update_history(const HistoryView &h) {
     lv_label_set_text(s_hi_nodes_lbl, buf);
   }
 
-  for (int i = 0; i < UI_HISTORY_ROWS; i++) {
-    lv_obj_t *row = s_hi_ev_rows[i];
-    if (!row) continue;
-    if (i >= h.event_count) {
-      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-      continue;
-    }
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
-    const HistoryEventRow &ev = h.events[i];
-    char age[24];
-    fmt_age(age, sizeof(age), ev.age_s);
-    snprintf(buf, sizeof(buf), "F%u  %s  %u g  %s", (unsigned)ev.node,
-             kind_short(ev.kind), (unsigned)ev.amount, age);
-    lv_obj_t *l = lv_obj_get_child(row, 0);
-    if (l) {
-      lv_label_set_text((lv_obj_t *)l, buf);
-      lv_obj_set_style_text_color(
-          (lv_obj_t *)l, lv_color_hex(ev.kind == EV_FEED_OK ? C_TEXT : C_ALERT), 0);
-    }
+  if (s_hi_ev_lbl) {
+    char lane[256];
+    size_t off = 0;
+    if (!h.event_count)
+      snprintf(lane, sizeof(lane), "no feeds yet");
+    else
+      for (int i = 0; i < h.event_count && off + 36 < sizeof(lane); i++) {
+        const HistoryEventRow &ev = h.events[i];
+        char age[24];
+        fmt_age(age, sizeof(age), ev.age_s);
+        off += (size_t)snprintf(lane + off, sizeof(lane) - off, "F%u  %s  %u g  %s\n",
+                                (unsigned)ev.node, kind_short(ev.kind),
+                                (unsigned)ev.amount, age);
+      }
+    lv_label_set_text(s_hi_ev_lbl, lane);
   }
 
   if (s_hi_footer_lbl) {
@@ -1083,22 +999,10 @@ static void build_alerts_screen() {
     lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
   }
 
-  s_alr_acked_hdr_lbl = new_label(s_alr_scr, "", &lv_font_montserrat_12, C_MUTED);
-  lv_obj_set_pos(s_alr_acked_hdr_lbl, 10, 156);
-  lv_obj_add_flag(s_alr_acked_hdr_lbl, LV_OBJ_FLAG_HIDDEN);
-
-  for (int i = 0; i < UI_ALERTS_MAX_ACKED; i++) {
-    lv_obj_t *row = lv_obj_create(s_alr_scr);
-    lv_obj_set_size(row, UI_W - 20, 15);
-    lv_obj_set_pos(row, 10, (int32_t)(172 + i * 15));
-    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_MUTED);
-    (void)l;
-    s_alr_acked_rows[i] = row;
-    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-  }
+  s_alr_acked_lbl = new_label(s_alr_scr, "", &lv_font_montserrat_12, C_MUTED);
+  lv_label_set_long_mode(s_alr_acked_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_alr_acked_lbl, UI_W - 20);
+  lv_obj_set_pos(s_alr_acked_lbl, 10, 156);
 
   s_alr_footer_lbl = new_label(s_alr_scr, "", &lv_font_montserrat_12, C_MUTED);
   lv_obj_set_pos(s_alr_footer_lbl, 10, UI_H - 18);
@@ -1135,30 +1039,19 @@ static void update_alerts(const AlertsView &v) {
     }
   }
 
-  if (s_alr_acked_hdr_lbl) {
-    if (v.acked_count) {
-      snprintf(buf, sizeof(buf), "Acknowledged (%u)", (unsigned)v.acked_count);
-      lv_label_set_text(s_alr_acked_hdr_lbl, buf);
-      lv_obj_remove_flag(s_alr_acked_hdr_lbl, LV_OBJ_FLAG_HIDDEN);
-    } else {
-      lv_obj_add_flag(s_alr_acked_hdr_lbl, LV_OBJ_FLAG_HIDDEN);
+  if (s_alr_acked_lbl) {
+    char lane[160];
+    size_t off = 0;
+    if (v.acked_count)
+      off += (size_t)snprintf(lane + off, sizeof(lane) - off, "Acknowledged (%u)\n",
+                              (unsigned)v.acked_count);
+    else
+      lane[0] = '\0';
+    for (int i = 0; i < v.acked_count && off + 40 < sizeof(lane); i++) {
+      alr_row_text(v.acked[i], buf, sizeof(buf));
+      off += (size_t)snprintf(lane + off, sizeof(lane) - off, "%s\n", buf);
     }
-  }
-  for (int i = 0; i < UI_ALERTS_MAX_ACKED; i++) {
-    lv_obj_t *row = s_alr_acked_rows[i];
-    if (!row) continue;
-    if (i >= v.acked_count) {
-      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-      continue;
-    }
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
-    const AlertRow &r = v.acked[i];
-    alr_row_text(r, buf, sizeof(buf));
-    lv_obj_t *l = lv_obj_get_child(row, 0);
-    if (l) {
-      lv_label_set_text((lv_obj_t *)l, buf);
-      lv_obj_set_style_text_color((lv_obj_t *)l, lv_color_hex(alr_row_color(r, true)), 0);
-    }
+    lv_label_set_text(s_alr_acked_lbl, lane);
   }
 
   if (s_alr_footer_lbl) {
