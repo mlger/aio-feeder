@@ -359,6 +359,65 @@ void test_hub_answers_hello(void) {
   TEST_ASSERT_EQUAL_UINT8(7, ack.channel); /* hub advertises its channel */
 }
 
+/* §6.3 OTA pairing over the wire (M4b): the unpaired node's beacon carries
+ * PAIR_REQ (zero key, stable nonce) and the hub's PAIR_ACCEPT reaches the
+ * node with no peer table entry on either side. Handler firing proves the
+ * frames validate end to end (version, zero-key MAC, length). */
+void test_pair_wire_req_and_accept(void) {
+  static bool req_got = false;
+  static pair_req_payload_t req_pl;
+  static bool acc_got = false;
+  static pair_accept_payload_t acc_pl;
+  req_got = acc_got = false;
+
+  LinkHandlers hh{};
+  hh.on_pair_req = [](const uint8_t mac[6], const pair_req_payload_t &pr, int8_t) {
+    (void)mac;
+    req_got = true;
+    req_pl = pr;
+  };
+  LinkHandlers nh{};
+  nh.on_pair_accept = [](const uint8_t mac[6], const pair_accept_payload_t &pa, int8_t) {
+    (void)mac;
+    acc_got = true;
+    acc_pl = pa;
+  };
+
+  MockTransport ta, tb;
+  LinkEngine hub, node;
+  hub.begin(LinkEngine::Role::Hub, &ta, hh, 0);
+  node.begin(LinkEngine::Role::Node, &tb, nh, 0);
+  node.set_self(0, 0); /* unassigned + unpaired */
+
+  uint8_t nonce[8];
+  for (int i = 0; i < 8; i++) nonce[i] = (uint8_t)(0x30 + i);
+  node.set_pair_nonce(nonce);
+
+  node.tick(5000); /* unpaired beacon: HELLO + PAIR_REQ */
+  pump(tb, node, ta, hub, 5010);
+  TEST_ASSERT_TRUE(req_got);
+  TEST_ASSERT_EQUAL_UINT16(AIO_FW_VER, req_pl.fw_ver);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(nonce, req_pl.node_nonce, 8);
+
+  pair_accept_payload_t acc{};
+  acc.node_id = 4;
+  acc.channel = 6;
+  memcpy(acc.code_digits, "1234", 4);
+  for (int i = 0; i < 8; i++) acc.hub_nonce[i] = (uint8_t)(0xC0 + i);
+  uint8_t wrapped[32];
+  memset(wrapped, 0x5A, sizeof(wrapped));
+  memcpy(acc.wrapped_key, wrapped, 32);
+
+  uint8_t node_mac[6] = {0x02, 0, 0, 0, 0, 0x99};
+  TEST_ASSERT_TRUE(hub.send_pair_accept(node_mac, acc, 5100));
+  pump(ta, hub, tb, node, 5110);
+  TEST_ASSERT_TRUE(acc_got);
+  TEST_ASSERT_EQUAL_UINT8(4, acc_pl.node_id);
+  TEST_ASSERT_EQUAL_UINT8(6, acc_pl.channel);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY((const uint8_t *)"1234", acc_pl.code_digits, 4);
+  TEST_ASSERT_EQUAL_UINT8_ARRAY(wrapped, acc_pl.wrapped_key, 32);
+}
+
 void test_channel_scan_hops_and_locks(void) {
   static uint8_t locked_ch = 0;
   static int lost_count = 0;
@@ -523,6 +582,7 @@ int main(void) {
   RUN_TEST(test_feed_dup_reanswered_not_actuated_twice);
   RUN_TEST(test_seq_window_and_replay);
   RUN_TEST(test_hub_answers_hello);
+  RUN_TEST(test_pair_wire_req_and_accept);
   RUN_TEST(test_channel_scan_hops_and_locks);
   RUN_TEST(test_heartbeat_period);
   RUN_TEST(test_result_repeat_three_times);

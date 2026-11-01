@@ -47,6 +47,9 @@ struct NodeConfig {
   uint8_t hub_key[32];         /* per-node HMAC key (§6.4, D13) */
   uint8_t hub_key_len;
   uint8_t reserved0;
+  /* §6.3 OTA pairing: stable nonce for the PAIR_REQ beacons (the hub's
+   * confirmation code is derived from it — it must not rotate mid-attempt) */
+  uint8_t pair_nonce[8];
   uint16_t tx_seq;             /* persisted; resumed +32 on boot */
   int32_t rtc_drift_ms;        /* measured at last TIME_SYNC (§6.5 HB) */
 

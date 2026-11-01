@@ -8,10 +8,16 @@
 
 #include <Arduino.h>
 #include <WiFi.h>
+#include <esp_mac.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 
 #include "../../link_core/link.h"
+
+/* Station MAC for the §6.3 pairing code derivation (efuse — pre-begin OK). */
+static inline void now_sta_mac(uint8_t out[6]) {
+  esp_read_mac(out, ESP_MAC_WIFI_STA);
+}
 
 constexpr size_t AIO_NOW_MAX_FRAME = FRAME_HEADER_SIZE + FRAME_MAX_PAYLOAD + FRAME_MAC_SIZE;
 constexpr uint8_t AIO_NOW_RX_RING = 8;

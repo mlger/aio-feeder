@@ -13,6 +13,7 @@
  */
 #include <Arduino.h>
 
+#include "../../lib/proto/pairing.h"
 #include "../../lib/proto/proto.h"
 #include "node_config.h"
 
@@ -41,6 +42,7 @@ constexpr uint16_t VIN_ABSENT_MV = 2000;
 
 static Hal hal;
 static NodeConfig cfg;
+static uint8_t g_own_mac[6]; /* station MAC — §6.3 pairing code input */
 static aio::Limits limits;
 static aio::FeedJournal journal;
 static aio::TimeValidity tv;
@@ -260,12 +262,43 @@ static void handle_config(const node_profile_t &p, uint8_t limits_confirmed) {
   eng.send_config_ack(p.crc16, 1, millis());
 }
 
+/* --- OTA pairing, node side (§6.3, D29) ---------------------------------------- */
+
+/* Newest PAIR_ACCEPT stashed for the user to confirm ('pairok' on serial).
+ * The hub committed its side already; if the user declines, the hub shows
+ * the node offline and it can be removed there (§6.3.5 residual). */
+static pair_accept_payload_t g_pair_acc;
+static uint8_t g_pair_hub_mac[6];
+static bool g_pair_acc_valid = false;
+
+static void handle_pair_accept(const uint8_t mac[6], const pair_accept_payload_t &pa,
+                               int8_t rssi) {
+  (void)rssi;
+  if (cfg.paired) return; /* already paired — ignore stray accepts */
+  /* Derive the same 4 digits the hub showed; a mismatch means the request
+   * this accept answers used a different nonce (stale accept) — ignore. */
+  uint8_t expect[4];
+  pairing_code(g_own_mac, cfg.pair_nonce, pa.hub_nonce, expect);
+  if (memcmp(expect, pa.code_digits, 4) != 0) {
+    Serial.println(F("RX pair: code mismatch (stale accept, ignored)"));
+    return;
+  }
+  g_pair_acc = pa;
+  memcpy(g_pair_hub_mac, mac, 6);
+  g_pair_acc_valid = true;
+  Serial.printf("PAIR code %c%c%c%c from %02X:%02X:%02X:%02X:%02X:%02X — matches the"
+                " hub screen? 'pairok' to accept, ignore to decline\n",
+                pa.code_digits[0], pa.code_digits[1], pa.code_digits[2],
+                pa.code_digits[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+}
+
 static aio::LinkHandlers make_handlers() {
   aio::LinkHandlers h{};
   h.on_feed = handle_feed;
   h.on_time_sync = handle_time_sync;
   h.on_schedule_set = handle_schedule_set;
   h.on_config = handle_config;
+  h.on_pair_accept = handle_pair_accept;
   h.on_status_req = []() {
     /* HB ack from the hub: reply at once, flagged so the hub does not
      * re-ack it (keeps the freshness window alive without a ping-pong). */
@@ -393,8 +426,24 @@ void setup() {
                        cfg.chan ? cfg.chan : 1, cfg.hub_mac[0], cfg.hub_mac[1],
                        cfg.hub_mac[2], cfg.hub_mac[3], cfg.hub_mac[4], cfg.hub_mac[5]);
   } else {
+    now_sta_mac(g_own_mac);
+    /* §6.3: one stable nonce per pairing attempt — generate once, persist,
+     * repeat inside every PAIR_REQ beacon (the hub's code derives from it). */
+    static const uint8_t kZero[8] = {0};
+    if (!memcmp(cfg.pair_nonce, kZero, 8)) {
+      for (int i = 0; i < 2; i++) {
+        const uint32_t r = hal.random32();
+        memcpy(cfg.pair_nonce + 4 * i, &r, 4);
+      }
+      persist_now();
+    }
+    eng.set_pair_nonce(cfg.pair_nonce);
     if (!nowt.begin(cfg.chan ? cfg.chan : 1)) Serial.println(F("ESP-NOW init FAILED"));
-    else Serial.println(F("ESP-NOW up: unpaired (beaconing HELLO every 5 s)"));
+    else
+      Serial.printf("ESP-NOW up: unpaired, beaconing HELLO+PAIR_REQ every 5 s"
+                    " (mac %02X:%02X:%02X:%02X:%02X:%02X)\n",
+                    g_own_mac[0], g_own_mac[1], g_own_mac[2], g_own_mac[3], g_own_mac[4],
+                    g_own_mac[5]);
   }
 
   cli_ctx = CliCtx{};
@@ -408,6 +457,9 @@ void setup() {
   cli_ctx.nowt = &nowt;
   cli_ctx.bench_mode = &bench_mode;
   cli_ctx.time_ok = &time_ok;
+  cli_ctx.pair_acc = &g_pair_acc;
+  cli_ctx.pair_hub_mac = g_pair_hub_mac;
+  cli_ctx.pair_acc_valid = &g_pair_acc_valid;
   cli_ctx.persist_fn = persist_now;
   cli_ctx.erase_fn = erase_config;
 

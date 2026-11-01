@@ -87,6 +87,9 @@ struct LinkHandlers {
   void (*on_feed_result)(uint8_t node_id, const feed_result_payload_t &pl) = nullptr;
   void (*on_heartbeat)(uint8_t node_id, const heartbeat_payload_t &pl, int8_t rssi) = nullptr;
   void (*on_pair_req)(const uint8_t mac[6], const pair_req_payload_t &pl, int8_t rssi) = nullptr;
+  /* node side: PAIR_ACCEPT for an unpaired node (§6.3.5) — code + wrapped key */
+  void (*on_pair_accept)(const uint8_t mac[6], const pair_accept_payload_t &pl,
+                         int8_t rssi) = nullptr;
   void (*on_feed_unknown)(uint32_t feed_id, uint8_t node_id) = nullptr;
   void (*on_schedule_ack)(uint8_t node_id, const ack_status_payload_t &pl) = nullptr;
   void (*on_config_ack)(uint8_t node_id, const ack_status_payload_t &pl) = nullptr;
@@ -191,6 +194,14 @@ class LinkEngine {
     self_node_id_ = self_node_id;
     beacon_state_ = beacon_state;
   }
+  /* Node pairing nonce (§6.3): stable per pairing attempt so the hub's
+   * code stays valid across beacons. The app generates + persists it; the
+   * engine only repeats it inside every unpaired PAIR_REQ. */
+  void set_pair_nonce(const uint8_t nonce[8]) {
+    memcpy(pair_nonce_, nonce, 8);
+    pair_nonce_set_ = true;
+  }
+  const uint8_t *pair_nonce() const { return pair_nonce_; }
   /* Node runtime bumps the hub peer's tx_seq into config before persisting. */
   void restore_tx_seq(uint16_t seq) {
     if (peer_count_) peers_[0].tx_seq = seq;
@@ -507,6 +518,14 @@ class LinkEngine {
         if (role_ == Role::Hub && handlers_.on_pair_req) handlers_.on_pair_req(src, pr, rssi);
         break;
       }
+      case MSG_PAIR_ACCEPT: {
+        if (plen < (int)sizeof(pair_accept_payload_t)) { stats_.rx_bad_len++; return; }
+        pair_accept_payload_t pa;
+        memcpy(&pa, pl, sizeof(pa));
+        if (role_ == Role::Node && handlers_.on_pair_accept)
+          handlers_.on_pair_accept(src, pa, rssi);
+        break;
+      }
       case MSG_TARE_OR_CAL:
         if (role_ == Role::Hub) stats_.test_rx++; /* bench loss-test marker */
         break;
@@ -554,9 +573,16 @@ class LinkEngine {
     }
 
     if (!has_peer()) {
-      /* unpaired: beacon so a hub can discover us (pairing UI is M3) */
+      /* unpaired: beacon HELLO + PAIR_REQ so a hub can discover us (§6.3.2) */
       if (now_ms - last_hello_ms_ >= UNPAIRED_HELLO_MS) {
         send_hello(now_ms);
+        /* §6.3.2: unpaired node announces itself so a hub with an open
+         * pairing window discovers it (same 5 s cadence, zero key). */
+        if (pair_nonce_set_) {
+          pair_req_payload_t pr{AIO_FW_VER, 0, {}};
+          memcpy(pr.node_nonce, pair_nonce_, 8);
+          send_pair_req(pr, now_ms);
+        }
         last_hello_ms_ = now_ms;
       }
       return;
@@ -704,6 +730,8 @@ class LinkEngine {
   uint8_t channel_ = 1;
   uint8_t self_node_id_ = 0;
   uint8_t beacon_state_ = 0; /* HELLO.state: 0 unpaired, 1 paired */
+  uint8_t pair_nonce_[8] = {0}; /* §6.3 pairing attempt nonce (app-persisted) */
+  bool pair_nonce_set_ = false;
   uint16_t bcast_seq_ = 0;
   PendingFeed pending_{};
   ResultQ result_q_{};

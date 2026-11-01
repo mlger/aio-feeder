@@ -1,9 +1,10 @@
 # Bench M4b — hub pairing flow (PLAN.md §6.3, §8.5)
 
-Hub side of OTA pairing, landed for M4b. The node side is still
-serial-provisioned (D29): node firmware does not send `PAIR_REQ` yet — until
-it does, this flow is exercised with the QEMU sim candidate and the host
-tests, and on the bench via the serial CLI.
+Full OTA pairing, hub **and** node side. An unpaired node beacons
+`HELLO` + `PAIR_REQ` every 5 s (stable persisted nonce, §6.3.2); the hub's
+60 s window picks it up; after the user confirms the 4-digit code both ways,
+the hub commits (key wrapped under the code, registry + peer + NVS) and the
+node unwraps + stores the key on `pairok`.
 
 ## What the hub does now
 
@@ -53,7 +54,34 @@ pairing screen (`hub/main/ui/ui.cpp`) renders each step. Captured in the CI
 `qemu-hub` job as `pairing.png`, `pairing_code.png`, `pairing_form.png`,
 `pairing_done.png` (artifact `hub-ui-screens`).
 
-## Bench procedure (serial CLI)
+## Bench procedure (node side)
+
+Power the node unpaired — it prints its MAC and beacons:
+
+```
+ESP-NOW up: unpaired, beaconing HELLO+PAIR_REQ every 5 s (mac 02:xx:…)
+```
+
+Then drive the hub as above. When the hub commits, the node prints:
+
+```
+PAIR code 1234 from 02:00:00:00:00:01 — matches the hub screen? 'pairok' to accept, ignore to decline
+```
+
+Compare the digits with the hub screen (`pair status`), then:
+
+```
+pairok            → paired: id=4 chan=1 key stored (wrapped, never on air in the clear)
+link              → hub peer up, heartbeats flowing
+```
+
+A mismatched/stale accept is ignored (the node re-derives the code from its
+own nonce + the accept's hub nonce). `pair <hub_mac>` (serial key
+provisioning) still works as the fallback path. The config blob grew by the
+8-byte `pair_nonce`; existing saved configs fall back to defaults on first
+boot after this update (bench-only impact, pre-deployment).
+
+## Bench procedure (hub, serial CLI)
 
 ```
 aio-feeder> pair open
@@ -66,6 +94,6 @@ committed — PAIR_ACCEPT sent
 aio-feeder> peers                # new peer listed, heartbeats flowing
 ```
 
-`pair close` cancels; the window also self-expires after 60 s. Once node
-firmware sends `PAIR_REQ` (button held at boot) and unwraps the key on its
-side, this becomes the end-to-end OTA pairing path (next M4b step).
+`pair close` cancels; the window also self-expires after 60 s. With the
+node beacons + `pairok` above this is the full end-to-end OTA pairing path
+(§6.3) — the key crosses the air only XOR-masked under the confirmed code.
