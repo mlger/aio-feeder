@@ -897,13 +897,16 @@ extern "C" void app_main(void) {
            (unsigned long)reg.data().feed_id_seq);
   }
 
-  xTaskCreate(aio_loop_task, "aio-loop", 8192, nullptr, 5, nullptr);
+  xTaskCreate(aio_loop_task, "aio-loop", 6144, nullptr, 5, nullptr);
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
   aio::ui::start(); /* LVGL dashboard + AIO_SHOT markers (QEMU shot build) */
 #endif
 
-  /* bench REPL on UART0 */
+#if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
+  /* bench REPL on UART0 — skipped in the QEMU shot build: the REPL task
+   * stack + console state are several KB of internal heap the LVGL build
+   * needs more than an interactive shell it cannot expose. */
   esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();
   repl_cfg.prompt = "aio-feeder";
   repl_cfg.max_cmdline_length = 200;
@@ -917,4 +920,7 @@ extern "C" void app_main(void) {
   } else {
     printf("console REPL init FAILED (commands unavailable)\n");
   }
+#else
+  printf("ready (shot build — REPL off)\n");
+#endif
 }
