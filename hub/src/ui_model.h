@@ -792,6 +792,85 @@ static inline AlertsView build_alerts(const HubRegistry &reg, const EventLog &lo
   return v;
 }
 
+/* --- pairing (§6.3, §8.5, D14/D29) --------------------------------------------------- */
+
+constexpr uint8_t PAIR_MAX_CANDIDATES = 4; /* discovery list size */
+constexpr uint32_t PAIR_CAP_MIN = 1;       /* §9.7: capacity range */
+constexpr uint32_t PAIR_CAP_MAX = 100000;
+
+/* The three steps of the pairing screen, one PairingView snapshot per step.
+ * PAIR_IDLE = no pairing window open (dashboard shows nothing). */
+enum PairStep : uint8_t {
+  PAIR_IDLE = 0,   /* window closed */
+  PAIR_DISCOVER,   /* window open — discovery list */
+  PAIR_CODE,       /* 4-digit code shown, user compares with the node */
+  PAIR_FORM,       /* name, mech template, hopper size + amount now */
+  PAIR_DONE,       /* committed, PAIR_ACCEPT sent */
+};
+
+struct PairCandidateRow {
+  uint8_t mac[6] = {0};
+  uint16_t fw_ver = 0;
+  int8_t rssi = 0;
+  bool selected = false;
+};
+
+struct PairingView {
+  PairStep step = PAIR_IDLE;
+  uint16_t window_left_s = 0; /* seconds left of the 60 s window */
+
+  uint8_t cand_count = 0;
+  PairCandidateRow cand[PAIR_MAX_CANDIDATES];
+
+  uint8_t code_digits[4] = {'-', '-', '-', '-'}; /* ASCII, PAIR_CODE step */
+
+  /* form state (PAIR_FORM); cap_* carry the template defaults until edited */
+  char name[13] = "";  /* 12 chars + NUL; "" = default "feeder<id>" */
+  uint8_t mech_sel = 0;      /* 0 gate · 1 auger · 2 pump */
+  uint32_t cap_total = 1500; /* full hopper/reservoir (g or ml) */
+  uint32_t cap_now = 0;      /* amount in it now */
+
+  /* live capacity summary (§8 UX rules) */
+  uint8_t pct_full = 0;
+  uint32_t to_fill = 0;
+  bool amber = false; /* ≤ 20 % full */
+  char summary[48] = "";
+
+  uint8_t new_node_id = 0; /* PAIR_DONE: id assigned by the registry */
+};
+
+/* Mech template defaults (§8.5): 1500 g gate / 5000 g auger / 1000 ml pump. */
+static inline uint32_t pair_template_capacity(uint8_t mech_sel) {
+  switch (mech_sel) {
+    case 1: return 5000; /* auger */
+    case 2: return 1000; /* pump */
+    default: return 1500; /* gate */
+  }
+}
+static inline const char *pair_template_unit(uint8_t mech_sel) {
+  return mech_sel == 2 ? "ml" : "g";
+}
+
+/* §9.7: reject total out of [1, 100000] and amount above total. */
+static inline bool pair_capacity_valid(uint32_t cap_total, uint32_t cap_now) {
+  return cap_total >= PAIR_CAP_MIN && cap_total <= PAIR_CAP_MAX &&
+         cap_now <= cap_total;
+}
+
+/* Fill the live summary fields from cap_total/cap_now (call after editing). */
+static inline void pair_capacity_summary(PairingView *v) {
+  if (!v) return;
+  v->pct_full = v->cap_total
+                    ? (uint8_t)((v->cap_now * 100 + v->cap_total / 2) / v->cap_total)
+                    : 0;
+  if (v->pct_full > 100) v->pct_full = 100;
+  v->to_fill = v->cap_now <= v->cap_total ? v->cap_total - v->cap_now : 0;
+  v->amber = v->pct_full <= 20;
+  snprintf(v->summary, sizeof(v->summary), "About %u %% full · %lu %s to fill",
+           (unsigned)v->pct_full, (unsigned long)v->to_fill,
+           pair_template_unit(v->mech_sel));
+}
+
 }  // namespace ui
 }  // namespace aio
 
