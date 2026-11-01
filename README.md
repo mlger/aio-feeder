@@ -155,6 +155,7 @@ screenshot run. The **node side** ships too: unpaired nodes beacon
 pairing with the key never in the clear (see `docs/bench-m4b.md`). Next:
 settings/wizard screens, calibration wizard, PIN, backup/export.
 
-Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**, **v0.4.0** (M4a hub UI). Cut the next one the same way —
+Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**, **v0.4.0** (M4a hub UI), **v0.5.0**
+(M4b pairing, hub + node). Cut the next one the same way —
 `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the firmware zips
 to a GitHub Release automatically.
