@@ -535,15 +535,15 @@ static void build_detail_screen() {
 
   /* schedule + recent-feeds panels: one multi-line label each — the pool
    * budget forbids per-row widgets (see the statics note) */
-  s_det_sched_panel = new_panel(col, UI_W - 20, 0, C_PANEL);
-  lv_obj_set_style_pad_all(s_det_sched_panel, 6, 0);
-  s_det_sched_lbl = new_label(s_det_sched_panel, "", &lv_font_montserrat_12, C_TEXT);
+  lv_obj_t *sched_panel = new_panel(col, UI_W - 20, 0, C_PANEL);
+  lv_obj_set_style_pad_all(sched_panel, 6, 0);
+  s_det_sched_lbl = new_label(sched_panel, "", &lv_font_montserrat_12, C_TEXT);
   lv_label_set_long_mode(s_det_sched_lbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(s_det_sched_lbl, UI_W - 44);
 
-  s_det_ev_panel = new_panel(col, UI_W - 20, 0, C_PANEL);
-  lv_obj_set_style_pad_all(s_det_ev_panel, 6, 0);
-  s_det_ev_lbl = new_label(s_det_ev_panel, "", &lv_font_montserrat_12, C_TEXT);
+  lv_obj_t *ev_panel = new_panel(col, UI_W - 20, 0, C_PANEL);
+  lv_obj_set_style_pad_all(ev_panel, 6, 0);
+  s_det_ev_lbl = new_label(ev_panel, "", &lv_font_montserrat_12, C_TEXT);
   lv_label_set_long_mode(s_det_ev_lbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(s_det_ev_lbl, UI_W - 44);
 
