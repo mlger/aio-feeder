@@ -1,6 +1,7 @@
 /* AIO Feeder hub — M0 build stub (PLAN.md M0).
  * Real firmware structure per §7.2 (ui/radio/sched/net/storage/feed_manager tasks). */
 #include <Arduino.h>
+#include "proto.h"
 
 #ifndef AIO_FIRMWARE_NAME
 #define AIO_FIRMWARE_NAME "aio-feeder-hub"

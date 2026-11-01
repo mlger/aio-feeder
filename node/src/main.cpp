@@ -2,6 +2,7 @@
  * Real node structure per §7.3: cooperative loop + actuator FSM + relay-off
  * hardware timer. Safety requirements (§3.3) apply before any real actuation. */
 #include <Arduino.h>
+#include "proto.h"
 
 #ifndef AIO_FIRMWARE_NAME
 #define AIO_FIRMWARE_NAME "aio-feeder-node"

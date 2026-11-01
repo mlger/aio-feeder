@@ -84,9 +84,16 @@ typedef struct __attribute__((packed)) {
   uint8_t reason;
 } feed_ack_payload_t;
 
-_Static_assert(sizeof(frame_t) == FRAME_HEADER_SIZE + FRAME_MAX_PAYLOAD + FRAME_MAC_SIZE,
-               "frame_t layout drifted");
-_Static_assert(sizeof(feed_payload_t) == 8, "feed_payload_t layout drifted");
+/* C11 _Static_assert vs C++11 static_assert — one spelling per language. */
+#if defined(__cplusplus)
+#define AIO_STATIC_ASSERT(cond, msg) static_assert(cond, msg)
+#else
+#define AIO_STATIC_ASSERT(cond, msg) _Static_assert(cond, msg)
+#endif
+
+AIO_STATIC_ASSERT(sizeof(frame_t) == FRAME_HEADER_SIZE + FRAME_MAX_PAYLOAD + FRAME_MAC_SIZE,
+                  "frame_t layout drifted");
+AIO_STATIC_ASSERT(sizeof(feed_payload_t) == 8, "feed_payload_t layout drifted");
 
 #ifdef __cplusplus
 }
