@@ -1,0 +1,64 @@
+name: Build & test
+
+# Reusable workflow: host unit tests + all firmware targets.
+# Called by ci.yml (every push/PR) and release.yml (semver tags).
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Run host tests (Unity, native)
+        run: pio test -d test
+
+  firmware:
+    name: Build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { project: hub, env: hub_esp32s3 }
+          - { project: node, env: node_esp8266 }
+          - { project: node, env: node_esp32c3 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build
+        run: pio run -d ${{ matrix.project }} -e ${{ matrix.env }}
+      - name: Collect flashable parts
+        run: |
+          mkdir -p collect
+          BD=${{ matrix.project }}/.pio/build/${{ matrix.env }}
+          for f in firmware partitions bootloader boot_app0; do
+            cp -f "$BD/$f.bin" collect/ 2>/dev/null || true
+          done
+          # espressif8266: firmware.bin is one image with eboot embedded,
+          # flashed at 0x0 — no bootloader part exists or is needed.
+          # Arduino OTA data partition image, if PIO didn't copy it into the build dir
+          if [ ! -f collect/boot_app0.bin ] && [ "${{ matrix.env }}" != "node_esp8266" ]; then
+            cp -f "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" collect/boot_app0.bin
+          fi
+          ls -la collect
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fw-${{ matrix.env }}
+          path: collect
+          if-no-files-found: error

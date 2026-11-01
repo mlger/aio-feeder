@@ -1,0 +1,51 @@
+# Path → label rules for actions/labeler@v5.
+# Labels must exist in the repo (docs/SETUP.md / README "Automation" notes them).
+
+area:hub:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "hub/**"
+
+area:node:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "node/**"
+
+area:node-core:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "node_core/**"
+
+area:link:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "lib/proto/**"
+          - "link_core/**"
+
+tests:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "test/**"
+
+web:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "web/**"
+
+docs:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "*.md"
+          - "AGENTS.md"
+
+ci:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+          - "tools/**"
+
+hardware:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "hardware/**"

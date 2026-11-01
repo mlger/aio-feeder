@@ -1,0 +1,49 @@
+name: Release
+
+# Semantic versioning: cut a release by pushing a vX.Y.Z tag.
+# fix: -> patch, feat: -> minor, feat!/BREAKING CHANGE -> major
+# (choose the bump from the commits since the previous tag).
+
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Tests & firmware
+    uses: ./.github/workflows/build.yml
+
+  release:
+    name: Attach firmware to GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fw-*
+          path: dist
+      - name: Zip firmware per target
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          mkdir -p out
+          for d in dist/fw-*; do
+            env="${d#dist/fw-}"
+            zip -qj "out/aio-feeder-${TAG}-${env}.zip" "$d"/*
+          done
+          ls -la out
+      - name: Create GitHub Release (notes from commits since previous tag)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" --clobber out/*.zip
+          else
+            gh release create "$TAG" --title "$TAG" --generate-notes out/*.zip
+          fi
