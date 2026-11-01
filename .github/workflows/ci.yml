@@ -51,7 +51,7 @@ jobs:
             --qemu "$QEMU_BIN" \
             --flash hub/build/flash.img \
             --elf hub/build/aio-feeder-hub.elf \
-            --screens dashboard,node_detail,sched_editor,history,alerts,pairing,pairing_code,pairing_form,pairing_done --out screens --timeout 320
+            --screens dashboard,node_detail,sched_editor,history,alerts,pairing,pairing_code,pairing_form,pairing_done,calib,calib_weigh,calib_done --out screens --timeout 320
       - name: Serial log tail (diagnosis)
         if: failure()
         run: tail -120 serial.log || true
@@ -78,6 +78,9 @@ jobs:
           test -f screens/pairing_code.png
           test -f screens/pairing_form.png
           test -f screens/pairing_done.png
+          test -f screens/calib.png
+          test -f screens/calib_weigh.png
+          test -f screens/calib_done.png
       - name: Upload UI screenshots
         uses: actions/upload-artifact@v4
         with:

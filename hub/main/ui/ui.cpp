@@ -74,6 +74,9 @@ static volatile uint32_t s_alr_seq = 0;
 static PairingView s_pair_snap[2];
 static volatile uint32_t s_pair_seq = 0;
 static uint32_t s_pair_seen = 0;
+static CalibView s_cal_snap[2];
+static volatile uint32_t s_cal_seq = 0;
+static uint32_t s_cal_seen = 0;
 static uint32_t s_seen = 0;
 static uint32_t s_det_seen = 0;
 static uint32_t s_edit_seen = 0;
@@ -115,6 +118,12 @@ void publish_pairing(const PairingView &p) {
   const uint32_t s = s_pair_seq;
   s_pair_snap[s & 1] = p;
   s_pair_seq = s + 1;
+}
+
+void publish_calib(const CalibView &c) {
+  const uint32_t s = s_cal_seq;
+  s_cal_snap[s & 1] = c;
+  s_cal_seq = s + 1;
 }
 
 uint8_t detail_node() { return s_detail_id; }
@@ -180,6 +189,13 @@ static lv_obj_t *s_pair_left_lbl = nullptr; /* window countdown */
 static lv_obj_t *s_pair_cand_lbl = nullptr; /* discovery list, multi-line */
 static lv_obj_t *s_pair_code_lbl = nullptr; /* big digits (CODE step) */
 static lv_obj_t *s_pair_body_lbl = nullptr; /* multi-line body (all steps) */
+
+/* calibration wizard screen (§8.4, M4b) */
+static lv_obj_t *s_cal_scr = nullptr;
+static lv_obj_t *s_cal_head_lbl = nullptr;  /* step title */
+static lv_obj_t *s_cal_left_lbl = nullptr;  /* dispense countdown */
+static lv_obj_t *s_cal_list_lbl = nullptr;  /* rate + runs summary */
+static lv_obj_t *s_cal_body_lbl = nullptr;  /* per-step hint + note */
 
 struct Card {
   lv_obj_t *root = nullptr;
@@ -1242,6 +1258,145 @@ static void update_pairing(const PairingView &v) {
   }
 }
 
+/* --- calibration wizard screen (§8.4, §9.3) ------------------------------------------- */
+
+static void cal_rate_text(uint16_t rate_x100, uint8_t mech_sel, char *buf, size_t n) {
+  /* ms per unit × 100 → "20.0 g/s" (§8.4: results show as g/s) */
+  const uint32_t x10 = cal_g_per_s_x10(rate_x100);
+  snprintf(buf, n, "%lu.%lu %s/s", (unsigned long)(x10 / 10),
+           (unsigned long)(x10 % 10), cal_unit_label(mech_sel));
+}
+
+static void cal_list_text(const CalibView &v, char *buf, size_t n) {
+  char rate[24], was[24];
+  cal_rate_text(v.median_x100 ? v.median_x100 : v.old_rate_x100, v.mech_sel, rate,
+                sizeof(rate));
+  cal_rate_text(v.old_rate_x100, v.mech_sel, was, sizeof(was));
+  size_t off = 0;
+  off += (size_t)snprintf(buf + off, n - off, "F%u %s (%s)\n", (unsigned)v.node_id,
+                          v.name[0] ? v.name : "?", pair_mech_name(v.mech_sel));
+  if (v.median_x100)
+    off += (size_t)snprintf(buf + off, n - off, "Median: %s\n", rate);
+  off += (size_t)snprintf(buf + off, n - off, "Was: %s\nTest: %lu s (max %lu)\n",
+                          was, (unsigned long)v.test_s, (unsigned long)v.max_test_s);
+  if (v.step == CAL_RUNTIME || v.step == CAL_DISPENSE)
+    off += (size_t)snprintf(buf + off, n - off, "Run: about %lu %s\n",
+                            (unsigned long)v.test_grams,
+                            cal_unit_label(v.mech_sel));
+  for (int i = 0; i < v.sample_count && off + 24 < n; i++) {
+    off += (size_t)snprintf(buf + off, n - off, "Run %d: %lu.%02lu %s in %lu ms\n",
+                            i + 1, (unsigned long)(v.samples[i].grams_x100 / 100),
+                            (unsigned long)(v.samples[i].grams_x100 % 100),
+                            cal_unit_label(v.mech_sel),
+                            (unsigned long)v.samples[i].on_ms);
+  }
+}
+
+static void build_calib_screen() {
+  s_cal_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_cal_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_cal_scr, 0, 0);
+
+  /* header */
+  lv_obj_t *header = new_panel(s_cal_scr, UI_W, 30, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_right(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  s_cal_head_lbl = new_label(header, "Calibration", &lv_font_montserrat_16, C_TEXT);
+  lv_obj_t *spacer = lv_obj_create(header);
+  lv_obj_set_size(spacer, 1, 1);
+  lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(spacer, 0, 0);
+  lv_obj_set_flex_grow(spacer, 1);
+  s_cal_left_lbl = new_label(header, "", &lv_font_montserrat_14, C_MUTED);
+
+  /* list lane (38..102, fixed like the pairing screen — the QEMU build has
+   * no LVGL heap to spare for per-row widgets) */
+  s_cal_list_lbl = new_label(s_cal_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_obj_set_pos(s_cal_list_lbl, 10, 38);
+
+  /* body lane (110..): per-step hint, note folded in */
+  s_cal_body_lbl = new_label(s_cal_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_label_set_long_mode(s_cal_body_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_cal_body_lbl, UI_W - 20);
+  lv_obj_set_pos(s_cal_body_lbl, 10, 110);
+}
+
+static void update_calib(const CalibView &v) {
+  char buf[240];
+  if (s_cal_head_lbl) {
+    static const char *TITLES[] = {"Calibration", "Calibrate a feeder",
+                                   "Calibrating", "Weigh the run",
+                                   "Calibrated"};
+    lv_label_set_text(s_cal_head_lbl, TITLES[v.step]);
+  }
+  if (s_cal_left_lbl) {
+    if (v.step == CAL_DISPENSE) {
+      snprintf(buf, sizeof(buf), "%lus left", (unsigned long)v.left_s);
+      lv_label_set_text(s_cal_left_lbl, buf);
+    } else {
+      lv_label_set_text(s_cal_left_lbl, "");
+    }
+  }
+
+  if (s_cal_list_lbl) {
+    if (v.step == CAL_IDLE)
+      buf[0] = '\0';
+    else
+      cal_list_text(v, buf, sizeof(buf));
+    lv_label_set_text(s_cal_list_lbl, buf);
+  }
+
+  if (s_cal_body_lbl) {
+    buf[0] = '\0';
+    switch (v.step) {
+      case CAL_IDLE:
+        snprintf(buf, sizeof(buf),
+                 "Open from a feeder's page.\n\nA test run measures the flow\nrate so feeds match grams.");
+        break;
+      case CAL_RUNTIME:
+        if (v.note[0]) {
+          snprintf(buf, sizeof(buf), "%s\n\nRun again or save the median.", v.note);
+        } else if (v.sample_count) {
+          snprintf(buf, sizeof(buf),
+                   "Keep the food that came out,\nweigh the next run, or save\nthe median now.");
+        } else {
+          snprintf(buf, sizeof(buf),
+                   "Put a bowl under the gate and\nrun the test. Weigh what came\nout (min 5 g, §9.3).");
+        }
+        break;
+      case CAL_DISPENSE:
+        snprintf(buf, sizeof(buf),
+                 "Dispensing about %lu %s...\n\nThe node enforces its own caps\nwhile it runs.",
+                 (unsigned long)v.test_grams, cal_unit_label(v.mech_sel));
+        break;
+      case CAL_WEIGH:
+        snprintf(buf, sizeof(buf),
+                 "Weigh the food from run %u.\nHow much came out? (min 5 %s)\nOn-time was %lu ms.",
+                 (unsigned)(v.sample_count + 1), cal_unit_label(v.mech_sel),
+                 (unsigned long)v.weigh_on_ms);
+        break;
+      case CAL_DONE:
+        snprintf(buf, sizeof(buf),
+                 "Feeder #%u calibrated — saved\nto the profile and pushed.\n\nRe-run when the food or the\nhopper changes (§9.3).",
+                 (unsigned)v.saved_node_id);
+        break;
+    }
+    lv_label_set_text(s_cal_body_lbl, buf);
+    /* amber while a note / rejection is showing (§8 UX) */
+    lv_obj_set_style_text_color(s_cal_body_lbl,
+                                lv_color_hex(v.note[0] && v.step == CAL_RUNTIME ? C_ALERT
+                                                                                : C_TEXT),
+                                0);
+  }
+}
+
 /* --- LVGL plumbing ----------------------------------------------------------------- */
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -1264,6 +1419,7 @@ static void ui_task(void *) {
   build_history_screen();
   build_alerts_screen();
   build_pairing_screen();
+  build_calib_screen();
   lv_screen_load(s_scr);
 
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -1273,7 +1429,9 @@ static void ui_task(void *) {
 
   /* deterministic rotation for the QEMU screenshot run: each screen gets a
    * 25 s window, then the cycle repeats (the runner grabs one shot per
-   * screen name). On hardware this is replaced by touch navigation (M4b). */
+   * screen name). On hardware this is replaced by touch navigation (M5).
+   * Slot drivers in main.cpp mirror the slot index (pairing = 5, calib = 6,
+   * modulus SH_COUNT). */
   enum ShotScreen {
     SH_DASH = 0,
     SH_DETAIL = 1,
@@ -1281,6 +1439,7 @@ static void ui_task(void *) {
     SH_HIST = 3,
     SH_ALERTS = 4,
     SH_PAIR = 5, /* slot index mirrored by the pairing driver in main.cpp */
+    SH_CAL = 6,  /* slot index mirrored by the calibration driver in main.cpp */
     SH_COUNT
   };
   constexpr uint32_t SHOT_WINDOW_MS = 25000;
@@ -1299,7 +1458,8 @@ static void ui_task(void *) {
                      : shot == SH_EDIT    ? s_ed_scr
                      : shot == SH_HIST    ? s_hi_scr
                      : shot == SH_ALERTS  ? s_alr_scr
-                                          : s_pair_scr);
+                     : shot == SH_PAIR    ? s_pair_scr
+                                          : s_cal_scr);
       loaded = shot;
       s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
     }
@@ -1334,6 +1494,11 @@ static void ui_task(void *) {
       update_pairing(s_pair_snap[(ps - 1) & 1]);
       s_pair_seen = ps;
     }
+    const uint32_t cs = s_cal_seq;
+    if (cs != s_cal_seen) {
+      update_calib(s_cal_snap[(cs - 1) & 1]);
+      s_cal_seen = cs;
+    }
 
     lv_timer_handler();
 
@@ -1356,6 +1521,15 @@ static void ui_task(void *) {
                       : pv.step == PAIR_FORM ? "pairing_form"
                       : pv.step == PAIR_DONE ? "pairing_done"
                                              : "pairing";
+          break;
+        }
+        case SH_CAL: {
+          /* the driver in main.cpp paces the flow so WEIGH and DONE hold
+           * across a marker beat; RUNTIME/DISPENSE share "calib" */
+          const CalibView &cv = s_cal_snap[(s_cal_seq - 1) & 1];
+          shot_name = cv.step == CAL_WEIGH ? "calib_weigh"
+                      : cv.step == CAL_DONE ? "calib_done"
+                                            : "calib";
           break;
         }
         default: break;
@@ -1382,6 +1556,7 @@ void publish_sched_editor(const SchedEditor &) {}
 void publish_history(const HistoryView &) {}
 void publish_alerts(const AlertsView &) {}
 void publish_pairing(const PairingView &) {}
+void publish_calib(const CalibView &) {}
 uint8_t detail_node() { return 1; }
 void set_detail_node(uint8_t) {}
 
