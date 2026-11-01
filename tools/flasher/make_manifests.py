@@ -68,7 +68,7 @@ TITLES = {
 
 
 def build_manifest(version: str, env: str) -> dict:
-    site_dir, family, parts = TARGETS[env]
+    site_dir, family, parts, _required = TARGETS[env]
     return {
         "name": TITLES[env],
         "version": version,
