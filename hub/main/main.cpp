@@ -1494,7 +1494,7 @@ static void aio_loop_task(void *) {
         aio::ui::publish_pairing(g_pair.view(now));
         aio::ui::publish_calib(g_calib.view(now));
         /* settings + wizard snapshots (M4b screens; section via the driver) */
-        aio::SettingsView sv =
+        aio::ui::SettingsView sv =
             aio::ui::build_settings(reg, g_set, hub_unix_now(), g_sd_note,
                                     g_backup_count, g_backup_last,
                                     g_pin.blocks_settings(),
