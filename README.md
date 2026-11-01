@@ -149,8 +149,11 @@ confirmation code, name/mech/capacity form with §9.7 validation, per-node
 key generated and wrapped under the confirmed code, zero-key `PAIR_ACCEPT`,
 registry + link peer + NVS persistence; `pair` bench CLI drives it from
 serial and the LVGL pairing screen (all four steps) is captured in the QEMU
-screenshot run (see `docs/bench-m4b.md`). Next: node-side `PAIR_REQ` +
-unwrap, then settings/wizard screens.
+screenshot run. The **node side** ships too: unpaired nodes beacon
+`PAIR_REQ` (stable persisted nonce), verify the derived code on
+`PAIR_ACCEPT`, and unwrap + store the key on `pairok` — end-to-end OTA
+pairing with the key never in the clear (see `docs/bench-m4b.md`). Next:
+settings/wizard screens, calibration wizard, PIN, backup/export.
 
 Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**, **v0.4.0** (M4a hub UI). Cut the next one the same way —
 `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the firmware zips

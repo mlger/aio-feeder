@@ -10,6 +10,7 @@
 #define AIO_CLI_H
 
 #include <Arduino.h>
+#include "../../lib/proto/pairing.h"
 #include "../../link_core/link.h"
 #include "node_config.h"
 
@@ -30,6 +31,10 @@ struct CliCtx {
   aio::ILinkTransport *nowt;
   uint8_t *bench_mode;
   bool *time_ok;
+  /* OTA pairing stash (§6.3): pending PAIR_ACCEPT from handle_pair_accept */
+  pair_accept_payload_t *pair_acc;
+  uint8_t *pair_hub_mac;
+  bool *pair_acc_valid;
   uint16_t vin_mv;
   bool vin_present;
   void (*persist_fn)();
@@ -149,6 +154,8 @@ static void cli_help() {
   Serial.println(F("  reset                  soft restart"));
   Serial.println(F("M2 link:"));
   Serial.println(F("  pair <hub_mac>         pair with hub (generates + prints key)"));
+  Serial.println(F("  pairok                 accept pending PAIR_ACCEPT (unwrap + store key)"));
+  Serial.println(F("  pairstatus             show pending PAIR_ACCEPT + its code"));
   Serial.println(F("  key <hex>              set hub key manually (32/16 bytes)"));
   Serial.println(F("  id <n>                 set node id (1..255)"));
   Serial.println(F("  chan <1-13>            set ESP-NOW channel"));
@@ -370,6 +377,47 @@ static void cli_poll(CliCtx &c) {
       Serial.println();
       Serial.println(F("-> enter the same key on the hub: peer add <node_mac> <id> <key>"));
       c.persist_fn();
+    } else if (!strcmp(cmd, "pairok")) {
+      /* §6.3.5: unwrap the wrapped key under the confirmed code and store.
+       * The code digits were already verified against our nonce in the RX
+       * handler; pairok is the human confirmation that the hub screen shows
+       * the same digits. */
+      if (!*c.pair_acc_valid) {
+        Serial.println(F("no pending PAIR_ACCEPT (open the hub pairing window first)"));
+        continue;
+      }
+      uint8_t key[32];
+      pairing_unwrap_key(c.pair_acc->wrapped_key, c.pair_acc->code_digits,
+                         c.cfg->pair_nonce, c.pair_acc->hub_nonce, key);
+      memcpy(c.cfg->hub_key, key, 32);
+      c.cfg->hub_key_len = 32;
+      memcpy(c.cfg->hub_mac, c.pair_hub_mac, 6);
+      if (c.pair_acc->node_id) c.cfg->node_id = c.pair_acc->node_id;
+      if (c.pair_acc->channel >= 1 && c.pair_acc->channel <= 13)
+        c.cfg->chan = c.pair_acc->channel;
+      c.cfg->paired = 1;
+      c.eng->clear_peers();
+      c.eng->add_peer(c.cfg->hub_mac, aio::LINK_HUB_ID, c.cfg->hub_key,
+                      c.cfg->hub_key_len);
+      c.eng->set_self(c.cfg->node_id, 1);
+      if (c.nowt) c.nowt->set_channel(c.cfg->chan);
+      c.eng->set_channel(c.cfg->chan);
+      *c.pair_acc_valid = false;
+      c.persist_fn();
+      Serial.printf("paired: id=%u chan=%u key stored (wrapped, never on air in the clear)\n",
+                    c.cfg->node_id, c.cfg->chan);
+    } else if (!strcmp(cmd, "pairstatus")) {
+      if (!*c.pair_acc_valid) {
+        Serial.println(F("no pending PAIR_ACCEPT"));
+      } else {
+        Serial.printf("pending from %02X:%02X:%02X:%02X:%02X:%02X code=%c%c%c%c node_id=%u"
+                      " chan=%u — 'pairok' to accept\n",
+                      c.pair_hub_mac[0], c.pair_hub_mac[1], c.pair_hub_mac[2],
+                      c.pair_hub_mac[3], c.pair_hub_mac[4], c.pair_hub_mac[5],
+                      c.pair_acc->code_digits[0], c.pair_acc->code_digits[1],
+                      c.pair_acc->code_digits[2], c.pair_acc->code_digits[3],
+                      c.pair_acc->node_id, c.pair_acc->channel);
+      }
     } else if (!strcmp(cmd, "key")) {
       if (!a1) { Serial.println(F("usage: key <hex32|hex16>")); continue; }
       if (!parse_key(a1, c.cfg->hub_key, &c.cfg->hub_key_len)) {
