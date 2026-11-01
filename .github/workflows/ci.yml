@@ -60,10 +60,7 @@ jobs:
         run: |
           ADDR2LINE=$(find /opt/esp/tools -name '*addr2line' | head -1)
           echo "addr2line: $ADDR2LINE"
-          BT=$(grep -o 'Backtrace:.*' serial.log | head -1 | python3 -c "
-import sys, re
-addrs = re.findall(r'0x([0-9a-f]+):', sys.stdin.read())
-print(' '.join(addrs))")
+          BT=$(grep -o 'Backtrace:.*' serial.log | head -1 | python3 -c "import sys,re; print(' '.join(re.findall(r'0x([0-9a-f]+):', sys.stdin.read())))")
           echo "frames: $BT"
           for a in $BT; do $ADDR2LINE -e hub/build/aio-feeder-hub.elf -f -C -p 0x$a || true; done
       - name: Boot smoke assertions
