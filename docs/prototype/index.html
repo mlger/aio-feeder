@@ -1,0 +1,1560 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIO Feeder — Hub Display</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 96 96%27%3E%3Crect width=%2796%27 height=%2796%27 rx=%2718%27 fill=%27%230d1216%27/%3E%3Cpath d=%27M22 22h52L56 48v14l-16 8V48z%27 fill=%27none%27 stroke=%27%232dd4bf%27 stroke-width=%276%27 stroke-linejoin=%27round%27/%3E%3Ccircle cx=%2748%27 cy=%2780%27 r=%275%27 fill=%27%232dd4bf%27/%3E%3C/svg%3E">
+<style>
+/* OD-LAYOUT-PRIMITIVES v1 — structure only: display, flex/grid, overflow, wrapping, ratio, geometry.
+   Put this @layer first; product CSS outside the layer wins ordinary layout rules.
+   Native hidden and closed-dialog states take precedence over component display rules. */
+@layer od-layout {
+  [hidden]:not([hidden="until-found" i]) { display: none !important; }
+  dialog:not([open]) { display: none !important; }
+
+  :where(.od-stack,.od-row,.od-row-top,.od-cluster,.od-grid,.od-field,.od-stat,.od-cell,.od-tile) > :where(*) { min-width: 0; }
+
+  /* containers */
+  .od-stack   { display: flex; flex-direction: column; gap: var(--od-gap, 8px); }
+  .od-row     { display: flex; align-items: center; gap: var(--od-gap, 8px); }
+  .od-row-top { display: flex; align-items: flex-start; gap: var(--od-gap, 8px); }
+  .od-cluster { display: flex; flex-wrap: wrap; align-items: center; gap: var(--od-gap, 8px); }
+  .od-fill    { flex: 1 1 0; min-width: 0; }
+  .od-fixed   { flex: none; }
+  .od-grid    { display: grid; gap: var(--od-gap, 12px); grid-template-columns: repeat(var(--od-cols, 3), minmax(0, 1fr)); }
+
+  /* stacked information: each piece is its own line — never sibling inline spans */
+  .od-stat, .od-field, .od-cell { display: grid; gap: var(--od-gap, 2px); }
+  :where(.od-stat,.od-field,.od-cell) > :where(*) { display: block; }
+  .od-tile { display: grid; grid-template-rows: auto 1fr; }
+  :where(.od-tile) > :where(*) { display: block; }
+
+  /* media keeps its intrinsic ratio by default; never a distorted or cropped
+     cover by accident. height:auto lets the ratio win over an <img height="…">
+     attribute. Cropping to a uniform box is an explicit opt-in: set --od-ratio
+     AND add .od-media-cover together (per the core rule, only where a crop is
+     deliberate — tile thumbs, decorative fills — never on full-frame content). */
+  .od-media { display: block; width: 100%; height: auto; aspect-ratio: var(--od-ratio, auto); }
+  .od-media-cover { object-fit: cover; }
+
+  /* functional inline SVG icons opt into bounded geometry; content SVGs keep their own */
+  .od-icon { display: inline-block; inline-size: var(--od-icon-size, 1em); block-size: var(--od-icon-size, 1em); flex: none; }
+
+  /* data text only — authored copy is rewritten to its budget instead */
+  .od-truncate { display: block; max-width: 100%; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+  .od-clamp-2, .od-clamp-3 { display: -webkit-box; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
+  .od-clamp-2 { -webkit-line-clamp: 2; }
+  .od-clamp-3 { -webkit-line-clamp: 3; }
+  .od-lines-2 { min-height: calc(2 * 1.4em); }   /* block-level reservation for a shared baseline */
+  .od-nowrap  { white-space: nowrap; }           /* 数字+单位 · 价格+起 · 日期+星期 */
+  .od-keep    { word-break: keep-all; overflow-wrap: anywhere; } /* CJK labels break at spaces / <wbr> first */
+
+  /* screen skeleton (optional): bars take their own space, the middle scrolls — no padding guessed for chrome */
+  .od-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100%; }
+  .od-scroll { overflow-y: auto; overscroll-behavior: contain; min-height: 0; }
+
+  /* horizontal rail: the next item peeks at the edge; trailing room survives overflow */
+  .od-rail { display: flex; gap: var(--od-gap, 8px); overflow-x: auto; scroll-snap-type: x proximity; scrollbar-width: none;
+             padding-inline: var(--od-rail-pad, 16px); scroll-padding-inline: var(--od-rail-pad, 16px); }
+  .od-rail::-webkit-scrollbar { display: none; }
+  :where(.od-rail) > :where(*) { flex: none; scroll-snap-align: start; }
+  :where(.od-rail) > :where(:last-child) { margin-inline-end: var(--od-rail-pad, 16px); }
+
+  .od-spacer { flex: none; visibility: hidden; pointer-events: none; }
+  .od-touch  { min-width: 44px; min-height: 44px; }
+}
+:root [hidden]:where(:not([hidden="until-found" i])) { display: none; }
+/* /OD-LAYOUT-PRIMITIVES v1 */
+
+/* ---------- Product tokens ---------- */
+:root {
+  --bg: #0d1216;
+  --surface: #151c22;
+  --surface-2: #1d2730;
+  --surface-3: #26333e;
+  --line: #2f3d49;
+  --text: #e9eff3;
+  --muted: #a3b3bf;
+  --accent: #2dd4bf;
+  --accent-ink: #04201c;
+  --ok: #4ade80;
+  --warn: #fbbf24;
+  --bad: #ff8a80;
+  --bad-solid: #b42318;
+  --focus: #ffffff;
+
+  --fs-cap: 14px;
+  --fs-body: 16px;
+  --fs-lead: 18px;
+  --fs-title: 22px;
+  --fs-big: 30px;
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-num: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+  --r-sm: 6px; --r-md: 10px;
+  --t-fast: 150ms; --t-med: 250ms;
+  --h-status: 40px; --h-nav: 64px; --tap: 48px;
+
+  --accent-hover: #5eead4; --warn-ink: #1a1200; --disabled-fg: #8a99a4;
+  --banner-bad-bg: #3a1714; --banner-bad-fg: #ffd4cf; --banner-warn-bg: #33280a; --banner-warn-fg: #ffe9a8;
+}
+html[data-theme="light"] {
+  --bg: #eef2f5; --surface: #ffffff; --surface-2: #e6ecf0; --surface-3: #d3dce3; --line: #aebbc6;
+  --text: #12202a; --muted: #4a5b68;
+  --accent: #0f766e; --accent-ink: #ffffff; --ok: #15803d; --warn: #9a4a05; --bad: #b42318; --bad-solid: #b42318;
+  --focus: #0b1620; --accent-hover: #115e59; --warn-ink: #ffffff; --disabled-fg: #5d6b76;
+  --banner-bad-bg: #fde4e1; --banner-bad-fg: #7a1810; --banner-warn-bg: #fdecc8; --banner-warn-fg: #5a2d00;
+}
+
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; background: #05080a; overflow: hidden; }
+body { font-family: var(--font-ui); color: var(--text); font-size: var(--fs-body); line-height: 1.5; }
+button, input, select { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+h1, h2, h3, p { margin: 0; }
+.num { font-family: var(--font-num); font-variant-numeric: tabular-nums; }
+.muted { color: var(--muted); }
+.cap { font-size: var(--fs-cap); color: var(--muted); line-height: 1.4; }
+
+/* ---------- Stage (fixed 800x480 panel, scaled to fit) ---------- */
+#stage { position: absolute; left: 50%; top: 50%; width: 800px; height: 480px; background: var(--bg); overflow: hidden; transform-origin: center; }
+#app { width: 800px; height: 480px; display: grid; grid-template-rows: var(--h-status) minmax(0, 1fr) var(--h-nav); }
+
+/* status bar */
+#status { display: flex; align-items: center; gap: var(--s4); padding: 0 var(--s4); background: var(--surface); border-bottom: 1px solid var(--line); font-size: var(--fs-cap); }
+#status .clock { font-size: var(--fs-lead); font-weight: 700; }
+#status .item { display: flex; align-items: center; gap: var(--s1); color: var(--muted); white-space: nowrap; }
+#status .item .od-icon { --od-icon-size: 16px; }
+#status .item.warn { color: var(--warn); font-weight: 700; }
+#status .item.warn { background: var(--banner-warn-bg); padding: 2px var(--s2); border-radius: var(--r-sm); }
+#status .sp { flex: 1; }
+#alertBadge { display: flex; align-items: center; gap: var(--s1); min-height: 32px; padding: 0 var(--s3); border-radius: 16px; border: 1px solid var(--line); background: var(--surface-2); font-weight: 600; }
+#alertBadge.has { border-color: var(--warn); color: var(--warn); }
+#alertBadge .od-icon { --od-icon-size: 16px; }
+
+/* nav */
+#nav { display: grid; grid-template-columns: repeat(5, 1fr); background: var(--surface); border-top: 1px solid var(--line); }
+#nav button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; border: 0; background: transparent; color: var(--muted); font-size: var(--fs-cap); font-weight: 600; position: relative; transition: color var(--t-fast), background var(--t-fast); }
+#nav button .od-icon { --od-icon-size: 26px; }
+#nav button[aria-current="page"] { color: var(--accent); background: var(--surface-2); }
+#nav button[aria-current="page"]::before { content: ""; position: absolute; top: 0; left: 24%; right: 24%; height: 3px; background: var(--accent); border-radius: 0 0 3px 3px; }
+#nav .nbadge { position: absolute; top: 6px; left: calc(50% + 10px); min-width: 20px; height: 20px; padding: 0 5px; border-radius: 10px; background: var(--warn); color: var(--warn-ink); font-size: 14px; font-weight: 700; line-height: 20px; text-align: center; }
+
+#view { min-height: 0; overflow: hidden; outline: none; }
+
+/* themed, touch-friendly scrollbar: slim track, high-contrast thumb, no layout shift */
+:root { --scroll-thumb: #6f8291; --scroll-thumb-hover: #9fb0bc; }
+html[data-theme="light"] { --scroll-thumb: #6b7c89; --scroll-thumb-hover: #3f505c; }
+.od-scroll, #dlg { scrollbar-width: thin; scrollbar-color: var(--scroll-thumb) transparent; scrollbar-gutter: stable; }
+.od-scroll::-webkit-scrollbar, #dlg::-webkit-scrollbar { width: 10px; height: 10px; }
+.od-scroll::-webkit-scrollbar-track, #dlg::-webkit-scrollbar-track { background: transparent; }
+.od-scroll::-webkit-scrollbar-thumb, #dlg::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 5px; border: 2px solid transparent; background-clip: content-box; }
+@media (hover: hover) { .od-scroll::-webkit-scrollbar-thumb:hover, #dlg::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); } }
+.screen { height: 100%; }
+.sbar { display: flex; align-items: center; gap: var(--s3); padding: var(--s2) var(--s4); min-height: 56px; border-bottom: 1px solid var(--line); }
+.sbar h1 { font-size: var(--fs-title); font-weight: 700; }
+.pad { padding: var(--s4); }
+
+/* buttons */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: var(--s2); min-height: var(--tap); padding: 0 var(--s4); border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface-2); color: var(--text); font-weight: 600; white-space: nowrap; transition: background var(--t-fast), border-color var(--t-fast); }
+.btn .od-icon { --od-icon-size: 20px; }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.danger { background: var(--bad-solid); border-color: var(--bad-solid); color: #fff; }
+.btn.sm { min-height: 44px; padding: 0 var(--s3); }
+.btn:disabled, .btn[aria-disabled="true"] { background: var(--surface); color: var(--disabled-fg); border-color: var(--line); cursor: not-allowed; }
+.btn.primary:disabled { background: var(--surface-3); color: var(--disabled-fg); border-color: var(--surface-3); }
+@media (hover: hover) { .btn:not(:disabled):hover { background: var(--surface-3); } .btn.primary:not(:disabled):hover { background: var(--accent-hover); } .btn.danger:not(:disabled):hover { background: #d92d20; } }
+.btn.back { padding: 0 var(--s3) 0 var(--s2); }
+
+/* pills */
+.pill { display: inline-flex; align-items: center; gap: var(--s1); height: 28px; padding: 0 var(--s2); border-radius: 14px; border: 1px solid currentColor; font-size: var(--fs-cap); font-weight: 700; white-space: nowrap; }
+.pill .od-icon { --od-icon-size: 16px; }
+.pill.ok { color: var(--ok); } .pill.warn { color: var(--warn); } .pill.bad { color: var(--bad); } .pill.off { color: var(--muted); }
+
+/* banner */
+.banner { display: flex; align-items: center; gap: var(--s3); width: 100%; min-height: 48px; padding: var(--s2) var(--s4); border: 0; border-bottom: 1px solid var(--line); text-align: left; font-weight: 600; }
+.banner.bad { background: var(--banner-bad-bg); color: var(--banner-bad-fg); } .banner.warn { background: var(--banner-warn-bg); color: var(--banner-warn-fg); }
+.banner .od-icon { --od-icon-size: 24px; }
+
+/* home strip + grid + tiles */
+.strip { display: flex; align-items: center; gap: var(--s3); min-height: 56px; padding: var(--s2) var(--s4); background: var(--surface); border-bottom: 1px solid var(--line); }
+.strip.bad { background: var(--banner-bad-bg); color: var(--banner-bad-fg); } .strip.warn { background: var(--banner-warn-bg); color: var(--banner-warn-fg); }
+.strip .cap { color: inherit; opacity: .9; }
+.strip > .od-icon { --od-icon-size: 24px; }
+.qind { font-weight: 700; white-space: nowrap; }
+.grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: var(--s2); padding: var(--s3) var(--s4); }
+.tile { display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--line); border-top: 4px solid var(--ok); border-radius: var(--r-md); overflow: hidden; }
+.tile.fault { border-color: var(--bad); border-top-width: 6px; background: var(--banner-bad-bg); }
+.tile.offline { border-top-color: var(--muted); border-style: dashed; border-top-style: solid; }
+.tile-main { display: grid; gap: var(--s2); padding: var(--s2) var(--s3); border: 0; background: transparent; text-align: left; flex: 1; align-content: start; }
+.tile-main > * { display: block; min-width: 0; }
+.tile-name { font-size: var(--fs-lead); font-weight: 700; }
+.next-val { font-size: 22px; font-weight: 700; line-height: 1.2; }
+.chip { display: inline-flex; align-items: center; gap: var(--s1); height: 28px; padding: 0 var(--s2); border-radius: var(--r-sm); background: var(--surface-2); font-size: var(--fs-cap); white-space: nowrap; }
+.chip .od-icon { --od-icon-size: 16px; }
+.chip.warn { color: var(--warn); background: var(--banner-warn-bg); } .chip.bad { color: var(--bad); background: var(--banner-bad-bg); }
+.tile .foot { padding: 0 var(--s3) var(--s3); }
+.tile-top { display: flex !important; align-items: center; justify-content: space-between; gap: var(--s1); }
+.tile-go { font-size: 24px; line-height: 1; color: var(--muted); }
+.tile-name { overflow-wrap: anywhere; line-height: 1.25; }
+.lvl { display: block; height: 6px; background: var(--surface-2); }
+.lvl > span { display: block; height: 100%; background: var(--ok); }
+.lvl.low > span { background: var(--warn); }
+.tile.offline .tile-main { opacity: .8; }
+textarea { font: inherit; color: var(--text); background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-sm); padding: var(--s2); resize: none; }
+.tile .bar { display: block; }
+.note { margin-top: 4px; min-height: 21px; }
+.note.warnt { color: var(--warn); font-weight: 600; } .note.badt { color: var(--bad); font-weight: 600; }
+.val { font-weight: 600; }
+
+/* hold-to-confirm */
+.hold { position: relative; width: 100%; min-height: 52px; border-radius: var(--r-md); border: 2px solid var(--accent); background: var(--surface-2); color: var(--text); font-weight: 700; overflow: hidden; touch-action: pan-y; user-select: none; -webkit-user-select: none; }
+.hold .fill { position: absolute; inset: 0; background: var(--accent); transform: scaleX(0); transform-origin: left; }
+.hold .lbl { position: relative; display: flex; align-items: center; justify-content: center; gap: var(--s2); min-height: 48px; }
+.hold .lbl .od-icon { --od-icon-size: 20px; }
+.hold.holding .fill { animation: holdfill 800ms linear forwards; }
+.hold.holding .lbl { color: var(--accent-ink); }
+@keyframes holdfill { to { transform: scaleX(1); } }
+.hold:disabled { border-color: var(--line); color: var(--disabled-fg); background: var(--surface); cursor: not-allowed; }
+.hold.busy { border-color: var(--warn); color: var(--warn); }
+@media (prefers-reduced-motion: reduce) { .hold.holding .fill { animation: none; transform: scaleX(1); opacity: .6; } }
+
+/* detail */
+.cols { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s4); padding: var(--s4); }
+.panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); padding: var(--s3) var(--s4); }
+.panel.danger { border-color: var(--bad); }
+.panel h2 { font-size: var(--fs-lead); margin-bottom: var(--s2); }
+.kv { display: flex; justify-content: space-between; gap: var(--s3); padding: 6px 0; border-bottom: 1px solid var(--line); }
+.kv:last-child { border-bottom: 0; }
+.kv > span:first-child { color: var(--muted); }
+.kv > span:last-child { font-weight: 600; text-align: right; }
+.bar { height: 8px; border-radius: 4px; background: var(--surface-3); overflow: hidden; margin-top: 4px; }
+.bar > div, .bar > span { display: block; height: 100%; background: var(--accent); }
+.bar.high > div, .bar.high > span { background: var(--warn); }
+.actions { display: flex; flex-wrap: wrap; gap: var(--s2); }
+
+/* stepper / switch */
+.stepper { display: inline-flex; align-items: center; gap: var(--s2); }
+.stepper .btn { width: var(--tap); padding: 0; }
+.stepper output { min-width: 72px; text-align: center; font-size: var(--fs-lead); font-weight: 700; }
+.switch { width: 88px; height: 44px; border-radius: 22px; border: 2px solid var(--line); background: var(--surface-3); position: relative; padding: 0; transition: background var(--t-fast); flex: none; }
+.switch::after { content: ""; position: absolute; top: 4px; left: 4px; width: 32px; height: 32px; border-radius: 50%; background: var(--text); transition: transform var(--t-fast); }
+.switch[aria-checked="true"] { background: var(--accent); border-color: var(--accent); }
+.switch[aria-checked="true"]::after { transform: translateX(44px); background: var(--accent-ink); }
+.switch .t { position: absolute; top: 50%; transform: translateY(-50%); font-size: 14px; font-weight: 800; letter-spacing: .02em; }
+.switch .t.on { left: 10px; color: var(--accent-ink); opacity: 0; } .switch .t.off { right: 9px; color: var(--muted); }
+.switch[aria-checked="true"] .t.on { opacity: 1; } .switch[aria-checked="true"] .t.off { opacity: 0; }
+
+/* lists */
+.item { display: flex; align-items: center; gap: var(--s3); padding: var(--s3) var(--s4); border-bottom: 1px solid var(--line); min-height: 56px; }
+.item .time { font-size: var(--fs-big); font-weight: 700; line-height: 1.1; }
+.dots { display: flex; gap: 4px; }
+.dots span { width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center; font-size: 14px; font-weight: 700; border: 1px solid var(--line); color: var(--muted); }
+.dots span.on { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.jump { position: sticky; top: 0; z-index: 2; background: var(--bg); border-bottom: 1px solid var(--line); padding-top: var(--s2); padding-bottom: var(--s2); }
+.rail { display: flex; gap: var(--s2); overflow-x: auto; padding: var(--s3) var(--s4); scrollbar-width: none; }
+.rail::-webkit-scrollbar { display: none; }
+.fchip { min-height: 44px; padding: 0 var(--s4); border-radius: 22px; border: 1px solid var(--line); background: var(--surface); font-weight: 600; white-space: nowrap; flex: none; }
+.fchip[aria-pressed="true"], .fchip[aria-current="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+select, input[type="text"], input[type="password"], input[type="number"] { min-height: var(--tap); padding: 0 var(--s3); border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface-2); }
+input[type="number"] { font-variant-numeric: tabular-nums; font-weight: 600; -moz-appearance: textfield; }
+input::placeholder { color: var(--muted); opacity: 1; }
+.unitfield { position: relative; display: block; }
+.unitfield input { width: 100%; padding-right: 44px; }
+.unitfield .u { position: absolute; right: var(--s3); top: 50%; transform: translateY(-50%); color: var(--muted); font-weight: 600; pointer-events: none; }
+.capform { display: grid; grid-template-columns: 1fr 1fr; gap: var(--s3); align-items: end; }
+.capsum { display: flex; align-items: center; gap: var(--s2); flex-wrap: wrap; }
+.capbar { flex: 1 1 100%; height: 8px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--line); overflow: hidden; }
+.capbar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .2s ease-out; }
+.capbar.low > i { background: var(--warn); }
+input[type="range"] { width: 100%; height: 44px; accent-color: var(--accent); }
+label.lab { display: block; font-size: var(--fs-cap); color: var(--muted); font-weight: 600; margin-bottom: 4px; }
+.err { color: var(--bad); font-size: var(--fs-cap); font-weight: 600; margin-top: 4px; }
+.empty { display: grid; place-items: center; text-align: center; gap: var(--s2); padding: var(--s5); color: var(--muted); min-height: 200px; }
+.empty .od-icon { --od-icon-size: 40px; }
+.empty b { color: var(--text); font-size: var(--fs-lead); }
+.sec { padding: var(--s4); border-bottom: 1px solid var(--line); display: grid; gap: var(--s3); }
+.sec h2 { font-size: var(--fs-lead); }
+.srow { display: flex; align-items: center; justify-content: space-between; gap: var(--s4); }
+.srow .od-field { flex: 1; }
+.skel { height: 56px; border-radius: var(--r-md); background: linear-gradient(90deg, var(--surface) 25%, var(--surface-2) 50%, var(--surface) 75%); background-size: 200% 100%; animation: sk 1.2s linear infinite; }
+@keyframes sk { to { background-position: -200% 0; } }
+
+/* overlays */
+#scrim { position: absolute; inset: 0; background: rgba(0,0,0,.6); z-index: 20; }
+#dlg { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); margin: 0; z-index: 21; width: 600px; max-width: 760px; max-height: 464px; overflow-y: auto; padding: var(--s4) var(--s5); background: var(--surface); color: var(--text); border: 1px solid var(--line); border-radius: var(--r-md); }
+#dlg h2 { font-size: var(--fs-title); margin-bottom: var(--s3); }
+#dlg .stack { display: grid; gap: var(--s3); }
+#dlg .foot { display: flex; justify-content: flex-end; gap: var(--s2); margin-top: var(--s4); }
+#toast { position: absolute; left: 50%; bottom: 76px; transform: translateX(-50%) translateY(8px); max-width: 640px; z-index: 30; padding: var(--s3) var(--s4); border-radius: var(--r-md); background: var(--surface-3); border: 1px solid var(--line); font-weight: 600; opacity: 0; pointer-events: none; transition: opacity var(--t-med), transform var(--t-med); }
+#toast { display: flex; align-items: center; gap: var(--s3); }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+#toast.show.undo { pointer-events: auto; }
+#toast.ok { border-color: var(--ok); } #toast.warn { border-color: var(--warn); } #toast.bad { border-color: var(--bad); }
+#dim { position: absolute; inset: 0; background: rgba(0,0,0,.88); z-index: 50; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s2); color: #9fb0bc; font-size: var(--fs-lead); }
+#dim .big { font-size: 64px; font-weight: 700; opacity: .55; line-height: 1.1; }
+#boot { position: absolute; inset: 0; z-index: 60; background: #05080a; color: #e9eff3; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--s4); }
+#boot .mark { width: 96px; height: 96px; }
+#boot .mark path { fill: none; stroke: #2dd4bf; stroke-width: 5; stroke-linecap: round; stroke-linejoin: round; stroke-dasharray: 1; stroke-dashoffset: 1; animation: bootdraw 900ms ease-out forwards; }
+#boot .mark circle { fill: #2dd4bf; opacity: 0; animation: bootdrop 400ms 700ms ease-out forwards; }
+#boot .word { font-size: 36px; font-weight: 700; letter-spacing: .04em; line-height: 1.1; animation: bootrise 500ms 300ms ease-out both; }
+#boot .word b { color: #2dd4bf; }
+#boot .tag { color: #a3b3bf; font-size: 16px; margin-top: -8px; animation: bootrise 500ms 500ms ease-out both; }
+#boot .ver { color: #8a99a4; font-size: 14px; }
+@keyframes bootdraw { to { stroke-dashoffset: 0; } }
+@keyframes bootdrop { from { opacity: 0; transform: translateY(-12px); } to { opacity: 1; transform: translateY(0); } }
+@keyframes bootrise { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+#boot ol { list-style: none; margin: 0; padding: 0; display: grid; gap: var(--s2); min-width: 280px; font-size: var(--fs-body); }
+#boot li { display: flex; align-items: center; gap: var(--s2); color: #a3b3bf; }
+#boot li.done { color: #e9eff3; }
+#boot li .od-icon { --od-icon-size: 20px; }
+#boot li.done .od-icon { color: #4ade80; }
+#boot .prog { width: 280px; background: #26333e; }
+#boot .prog > div { background: #2dd4bf; }
+.prog { height: 12px; border-radius: 6px; background: var(--surface-3); overflow: hidden; }
+.prog > div { height: 100%; background: var(--accent); width: 0; transition: width var(--t-med); }
+.steps { display: flex; gap: var(--s2); }
+.steps span { flex: 1; height: 6px; border-radius: 3px; background: var(--surface-3); }
+.steps span.on { background: var(--accent); }
+@media (prefers-reduced-motion: reduce) { * { transition-duration: 0.01ms !important; animation-duration: 0.01ms !important; } }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="app">
+    <header id="status"></header>
+    <main id="view" tabindex="-1"></main>
+    <nav id="nav" aria-label="Main"></nav>
+  </div>
+  <div id="scrim" hidden></div>
+  <dialog id="dlg" aria-modal="true"></dialog>
+  <div id="toast" role="status" aria-live="polite"></div>
+  <div id="dim" hidden><div class="big num" id="dimclk"></div><div>Touch to wake</div></div>
+  <div id="boot" hidden role="status" aria-live="polite"><svg class="mark" viewBox="0 0 96 96" role="img" aria-label="AIO Feeder logo"><path pathLength="1" d="M22 22h52L56 48v14l-16 8V48z"/><circle cx="48" cy="82" r="5"/></svg><div class="word"><b>AIO</b> Feeder</div><div class="tag">All-in-one automated feeding hub</div><ol id="bootsteps"></ol><div class="prog" aria-hidden="true"><div id="bootprog"></div></div><div class="ver">Hub firmware 0.3.1 · tap to skip</div></div>
+</div>
+
+<script>
+/* ===== Helpers ===== */
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+const ICONS = {
+  home: 'M3 11l9-8 9 8M5 10v10h14V10M10 20v-6h4v6',
+  calendar: 'M4 6h16v14H4zM4 10h16M8 3v4M16 3v4',
+  history: 'M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 7v5l3 2',
+  bell: 'M6 16v-5a6 6 0 0 1 12 0v5l2 2H4zM10 21h4',
+  sliders: 'M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M6 14v6',
+  plus: 'M12 5v14M5 12h14', minus: 'M5 12h14', back: 'M15 5l-7 7 7 7', next: 'M9 5l7 7-7 7',
+  check: 'M5 12l5 5 9-10', x: 'M6 6l12 12M18 6L6 18',
+  alert: 'M12 4l9 16H3zM12 10v4M12 17.5v.1',
+  wifi: 'M3 9a14 14 0 0 1 18 0M6 12.5a9 9 0 0 1 12 0M9 16a4 4 0 0 1 6 0M12 19.5v.1',
+  wifioff: 'M3 9a14 14 0 0 1 18 0M6 12.5a9 9 0 0 1 12 0M9 16a4 4 0 0 1 6 0M12 19.5v.1M4 4l16 16',
+  sd: 'M7 3h8l3 3v15H7zM10 7v3M13 7v3',
+  clock: 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 8v4l3 2',
+  drop: 'M12 3s6 6.5 6 11a6 6 0 0 1-12 0c0-4.5 6-11 6-11z',
+  bolt: 'M13 3L5 14h6l-1 7 8-11h-6z',
+  bowl: 'M5 10h14l-2 9H7zM8 10V6h8v4',
+  download: 'M12 4v11M7 11l5 5 5-5M5 20h14',
+  trash: 'M5 7h14M9 7V4h6v3M7 7l1 13h8l1-13',
+  pause: 'M8 5v14M16 5v14', play: 'M7 4l13 8-13 8z',
+  flask: 'M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3',
+  link: 'M10 14a4 4 0 0 0 5.7 0l3-3a4 4 0 0 0-5.7-5.7l-1 1M14 10a4 4 0 0 0-5.7 0l-3 3a4 4 0 0 0 5.7 5.7l1-1',
+  edit: 'M4 20h4L19 9l-4-4L4 16zM13 7l4 4',
+  lock: 'M6 11h12v9H6zM8 11V8a4 4 0 0 1 8 0v3',
+  hopper: 'M4 4h16l-6 8v6l-4 2v-8z'
+};
+const icon = (n, size) => `<svg class="od-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"${size ? ` style="--od-icon-size:${size}px"` : ''}><path d="${ICONS[n]}"/></svg>`;
+
+const MIN = 60000, HOUR = 3600000;
+const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const pad2 = n => String(n).padStart(2, '0');
+const median = a => { const s = [...a].sort((x, y) => x - y); const m = s.length >> 1; return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2; };
+
+/* ===== Time zone aware helpers (everything shown/scheduled uses the hub's time zone setting) ===== */
+let fmt;
+function setTz(tz) {
+  fmt = new Intl.DateTimeFormat('en-US', { timeZone: tz, hourCycle: 'h23', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+function parts(ts) {
+  const o = {}; for (const p of fmt.formatToParts(new Date(ts))) o[p.type] = p.value;
+  const y = +o.year, mo = +o.month, d = +o.day;
+  return { y, mo, d, h: +o.hour % 24, mi: +o.minute, s: +o.second, dow: new Date(Date.UTC(y, mo - 1, d)).getUTCDay() };
+}
+const hhmm = ts => { const p = parts(ts); return `${pad2(p.h)}:${pad2(p.mi)}`; };
+function dayLabel(ts) {
+  const a = parts(Date.now()), b = parts(ts);
+  const da = Date.UTC(a.y, a.mo - 1, a.d), db = Date.UTC(b.y, b.mo - 1, b.d);
+  const diff = Math.round((db - da) / 86400000);
+  if (diff === 0) return 'Today'; if (diff === 1) return 'Tomorrow'; if (diff === -1) return 'Yesterday';
+  return DAYS[b.dow];
+}
+const stamp = ts => `${dayLabel(ts)} ${hhmm(ts)}`;
+function ago(ts) {
+  const d = Date.now() - ts;
+  if (d < 60000) return 'just now';
+  if (d < HOUR) return `${Math.round(d / MIN)} min ago`;
+  if (d < 24 * HOUR) return `${Math.round(d / HOUR)} h ago`;
+  return stamp(ts);
+}
+function nextOccurrence(h, mi, days, after) {
+  const now = Date.now(), lim = after || now, p = parts(now);
+  const off = Date.UTC(p.y, p.mo - 1, p.d, p.h, p.mi, p.s) - Math.floor(now / 1000) * 1000;
+  for (let dd = 0; dd < 16; dd++) {
+    const dow = new Date(Date.UTC(p.y, p.mo - 1, p.d + dd)).getUTCDay();
+    if (!days[dow]) continue;
+    const ts = Date.UTC(p.y, p.mo - 1, p.d + dd, h, mi, 0) - off;
+    if (ts > lim) return ts;
+  }
+  return null;
+}
+
+/* ===== Data ===== */
+const CODE = {
+  OK: ['Fed OK', 'ok', 'ok'],
+  REJ_COOLDOWN: ['Cooling down', 'warn', 'rej'], REJ_LIMIT_HOUR: ['Hourly cap reached', 'warn', 'rej'], REJ_LIMIT_DAY: ['Daily cap reached', 'warn', 'rej'],
+  REJ_TOO_LONG: ['Amount over per-feed cap', 'warn', 'rej'], REJ_NO_TIME: ['No valid time', 'warn', 'rej'], REJ_FAULT: ['Node in fault', 'bad', 'rej'], REJ_LOW_VOLT: ['Supply voltage low', 'bad', 'rej'],
+  SKIPPED_USER: ['Skipped by user', 'warn', 'rej'], SKIPPED_HOLD: ['Skipped: hold mode', 'warn', 'rej'],
+  ABORTED: ['Aborted', 'warn', 'fault'], GATE_NOT_OPENED: ['Gate did not open', 'bad', 'fault'], GATE_STUCK_OPEN: ['Gate stuck open', 'bad', 'fault'], TIMEOUT_NO_RESULT: ['No result from node', 'bad', 'fault']
+};
+const SEV = { ok: ['check', 'OK'], warn: ['alert', 'Warn'], bad: ['alert', 'Fault'] };
+
+function seed() {
+  const t = Date.now();
+  const mk = (o) => Object.assign({ feed: null, paused: false, lastAct: 0, calAt: t - 9 * 86400000, missed: 'skip', pushedAt: t - 2 * HOUR }, o);
+  const nodes = [
+    mk({ id: 'n1', name: 'Koi Pond', mcu: 'ESP32-C3', mech: 'Solenoid gate', kind: 'gate', unit: 'g', status: 'online', hopper: 'ok', vin: 12080, rssi: -58, fw: '0.4.2', amount: 10, step: 5, cal: 4, calIn: 's', calOut: 'g', test: 2, maxAmount: 25, hourCap: 40, dayCap: 100, maxOnMs: 10000, cooldownS: 15, scheds: [{ id: 's1', h: 7, m: 0, days: [1, 1, 1, 1, 1, 1, 1], amount: 10, on: true }, { id: 's2', h: 18, m: 0, days: [1, 1, 1, 1, 1, 1, 1], amount: 10, on: true }] }),
+    mk({ id: 'n2', name: 'Poultry Grain', mcu: 'ESP8266', mech: 'Auger via relay', kind: 'auger', unit: 'g', status: 'online', hopper: 'ok', vin: 11940, rssi: -66, fw: '0.4.2', amount: 120, step: 10, cal: 24, calIn: 's', calOut: 'g', test: 5, maxAmount: 300, hourCap: 400, dayCap: 900, maxOnMs: 15000, cooldownS: 30, scheds: [{ id: 's3', h: 6, m: 30, days: [1, 1, 1, 1, 1, 1, 1], amount: 120, on: true }] }),
+    mk({ id: 'n3', name: 'Aquarium Dosing', mcu: 'ESP32-C3', mech: 'Pump via relay', kind: 'pump', unit: 'ml', status: 'online', hopper: 'low', vin: 12110, rssi: -49, fw: '0.4.2', amount: 40, step: 5, cal: 8, calIn: 's', calOut: 'ml', test: 5, maxAmount: 100, hourCap: 150, dayCap: 400, maxOnMs: 12000, cooldownS: 15, scheds: [{ id: 's4', h: 8, m: 0, days: [1, 1, 1, 1, 1, 1, 1], amount: 40, on: true }] }),
+    mk({ id: 'n4', name: 'Barn Pellets', mcu: 'ESP8266', mech: 'Solenoid gate', kind: 'gate', unit: 'g', status: 'offline', hopper: 'ok', vin: null, rssi: null, fw: '0.4.1', seen: t - 22 * MIN, pushedAt: t - 6.4 * 86400000, amount: 20, step: 5, cal: 4.4, calIn: 's', calOut: 'g', test: 2, maxAmount: 40, hourCap: 70, dayCap: 140, maxOnMs: 10000, cooldownS: 15, scheds: [{ id: 's5', h: 6, m: 0, days: [1, 1, 1, 1, 1, 1, 1], amount: 20, on: true }, { id: 's6', h: 17, m: 30, days: [1, 1, 1, 1, 1, 1, 1], amount: 20, on: true }] }),
+    mk({ id: 'n5', name: 'Kennel Kibble', mcu: 'ESP32-C3', mech: 'Solenoid gate', kind: 'gate', unit: 'g', status: 'fault', faultCode: 'GATE_STUCK_OPEN', hopper: 'ok', vin: 11870, rssi: -61, fw: '0.4.2', amount: 10, step: 5, cal: 6, calIn: 's', calOut: 'g', test: 2, maxAmount: 20, hourCap: 25, dayCap: 60, maxOnMs: 10000, cooldownS: 15, scheds: [{ id: 's7', h: 7, m: 30, days: [1, 1, 1, 1, 1, 1, 1], amount: 10, on: true }, { id: 's8', h: 19, m: 0, days: [0, 1, 1, 1, 1, 1, 0], amount: 10, on: true }] })
+  ];
+  const H = [
+    ['n5', 50, 10, 'GATE_STUCK_OPEN', 2500], ['n1', 95, 10, 'OK', 1100], ['n4', 210, 20, 'OK', 1500], ['n2', 180, 120, 'OK', 5200],
+    ['n3', 300, 40, 'OK', 5000], ['n1', 8 * 60, 10, 'OK', 1100], ['n4', 9 * 60, 20, 'TIMEOUT_NO_RESULT', 0], ['n2', 15 * 60, 120, 'OK', 5100],
+    ['n1', 14 * 60, 10, 'OK', 1100], ['n3', 17 * 60, 40, 'REJ_LOW_VOLT', 0], ['n5', 20 * 60, 10, 'OK', 900], ['n1', 20 * 60, 10, 'OK', 1100], ['n5', 26 * 60, 10, 'OK', 900]
+  ].map((r, i) => {
+    const n = nodes.find(x => x.id === r[0]);
+    return { id: 'h' + i, t: t - r[1] * MIN, nodeId: r[0], amount: r[2], unit: n.unit, code: r[3], ms: r[4], src: 'schedule' };
+  }).sort((a, b) => b.t - a.t);
+  for (const n of nodes) { const last = H.find(h => h.nodeId === n.id && h.code === 'OK'); n.lastAct = last ? last.t : 0; }
+  /* sample stock estimates, notes and a week of earlier feeds so the 7-day chart has something to show */
+  const LV = { n1: [62, 1500, 'Koi: cut to 5 g when the water is cold.'], n2: [55, 5000, ''], n3: [14, 1000, ''], n4: [70, 3000, ''], n5: [80, 1200, ''] };
+  for (const n of nodes) { const v = LV[n.id]; n.lvl = v[0]; n.capacity = v[1]; n.note = v[2]; n.refills = [{ t: t - (n.id === 'n3' ? 9 : 4) * 86400000, lvl: 100 }]; n.hopper = v[0] <= 20 ? 'low' : 'ok'; }
+  for (let d = 2; d <= 7; d++) for (const n of nodes) n.scheds.forEach((sc, i) => { H.push({ id: 'hs' + d + n.id + i, t: t - d * 86400000 - i * 180000, nodeId: n.id, amount: sc.amount, unit: n.unit, code: 'OK', ms: 1500, src: 'schedule' }); });
+  H.sort((a, b) => b.t - a.t);
+  const alerts = [
+    { id: 'a1', sev: 'bad', nodeId: 'n5', text: 'Gate stuck open — feeding is locked until you clear the fault.', t: t - 50 * MIN, ack: false },
+    { id: 'a2', sev: 'warn', nodeId: 'n4', text: 'Offline — 3 heartbeats missed. Scheduled feeds are being skipped.', t: t - 22 * MIN, ack: false },
+    { id: 'a3', sev: 'warn', nodeId: 'n3', text: 'Reservoir level estimated low. Refill before the next dose.', t: t - 3 * HOUR, ack: false },
+    { id: 'a4', sev: 'warn', nodeId: null, text: 'Hub restarted after a power cut. Schedules resumed once the time was synced.', t: t - 2 * 86400000, ack: true }
+  ];
+  return { nodes, history: H, alerts, pairing: null };
+}
+
+/* sample state persists in localStorage when the preview allows it; otherwise it stays in memory */
+const KEY = 'aio-hub-demo-v6';
+function loadSaved() {
+  try {
+    const o = JSON.parse(localStorage.getItem(KEY) || 'null');
+    if (!o || !o.D || !Array.isArray(o.D.nodes)) return null;
+    o.D.nodes.forEach(n => { n.feed = null; });
+    return o;
+  } catch (e) { return null; }
+}
+function save() {
+  try { localStorage.setItem(KEY, JSON.stringify({ D: { nodes: D.nodes, history: D.history.slice(0, 200), alerts: D.alerts }, settings: S.settings })); } catch (e) { }
+}
+let D = seed();
+const SAVED = loadSaved();
+if (SAVED) D = { nodes: SAVED.D.nodes, history: SAVED.D.history || [], alerts: SAVED.D.alerts || [], pairing: null };
+const S = {
+  view: 'home', nodeId: null, schedNode: 'n1', hFilter: 'all', hNode: 'all',
+  settings: { bright: 90, off: 60, ntp: true, tz: 'UTC', ssid: 'FarmNet-2G', broker: 'mqtt.local:1883', mqtt: true, pin: false, theme: 'dark', web: true, port: '80', login: true, muser: 'aio-hub', mpass: 'sample-pass', tls: false, ha: true, pinScope: 'settings', pinCode: '', retain: '30', holdUntil: 0, nOn: true, nOffline: true, nFault: true, nMissed: true, nLow: true },
+  cal: null, edit: null, setup: null, notif: [], backupAt: 0, sd: 'ok', unlockUntil: 0, pinThen: null, pinErr: '', syncedAt: Date.now() - 4 * MIN, otaState: 'idle'
+};
+try { const z = Intl.DateTimeFormat().resolvedOptions().timeZone; if (z) S.settings.tz = z; } catch (e) { }
+if (SAVED && SAVED.settings) Object.assign(S.settings, SAVED.settings);
+let BACKUP = null;
+try { BACKUP = JSON.parse(localStorage.getItem('aio-backup-v1') || 'null'); if (BACKUP) S.backupAt = BACKUP.savedAt || 0; } catch (e) { }
+setTz(S.settings.tz);
+/* simulated MQTT link: nothing leaves the page */
+S.mq = {
+  state: S.settings.mqtt ? 'connected' : 'disabled', lastConn: Date.now() - 12 * MIN, inN: 142, outN: 389, err: '', showPw: false, touched: {},
+  log: [
+    { t: Date.now() - 40000, dir: 'out', topic: 'aio/hub/status', payload: 'online' },
+    { t: Date.now() - 95000, dir: 'out', topic: 'aio/node/n3/state', payload: '{"online":true,"hopper_low":true}' },
+    { t: Date.now() - 210000, dir: 'out', topic: 'aio/node/n1/event/feed_result', payload: '{"status":"OK","amount":6}' }
+  ]
+};
+const node = id => D.nodes.find(n => n.id === id);
+let nextId = 100;
+const uid = p => p + (nextId++);
+const PRESET = { all: [1, 1, 1, 1, 1, 1, 1], weekdays: [0, 1, 1, 1, 1, 1, 0], weekends: [1, 0, 0, 0, 0, 0, 1] };
+const lvlOf = n => n.lvl != null ? n.lvl : n.hopper === 'low' ? 15 : 70;
+const capOf = n => n.capacity || (n.kind === 'pump' ? 1000 : n.kind === 'auger' ? 5000 : 1500);
+const holdOn = () => (S.settings.holdUntil || 0) > Date.now();
+const skipOn = sc => !!sc.skip && sc.skip > Date.now() - 60000;
+const dailyUse = n => n.scheds.filter(sc => sc.on).reduce((a, sc) => a + sc.amount * sc.days.filter(Boolean).length / 7, 0);
+/* next run of a schedule, ignoring an occurrence the user skipped and anything inside hold mode */
+function nextRun(sc) {
+  let t = nextOccurrence(sc.h, sc.m, sc.days);
+  for (let i = 0; t && i < 20; i++) {
+    const skipped = sc.skip && Math.abs(t - sc.skip) < 60000, held = holdOn() && t < S.settings.holdUntil;
+    if (!skipped && !held) break;
+    t = nextOccurrence(sc.h, sc.m, sc.days, t);
+  }
+  return t;
+}
+const holdBanner = () => holdOn() ? `<div class="banner warn" style="width:auto;margin:8px 16px 0" role="status">${icon('pause')}<span class="od-fill">Hold mode until ${esc(stamp(S.settings.holdUntil))}. Scheduled feeds are skipped on all nodes. Manual feeds still work.</span><button class="btn sm" data-act="hold-end" data-fid="hold-end">End hold</button></div>` : '';
+/* stock level is an estimate: it counts down from what the node has fed since the last refill */
+function useStock(n, amount) {
+  const was = n.hopper;
+  n.lvl = Math.max(0, +(lvlOf(n) - amount / capOf(n) * 100).toFixed(1));
+  n.hopper = n.lvl <= 20 ? 'low' : 'ok';
+  if (n.hopper === 'low' && was !== 'low') {
+    D.alerts.unshift({ id: uid('a'), sev: 'warn', nodeId: n.id, text: `${hopperTxt(n)} level is estimated low (about ${Math.round(n.lvl)}%). Refill soon.`, t: Date.now(), ack: false });
+    notify('Low', `${n.name}: ${hopperTxt(n).toLowerCase()} is estimated low, about ${Math.round(n.lvl)}%. Refill soon.`);
+  }
+}
+/* short text messages for phone notifications, sent over MQTT on aio/hub/notify */
+function notify(kind, text, force) {
+  const st = S.settings;
+  if (!force && (!st.nOn || !st['n' + kind])) return;
+  const sent = S.mq.state === 'connected';
+  S.notif.unshift({ t: Date.now(), text, sent }); S.notif.length = Math.min(S.notif.length, 6);
+  if (sent) logMq('out', 'aio/hub/notify', JSON.stringify({ text }));
+}
+function feedPreview(n, amount) {
+  if (n.status === 'offline') return { tone: 'badt', text: 'Node is offline, so it cannot feed.' };
+  const code = precheck(n, amount, 'manual');
+  if (code) return { tone: CODE[code][1] === 'bad' ? 'badt' : 'warnt', text: `Would be refused now: ${CODE[code][0].toLowerCase()}.` };
+  const hl = n.hourCap - used(n, HOUR) - amount, dl = n.dayCap - used(n, 24 * HOUR) - amount;
+  const how = n.calIn === 's' ? ` About ${(amount / n.cal).toFixed(1)} s open.` : n.calIn === 'pulses' ? ` About ${Math.max(1, Math.round(amount / n.cal))} pulses.` : '';
+  return { tone: '', text: `Will dispense ${amount} ${n.unit}, then cool down ${n.cooldownS} s.${how} ${hl} ${n.unit} left of the hourly cap and ${dl} ${n.unit} of the daily cap afterwards.` };
+}
+/* a second manual feed soon after a feed asks first */
+function manualFeed(id, amt) {
+  const n = node(id); if (!n) return;
+  const recent = D.history.find(h => h.nodeId === id && h.code === 'OK' && Date.now() - h.t < HOUR);
+  if (recent && n.status !== 'offline') {
+    return openDlg(() => `<h2>Feed ${esc(n.name)} again?</h2><p>${esc(n.name)} was fed ${esc(ago(recent.t))}: ${recent.amount} ${esc(recent.unit)}, ${recent.src === 'schedule' ? 'scheduled' : recent.src === 'manual' ? 'by hand' : 'by ' + esc(recent.src)}. Feeding now adds ${amt} ${esc(n.unit)}.</p><p class="cap" style="margin-top:8px">${Math.max(0, n.hourCap - used(n, HOUR))} ${esc(n.unit)} left of the hourly cap.</p><div class="foot"><button class="btn" data-act="dlg-close" data-first data-fid="d-cancel">Cancel</button><button class="btn primary" data-act="feed-again" data-id="${n.id}" data-amt="${amt}" data-fid="d-ok">Feed again</button></div>`);
+  }
+  toast(`Feeding ${n.name}: ${amt} ${n.unit}…`, 'ok'); enqueue(id, amt, 'manual');
+}
+function weekTotals(list) {
+  const ids = new Set(list.map(n => n.id)), out = [];
+  for (let k = 6; k >= 0; k--) {
+    const ts = Date.now() - k * 86400000, pp = parts(ts), key = `${pp.y}-${pp.mo}-${pp.d}`;
+    let tot = 0;
+    for (const h of D.history) if (h.code === 'OK' && ids.has(h.nodeId)) { const q = parts(h.t); if (`${q.y}-${q.mo}-${q.d}` === key) tot += h.amount; }
+    out.push({ label: k === 0 ? 'Today' : DAYS[pp.dow], tot });
+  }
+  return out;
+}
+function historyChart() {
+  const list = S.hNode === 'all' ? D.nodes.filter(n => n.unit === 'g') : D.nodes.filter(n => n.id === S.hNode);
+  if (!list.length) return '';
+  const unit = list[0].unit, w = weekTotals(list), max = Math.max(1, ...w.map(x => x.tot)), bw = 44, gap = 22;
+  const alt = `${unit === 'g' ? 'Grams' : 'Millilitres'} fed per day over the last 7 days: ${w.map(x => `${x.label} ${x.tot}`).join(', ')}`;
+  const svg = `<svg viewBox="0 0 ${7 * (bw + gap)} 130" width="100%" role="img" aria-label="${esc(alt)}">${w.map((x, i) => { const hg = Math.round(x.tot / max * 78), xx = i * (bw + gap) + gap / 2; return `<rect x="${xx}" y="${100 - hg}" width="${bw}" height="${hg}" rx="3" fill="var(--accent)"/><text x="${xx + bw / 2}" y="${95 - hg}" text-anchor="middle" font-size="14" fill="var(--text)">${x.tot}</text><text x="${xx + bw / 2}" y="122" text-anchor="middle" font-size="14" fill="var(--muted)">${esc(x.label)}</text>`; }).join('')}</svg>`;
+  const per = S.hNode === 'all' ? D.nodes.map(n => { const t = weekTotals([n]); return `<div class="kv"><span class="od-truncate">${esc(n.name)}</span><span class="num">today ${t[6].tot} ${n.unit} · 7 days ${t.reduce((a, x) => a + x.tot, 0)} ${n.unit}</span></div>`; }).join('') : '';
+  return `<div class="pad" style="padding-bottom:0"><section class="panel"><h2>Last 7 days · ${unit === 'g' ? 'grams' : 'ml'} fed</h2>${svg}${S.hNode === 'all' && D.nodes.some(n => n.unit !== 'g') ? '<p class="cap">Gram nodes only. Pick a millilitre node in the filter to see it.</p>' : ''}<div style="margin-top:8px">${per}</div></section></div>`;
+}
+function makeBackup() {
+  const st = Object.assign({}, S.settings); delete st.pinCode; delete st.mpass;
+  return { v: 1, savedAt: Date.now(), nodes: JSON.parse(JSON.stringify(D.nodes.map(n => Object.assign({}, n, { feed: null, pinging: false })))), settings: st };
+}
+function saveFile(name, text, type) {
+  try { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(a.href), 4000); return true; } catch (e) { return false; }
+}
+
+/* ===== Feed engine (hub proposes, node disposes) ===== */
+const Q = []; let busy = false;
+const used = (n, ms) => D.history.filter(h => h.nodeId === n.id && h.code === 'OK' && Date.now() - h.t < ms).reduce((a, h) => a + h.amount, 0);
+
+function precheck(n, amount, src) {
+  if (n.status === 'fault') return 'REJ_FAULT';
+  if (Date.now() - n.lastAct < n.cooldownS * 1000) return 'REJ_COOLDOWN';
+  if (amount > n.maxAmount) return 'REJ_TOO_LONG';
+  if (used(n, HOUR) + amount > n.hourCap) return 'REJ_LIMIT_HOUR';
+  if (used(n, 24 * HOUR) + amount > n.dayCap) return 'REJ_LIMIT_DAY';
+  if (n.vin && n.vin < 10500) return 'REJ_LOW_VOLT';
+  return null;
+}
+function record(n, amount, code, ms, src) {
+  D.history.unshift({ id: uid('h'), t: Date.now(), nodeId: n.id, amount, unit: n.unit, code, ms, src });
+  const keep = Date.now() - (+S.settings.retain || 30) * 86400000;
+  D.history = D.history.filter(h => h.t >= keep);
+}
+function enqueue(id, amount, src) {
+  const n = node(id);
+  if (!n || n.feed || S.rebooting) return;
+  if (n.status === 'offline') {
+    record(n, amount, 'TIMEOUT_NO_RESULT', 0, src);
+    const catchUp = src === 'schedule' && n.missed === 'catch';
+    if (catchUp) n.pendingCatch = { amount, until: Date.now() + 30 * MIN };
+    D.alerts.unshift({ id: uid('a'), sev: 'warn', nodeId: id, text: `Missed feed (${amount} ${n.unit}) while offline. ${catchUp ? 'One catch-up feed runs if the node returns within 30 min.' : 'Skipped by policy, not retried.'}`, t: Date.now(), ack: false });
+    notify('Missed', `${n.name} missed a ${amount} ${n.unit} feed while offline.${catchUp ? ' One catch-up feed runs if it returns within 30 min.' : ''}`);
+    toast(`${n.name} is offline — ${catchUp ? 'catch-up queued for 30 min' : 'feed skipped'}`, 'warn'); render(); return;
+  }
+  n.feed = { state: 'QUEUED' }; Q.push({ id, amount, src }); pump(); render();
+}
+function pump() {
+  if (busy || !Q.length) return;
+  busy = true;
+  const j = Q.shift(), n = node(j.id);
+  if (!n) { busy = false; return pump(); }
+  n.feed = { state: 'SENT' }; render();
+  setTimeout(() => {
+    const code = precheck(n, j.amount, j.src);
+    if (code) return finish(n, j, code, 0);
+    n.feed = { state: 'ON' }; render();
+    const ms = Math.min(1800, 600 + j.amount * (n.unit === 'pulses' ? 110 : 6));
+    setTimeout(() => finish(n, j, 'OK', ms), ms);
+  }, 450);
+}
+function finish(n, j, code, ms) {
+  n.feed = null;
+  record(n, j.amount, code, ms, j.src);
+  if (S.mq.state === 'connected') logMq('out', `aio/node/${n.id}/event/feed_result`, JSON.stringify({ status: code, amount: j.amount }));
+  if (code === 'OK') { n.lastAct = Date.now(); n.reject = null; useStock(n, j.amount); toast(`${n.name}: ${j.amount} ${n.unit} dispensed`, 'ok'); }
+  else {
+    n.reject = { code, t: Date.now() };
+    if (CODE[code][2] === 'fault' && code !== 'ABORTED') notify('Fault', `${n.name}: ${CODE[code][0].toLowerCase()}. Check the feeder before feeding again.`);
+  }
+  if (code !== 'OK') toast(`${n.name}: not fed — ${CODE[code][0].toLowerCase()}`, CODE[code][1]);
+  busy = false; render(); pump();
+}
+
+/* scheduler: evaluates once per second, never catches up missed minutes */
+const fired = new Set();
+function schedTick() {
+  if (S.rebooting) return;
+  if (S.settings.holdUntil && S.settings.holdUntil <= Date.now()) { S.settings.holdUntil = 0; toast('Hold ended. Scheduled feeds resume.', 'ok'); render(); }
+  for (const n of D.nodes) if (n.status === 'offline' && n.seen && !n.offNotified && Date.now() - n.seen > 30 * MIN) { n.offNotified = true; notify('Offline', `${n.name} has been offline for 30 min.`); if (S.view === 'remote') render(); }
+  const p = parts(Date.now()); const key = `${p.y}${p.mo}${p.d}${p.h}${p.mi}`;
+  for (const n of D.nodes) {
+    if (n.paused) continue;
+    for (const s of n.scheds) {
+      if (!s.on || s.h !== p.h || s.m !== p.mi || !s.days[p.dow]) continue;
+      const k = key + n.id + s.id; if (fired.has(k)) continue; fired.add(k);
+      if (holdOn()) { record(n, s.amount, 'SKIPPED_HOLD', 0, 'schedule'); render(); continue; }
+      if (s.skip && Math.abs(Date.now() - s.skip) < 90000) { s.skip = 0; record(n, s.amount, 'SKIPPED_USER', 0, 'schedule'); render(); continue; }
+      enqueue(n.id, s.amount, 'schedule');
+    }
+  }
+}
+
+/* ===== Render core ===== */
+const hold = { active: false, dirty: false, timer: 0, id: null, fired: 0 };
+let lastView = null;
+function render() {
+  if (hold.active) { hold.dirty = true; return; }
+  const v = $('#view'), ae = document.activeElement;
+  const fid = ae && v.contains(ae) ? ae.dataset.fid : null;
+  const sc = $('.od-scroll', v); const top = sc ? sc.scrollTop : 0;
+  const key = S.view + (S.nodeId || '') + (S.cal ? 'c' : '');
+  v.innerHTML = VIEWS[S.view]();
+  if (key === lastView) { const sc2 = $('.od-scroll', v); if (sc2) sc2.scrollTop = top; }
+  lastView = key;
+  if (fid) { const t = v.querySelector(`[data-fid="${CSS.escape(fid)}"]`); if (t) t.focus(); }
+  renderChrome();
+  save();
+}
+function go(view, extra) {
+  Object.assign(S, { view }, extra || {});
+  render();
+  $('#view').focus({ preventScroll: true });
+}
+function renderChrome() {
+  const unack = D.alerts.filter(a => !a.ack).length;
+  const ti = timeInfo();
+  $('#status').innerHTML = `
+    <span class="clock num" id="clk">${hhmm(Date.now())}</span>
+    <span class="item ${ti.warn ? 'warn' : ''}" id="src">${icon(ti.warn ? 'alert' : 'clock')}<span>${ti.text}</span></span>
+    <span class="sp"></span>
+    <span class="item">${icon('wifi')}<span>${esc(S.settings.ssid)} · ch 6</span></span>
+    <span class="item">${icon('sd')}<span>${S.sd === 'ok' ? 'SD ok' : S.sd === 'full' ? 'SD full' : 'No SD card'}</span></span>
+    <button id="alertBadge" class="${unack ? 'has' : ''}" data-act="nav" data-view="alerts" aria-label="${unack} active alerts">${icon('bell')}<span class="num">${unack}</span></button>`;
+  const items = [['home', 'Home', 'home'], ['schedule', 'Schedule', 'calendar'], ['history', 'History', 'history'], ['alerts', 'Alerts', 'bell'], ['settings', 'Settings', 'sliders']];
+  const cur = ['node', 'cal', 'pair', 'remote', 'setup'].includes(S.view) ? (S.view === 'pair' || S.view === 'remote' ? 'settings' : 'home') : S.view;
+  $('#nav').innerHTML = items.map(([v, l, i]) => `<button data-act="nav" data-view="${v}" data-fid="nav-${v}" ${cur === v ? 'aria-current="page"' : ''}>${icon(i)}<span>${l}</span>${v === 'alerts' && unack ? `<span class="nbadge num" aria-hidden="true">${unack}</span>` : ''}</button>`).join('');
+}
+function timeInfo() {
+  const stale = Date.now() - S.syncedAt > 24 * HOUR;
+  if (!S.settings.ntp) return { warn: true, text: 'Time not synced · nodes pause after 24 h' };
+  if (stale) return { warn: true, text: 'NTP stale · ' + ago(S.syncedAt) };
+  return { warn: false, text: 'NTP · synced ' + ago(S.syncedAt) };
+}
+function inDur(ms) {
+  if (ms < 60000) return 'under 1 min';
+  const m = Math.round(ms / MIN), h = Math.floor(m / 60);
+  return h ? `${h} h ${pad2(m % 60)} m` : `${m} min`;
+}
+function tickClock() {
+  const c = $('#clk'); if (c) c.textContent = hhmm(Date.now());
+  const dc = $('#dimclk'); if (dc) dc.textContent = hhmm(Date.now());
+  const s = $('#src span'); if (s) s.textContent = timeInfo().text;
+  document.querySelectorAll('[data-eta]').forEach(el => { el.textContent = inDur(+el.dataset.eta - Date.now()); });
+  for (const el of document.querySelectorAll('[data-cd]')) {
+    const n = node(el.dataset.cd), cd = n ? Math.ceil((n.lastAct + n.cooldownS * 1000 - Date.now()) / 1000) : 0;
+    if (cd <= 0) { if (!hold.active) render(); break; }
+    el.textContent = cd;
+  }
+}
+
+/* ===== Shared fragments ===== */
+function statusPill(n) {
+  if (n.status === 'fault') return `<span class="pill bad">${icon('alert')}FAULT</span>`;
+  if (n.status === 'offline') return `<span class="pill off">${icon('wifioff')}Offline</span>`;
+  return `<span class="pill ok">${icon('check')}Online</span>`;
+}
+function nextInfo(n) {
+  let best = null, amt = 0;
+  for (const s of n.scheds) { if (!s.on) continue; const t = nextRun(s); if (t && (!best || t < best)) { best = t; amt = s.amount; } }
+  return best ? { ts: best, amount: amt } : null;
+}
+function tileNote(n) {
+  if (n.status === 'offline') { const f = fbInfo(n); return `<span class="${f.valid ? '' : 'badt'}">Seen ${esc(ago(n.seen))}<br>${f.valid ? 'Fallback schedule active' : 'Fallback expired'}</span>`; }
+  if (n.status === 'fault') return `<span class="badt">${icon('alert', 14)} Node refuses feeds until cleared</span>`;
+  const cd = Math.ceil((n.lastAct + n.cooldownS * 1000 - Date.now()) / 1000);
+  if (cd > 0) return `<span class="warnt">Cooling down <span class="num" data-cd="${n.id}">${cd}</span> s</span>`;
+  const r = n.reject && Date.now() - n.reject.t < 90000 ? n.reject : null;
+  if (r) return `<span class="${CODE[r.code][1] === 'bad' ? 'badt' : 'warnt'}">${icon('alert', 14)} ${esc(CODE[r.code][0])}</span>`;
+  return `${n.amount} ${n.unit} · ${Math.max(0, n.hourCap - used(n, HOUR))} ${n.unit} left this hour`;
+}
+function lastResult(n) {
+  const h = D.history.find(x => x.nodeId === n.id);
+  if (!h) return ['No feeds yet', 'off'];
+  const c = CODE[h.code];
+  return [`${hhmm(h.t)} · ${c[0]}`, c[1]];
+}
+function holdBtn(n, amount, fid) {
+  const f = n.feed;
+  let dis = false, label = `<span style="text-align:center;line-height:1.2">Hold to feed<br><span class="num">${amount} ${n.unit}</span></span>`;
+  if (n.status === 'offline') { dis = true; label = `${icon('wifioff')}Offline`; }
+  else if (f) { dis = true; label = f.state === 'QUEUED' ? 'Queued…' : f.state === 'SENT' ? 'Sending…' : 'Dispensing…'; }
+  return `<button class="hold ${f ? 'busy' : ''}" data-hold="${n.id}" data-amt="${amount}" data-fid="${fid}" ${dis ? 'disabled' : ''} aria-label="Press and hold to feed ${esc(n.name)}, ${amount} ${n.unit}"><span class="fill"></span><span class="lbl">${label}</span></button>`;
+}
+const hopperTxt = n => n.kind === 'pump' ? 'Reservoir' : 'Hopper';
+const sbar = (title, back, right) => `<div class="sbar">${back ? `<button class="btn back sm" data-act="back" data-fid="back" aria-label="Back">${icon('back', 22)}Back</button>` : ''}<h1 class="od-fill od-truncate">${esc(title)}</h1>${right || ''}</div>`;
+
+/* ===== Views ===== */
+const VIEWS = {};
+
+VIEWS.home = () => {
+  if (!D.nodes.length) return `<div class="screen" style="display:grid;place-items:center"><div class="empty" style="max-width:520px">${icon('bowl', 48)}<b>Add your first feeder</b><span>This hub has no feeders yet. Pairing takes about a minute.</span>
+    <ol class="cap" style="text-align:left;margin:8px 0;padding-left:20px;color:var(--text)"><li>Power the node while holding its pairing button.</li><li>Tap <b>Add node</b> here to open a 60 second window.</li><li>Accept the node, name it and pick a profile.</li></ol>
+    <div class="actions"><button class="btn primary" data-act="setup-start" data-fid="add-first">${icon('play')}Start setup</button><button class="btn" data-act="pair" data-fid="add-first2">${icon('plus')}Add node only</button></div></div></div>`;
+  const rank = n => n.status === 'fault' ? 0 : n.status === 'offline' ? 1 : 2;
+  const sorted = D.nodes.slice().sort((a, b) => rank(a) - rank(b));
+  const flt = D.nodes.filter(n => n.status === 'fault').length, off = D.nodes.filter(n => n.status === 'offline').length;
+  const ok = D.nodes.length - flt - off;
+  const inflight = D.nodes.filter(n => n.feed).length;
+  let nxt = null, nxtNode = null;
+  for (const n of D.nodes) { if (n.paused || n.status !== 'online') continue; const i = nextInfo(n); if (i && (!nxt || i.ts < nxt.ts)) { nxt = i; nxtNode = n; } }
+  const tone = flt ? 'bad' : off ? 'warn' : '';
+  const stripIcon = flt ? icon('alert') : off ? icon('wifioff') : icon('check');
+  const strip = `<div class="strip ${tone}">${stripIcon}
+    <div class="od-fill od-stack" style="--od-gap:0">
+      <span class="val od-truncate">${ok} OK · ${off} offline · ${flt} in FAULT</span>
+      <span class="cap od-truncate">${nxt ? `Next: ${esc(nxtNode.name)} at ${hhmm(nxt.ts)} (${dayLabel(nxt.ts)}), in <span class="num" data-eta="${nxt.ts}">${inDur(nxt.ts - Date.now())}</span>` : 'No scheduled feeds coming up'}</span>
+    </div>
+    ${inflight ? `<span class="qind num" role="status">Feeding: ${inflight} active or queued</span>` : ''}
+    ${flt || off ? `<button class="btn sm" data-act="nav" data-view="alerts" data-fid="strip-alerts">${icon('bell')}Alerts</button>` : ''}
+    <button class="btn sm" data-act="pair" data-fid="add-node">${icon('plus')}Add node</button></div>`;
+  const tiles = sorted.map(n => {
+    const lr = lastResult(n), ni = nextInfo(n), hu = used(n, HOUR), near = hu / n.hourCap >= 0.6;
+    const chips = [];
+    if (n.hopper === 'low') chips.push(`<span class="chip warn">${icon(n.kind === 'pump' ? 'drop' : 'hopper')}${hopperTxt(n)} low (est.)</span>`);
+    if (n.vin && n.vin < 10800) chips.push(`<span class="chip bad">${icon('bolt')}Low supply</span>`);
+    const next = n.paused ? `<span class="cap">Next feed</span><span class="next-val">Paused</span>`
+      : ni ? `<span class="cap">Next feed · ${dayLabel(ni.ts)}</span><span class="next-val num">${hhmm(ni.ts)}</span>`
+        : `<span class="cap">Next feed</span><span class="next-val">None set</span>`;
+    return `<article class="tile ${n.status}">
+      <button class="tile-main" data-act="open" data-id="${n.id}" data-fid="open-${n.id}" aria-label="Open ${esc(n.name)} details">
+        <span class="tile-top">${statusPill(n)}<span class="tile-go" aria-hidden="true">›</span></span>
+        <span class="tile-name od-clamp-2">${esc(n.name)}</span>
+        <span class="od-stat">${next}</span>
+        <span class="od-stat"><span class="cap">Last result</span><span class="val od-truncate" ${lr[1] === 'bad' ? 'style="color:var(--bad)"' : ''}>${esc(lr[0])}</span></span>
+        ${chips.length ? `<span class="tile-chips">${chips.join('')}</span>` : ''}
+        ${near ? `<span class="od-stat"><span class="cap num">Hour cap ${hu}/${n.hourCap} ${n.unit}</span><span class="bar high"><span style="width:${Math.min(100, hu / n.hourCap * 100)}%"></span></span></span>` : ''}
+      </button>
+      <div class="foot">${holdBtn(n, n.amount, 'hold-' + n.id)}<p class="cap note" aria-live="polite">${tileNote(n)}</p>${n.status === 'offline' ? `<button class="btn sm" style="width:100%" data-act="ping" data-id="${n.id}" data-fid="pg-${n.id}" ${n.pinging ? 'disabled' : ''}>${icon('link')}${n.pinging ? 'Checking…' : 'Check connection'}</button>` : ''}${n.status === 'fault' ? `<button class="btn primary sm" style="width:100%" data-act="clearfault" data-id="${n.id}" data-fid="cf-${n.id}">${icon('check')}Clear fault</button>` : ''}</div>
+      ${n.status === 'offline' ? '' : (() => { const lv = Math.round(lvlOf(n)); return `<span class="cap" style="padding:0 var(--s3) 4px;display:block">${hopperTxt(n)} ~${lv}% · estimate</span><span class="lvl ${n.hopper === 'low' ? 'low' : ''}" role="img" aria-label="${hopperTxt(n)} estimated at about ${lv} percent" title="Estimate only, not measured"><span style="width:${lv}%"></span></span>`; })()}
+    </article>`;
+  }).join('');
+  return `<div class="screen" style="display:flex;flex-direction:column">${strip}${holdBanner()}
+    <div class="od-scroll" style="flex:1"><div class="grid">${tiles}</div></div></div>`;
+};
+
+VIEWS.node = () => {
+  const n = node(S.nodeId); if (!n) return VIEWS.home();
+  const hu = used(n, HOUR), du = used(n, 24 * HOUR);
+  const evs = D.history.filter(h => h.nodeId === n.id).slice(0, 5);
+  const calAge = Math.max(0, Math.round((Date.now() - n.calAt) / 86400000));
+  const bar = (u, cap) => `<div class="bar ${u / cap > .8 ? 'high' : ''}"><div style="width:${Math.min(100, u / cap * 100)}%"></div></div>`;
+  return `<div class="screen od-screen">${sbar(n.name, true, statusPill(n))}
+  <div class="od-scroll"><div class="cols">
+    <div class="od-stack" style="--od-gap:12px">
+      <section class="panel"><h2>Profile</h2>
+        <div class="kv"><span>Mechanism</span><span>${esc(n.mech)} · ${n.mcu}</span></div>
+        <div class="kv"><span>Calibration</span><span class="num">${n.cal} ${n.calOut}/${n.calIn === 's' ? 's' : 'pulse'} · ${calAge} d old</span></div>
+        <div class="kv"><span>Max on-time</span><span class="num">${(n.maxOnMs / 1000).toFixed(1)} s</span></div>
+        <div class="kv"><span>Cooldown</span><span class="num">${n.cooldownS} s</span></div>
+        <div class="kv"><span>Supply</span><span class="num">${n.vin ? (n.vin / 1000).toFixed(2) + ' V' : 'No data'}</span></div>
+        <div class="kv"><span>Firmware</span><span class="num">${n.fw}</span></div>
+      </section>
+      ${(() => {
+        const lv = Math.round(lvlOf(n)), left = Math.round(lvlOf(n) / 100 * capOf(n)), daily = dailyUse(n), lr = n.refills && n.refills[0], days = daily > 0 ? left / daily : null;
+        return `<section class="panel"><h2>${hopperTxt(n)} (estimate)</h2>
+        <div class="kv"><span>Capacity left</span><span class="num">about ${left} ${n.unit} (${lv}%)</span></div>
+        <div class="kv"><span>Total capacity</span><span class="num">${capOf(n)} ${n.unit}${n.capCustom ? ' · custom' : ''}</span></div>
+        <div class="bar ${lv <= 20 ? 'high' : ''}"><div style="width:${lv}%"></div></div>
+        <div class="kv"><span>Lasts about</span><span class="num">${days === null ? 'No schedule to base it on' : days < 1 ? 'under 1 day' : days.toFixed(1) + ' days'}</span></div>
+        <div class="kv"><span>Last refilled</span><span class="num">${lr ? esc(ago(lr.t)) : 'Not logged'}</span></div>
+        <p class="cap" style="margin:8px 0">Counted down from what the node has fed since the last refill. It is not measured, so correct it when you refill.</p>
+        <div class="actions"><button class="btn sm primary" data-act="refill" data-id="${n.id}" data-fid="a-refill">${icon(n.kind === 'pump' ? 'drop' : 'hopper')}Refilled</button><button class="btn sm" data-act="cap-edit" data-id="${n.id}" data-fid="a-cap">${icon('edit')}Set size and level</button></div></section>`;
+      })()}
+      <section class="panel"><h2>Limits used</h2>
+        <div class="cap">Hour: <span class="num">${hu} / ${n.hourCap} ${n.unit}</span></div>${bar(hu, n.hourCap)}
+        <div class="cap" style="margin-top:8px">24 h: <span class="num">${du} / ${n.dayCap} ${n.unit}</span></div>${bar(du, n.dayCap)}
+      </section>
+    </div>
+    <div class="od-stack" style="--od-gap:12px">
+      <section class="panel"><h2>Feed now</h2>
+        <div class="srow" style="margin-bottom:12px"><span class="cap">Amount</span>
+          <div class="stepper"><button class="btn" data-act="amt" data-d="-1" data-fid="amt-m" aria-label="Decrease amount">${icon('minus')}</button><output class="num" aria-live="polite">${n.amount} ${n.unit}</output><button class="btn" data-act="amt" data-d="1" data-fid="amt-p" aria-label="Increase amount">${icon('plus')}</button></div></div>
+        ${holdBtn(n, n.amount, 'hold-d')}${(() => { const pv = feedPreview(n, n.amount); return `<p class="cap ${pv.tone}" style="margin-top:8px" aria-live="polite">${esc(pv.text)}</p>`; })()}
+        ${n.status === 'fault' ? `<p class="err">${esc(CODE[n.faultCode][0])}. The node will reject feeds until you clear the fault.</p>` : ''}
+      </section>
+      <section class="panel"><h2>Actions</h2><div class="actions">
+        <button class="btn sm" data-act="calstart" data-id="${n.id}" data-fid="a-cal" ${n.status === 'offline' ? 'disabled' : ''}>${icon('flask')}Calibrate</button>
+        <button class="btn sm" data-act="pause" data-id="${n.id}" data-fid="a-pause">${icon(n.paused ? 'play' : 'pause')}${n.paused ? 'Resume schedule' : 'Pause schedule'}</button>
+        ${n.status === 'fault' ? `<button class="btn primary sm" data-act="clearfault" data-id="${n.id}" data-fid="a-clear">${icon('check')}Clear fault</button>` : ''}
+        <button class="btn sm" data-act="sched-open" data-id="${n.id}" data-fid="a-sched">${icon('calendar')}Schedules</button>
+      </div></section>
+      <section class="panel"><h2>Missed feeds and fallback</h2>
+        <span class="lab">If a scheduled feed is missed</span>
+        <div class="od-cluster" style="--od-gap:8px"><button class="fchip" data-act="missed" data-v="skip" data-fid="ms-skip" aria-pressed="${n.missed !== 'catch'}">Skip it</button><button class="fchip" data-act="missed" data-v="catch" data-fid="ms-catch" aria-pressed="${n.missed === 'catch'}">Catch up once (30 min)</button></div>
+        <p class="cap" style="margin:8px 0">${n.missed === 'catch' ? 'One feed runs if the node returns within 30 minutes and the daily cap allows. Feeds never stack.' : 'Missed feeds are skipped and raise an alert. You can feed by hand.'}</p>
+        ${(() => { const f = fbInfo(n); return `<div class="kv"><span>Schedule pushed</span><span class="num">${esc(ago(f.pushed))}</span></div><div class="kv"><span>Fallback schedule</span><span><span class="pill ${f.valid ? 'ok' : 'bad'}">${icon(f.valid ? 'check' : 'alert', 16)}${f.valid ? 'Valid for ' + inDur(f.left) : 'Expired'}</span></span></div>${n.status === 'offline' ? `<p class="${f.valid ? 'cap' : 'err'}" style="margin-top:8px">${f.valid ? 'Node is offline and running its saved schedule.' : 'Node is offline and its saved schedule has expired, so it will not feed on its own.'}</p><div class="actions" style="margin-top:8px"><button class="btn sm primary" data-act="ping" data-id="${n.id}" data-fid="ping" ${n.pinging ? 'disabled' : ''}>${icon('wifi')}${n.pinging ? 'Checking…' : 'Check connection'}</button></div>` : ''}`; })()}
+      </section>
+      <section class="panel"><h2>Notes</h2>${n.note ? `<p style="white-space:pre-wrap;overflow-wrap:anywhere">${esc(n.note)}</p>` : '<p class="cap">No note yet. Add reminders for yourself or whoever helps with feeding.</p>'}<button class="btn sm" style="margin-top:8px" data-act="note-edit" data-id="${n.id}" data-fid="a-note">${icon('edit')}${n.note ? 'Edit note' : 'Add note'}</button></section>
+      <section class="panel"><h2>Recent events</h2>
+        ${evs.length ? evs.map(h => { const c = CODE[h.code]; return `<div class="kv"><span class="num">${esc(stamp(h.t))}</span><span><span class="pill ${c[1]}">${icon(SEV[c[1]][0], 14)}${esc(c[0])}</span></span></div>`; }).join('') : '<p class="cap">No events yet.</p>'}
+      </section>
+      <section class="panel danger"><h2>Danger zone</h2><p class="cap" style="margin-bottom:8px">Removing a node resets it and forgets its schedules. History is kept.</p><button class="btn sm danger" data-act="remove" data-id="${n.id}" data-fid="a-remove">${icon('trash')}Remove node</button></section>
+    </div>
+  </div></div></div>`;
+};
+
+VIEWS.schedule = () => {
+  const n = node(S.schedNode) || D.nodes[0]; S.schedNode = n.id;
+  const chips = D.nodes.map(x => `<button class="fchip" data-act="sched-node" data-id="${x.id}" data-fid="sn-${x.id}" ${x.id === n.id ? 'aria-current="true"' : ''}>${esc(x.name)}</button>`).join('');
+  const rows = n.scheds.slice().sort((a, b) => a.h * 60 + a.m - (b.h * 60 + b.m)).map(s => `
+    <div class="item">
+      <div class="od-stat" style="min-width:110px"><span class="time num">${pad2(s.h)}:${pad2(s.m)}</span><span class="cap num">${s.amount} ${n.unit}</span>${skipOn(s) ? `<span class="cap warnt">Skips ${esc(stamp(s.skip))}</span>` : ''}</div>
+      <div class="od-fill"><div class="dots" aria-label="Days: ${s.days.map((d, i) => d ? DAYS[i] : '').filter(Boolean).join(', ')}">${s.days.map((d, i) => `<span class="${d ? 'on' : ''}" aria-hidden="true">${DAYS[i][0]}</span>`).join('')}</div></div>
+      <button class="switch" role="switch" aria-checked="${s.on}" aria-label="Enable ${pad2(s.h)}:${pad2(s.m)} schedule" data-act="sched-toggle" data-id="${s.id}" data-fid="st-${s.id}"><span class="t on">ON</span><span class="t off">OFF</span></button>
+      <button class="btn sm" data-act="sched-skip" data-id="${s.id}" data-fid="sk-${s.id}" ${s.on ? '' : 'disabled'}>${icon(skipOn(s) ? 'play' : 'pause')}${skipOn(s) ? 'Undo skip' : 'Skip next'}</button>
+      <button class="btn sm" data-act="sched-edit" data-id="${s.id}" data-fid="se-${s.id}" aria-label="Edit ${pad2(s.h)}:${pad2(s.m)} schedule">${icon('edit')}Edit</button>
+    </div>`).join('');
+  return `<div class="screen od-screen">${sbar('Schedules', false, `${holdOn() ? '' : `<button class="btn sm" data-act="hold-open" data-fid="hold-open">${icon('pause')}Hold all feeds</button>`}<button class="btn primary sm" data-act="sched-edit" data-id="" data-fid="sched-add">${icon('plus')}Add schedule</button>`)}
+  <div class="od-scroll"><div class="rail">${chips}</div>
+    ${holdBanner()}
+    ${n.paused ? `<div class="banner warn" style="width:auto">${icon('pause')}<span>Schedule paused for ${esc(n.name)}. Nothing will run until you resume it.</span></div>` : ''}
+    ${rows || `<div class="empty">${icon('calendar')}<b>No schedules for ${esc(n.name)}</b><span>Add one to feed automatically. Manual feeds still work.</span></div>`}
+    <p class="cap pad">The hub keeps the source of truth and mirrors the next 7 days to the node for offline fallback. Missed feeds are skipped, never stacked.</p>
+  </div></div>`;
+};
+
+VIEWS.history = () => {
+  let rows = D.history.filter(h => (S.hFilter === 'all' || CODE[h.code][2] === S.hFilter) && (S.hNode === 'all' || h.nodeId === S.hNode));
+  const f = [['all', 'All'], ['ok', 'OK'], ['rej', 'Rejected or skipped'], ['fault', 'Faults']];
+  const list = rows.slice(0, 40).map(h => { const c = CODE[h.code], n = node(h.nodeId); return `
+    <div class="item"><span class="num" style="width:120px">${esc(stamp(h.t))}</span>
+      <span class="od-fill od-truncate">${esc(n ? n.name : 'Removed node')}</span>
+      <span class="num" style="width:90px">${h.amount} ${h.unit}</span>
+      <span class="pill ${c[1]}" style="width:210px;justify-content:flex-start">${icon(SEV[c[1]][0], 16)}<span class="od-truncate">${esc(c[0])}</span></span></div>`; }).join('');
+  return `<div class="screen od-screen">${sbar('History', false, `<button class="btn sm" data-act="export" data-fid="export">${icon('download')}Export CSV</button>`)}
+  <div class="od-scroll"><div class="rail" style="align-items:center">${f.map(([k, l]) => `<button class="fchip" data-act="hfilter" data-k="${k}" data-fid="hf-${k}" aria-pressed="${S.hFilter === k}">${l}</button>`).join('')}
+    <select data-bind="hnode" aria-label="Filter by node" data-fid="hnode" style="flex:none"><option value="all">All nodes</option>${D.nodes.map(n => `<option value="${n.id}" ${S.hNode === n.id ? 'selected' : ''}>${esc(n.name)}</option>`).join('')}</select></div>
+    ${S.sd !== 'ok' ? `<div class="banner bad" style="width:auto" role="alert">${icon('alert')}<span>${S.sd === 'full' ? 'SD card is full. New events are not being saved. Free space or shorten the history period in Settings.' : 'No SD card found. New events are kept in memory only and will be lost on restart.'}</span></div>` : ''}
+    ${historyChart()}
+    <p class="cap" style="padding:8px 16px">Keeping ${S.settings.retain} days · ${D.history.length} events${S.sd === 'ok' ? ' · saved to SD' : ''}</p>
+    ${list || `<div class="empty">${icon('history')}<b>No matching events</b><span>Try another filter, or feed a node to create one.</span></div>`}
+  </div></div>`;
+};
+
+VIEWS.alerts = () => {
+  const act = D.alerts.filter(a => !a.ack), old = D.alerts.filter(a => a.ack);
+  const row = a => { const n = a.nodeId && node(a.nodeId); return `<div class="item">
+    <span class="pill ${a.sev}">${icon('alert', 16)}${a.sev === 'bad' ? 'Fault' : 'Warning'}</span>
+    <div class="od-fill"><div class="val">${esc(n ? n.name : 'Hub')}</div><div class="cap">${esc(a.text)}</div></div>
+    <span class="cap num" style="white-space:nowrap">${esc(ago(a.t))}</span>
+    ${a.ack ? '' : `<button class="btn sm" data-act="ack" data-id="${a.id}" data-fid="ack-${a.id}">${icon('check')}Acknowledge</button>`}</div>`; };
+  return `<div class="screen od-screen">${sbar('Alerts', false, act.length > 1 ? `<button class="btn sm" data-act="ackall" data-fid="ackall">Acknowledge all</button>` : '')}
+  <div class="od-scroll">
+    <div class="pad" style="padding-bottom:0"><h2 style="font-size:var(--fs-lead)">Active</h2></div>
+    ${act.length ? act.map(row).join('') : `<div class="empty" style="min-height:120px">${icon('check')}<b>No active alerts</b><span>Every node is reporting normally.</span></div>`}
+    <div class="pad" style="padding-bottom:0"><h2 style="font-size:var(--fs-lead)">Acknowledged</h2></div>
+    ${old.length ? old.map(row).join('') : '<p class="cap pad">Nothing acknowledged yet.</p>'}
+  </div></div>`;
+};
+
+VIEWS.settings = () => {
+  const s = S.settings;
+  const tzs = Array.from(new Set([s.tz, 'UTC', 'Asia/Manila', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'Australia/Sydney']));
+  const sw = (k, on, label) => `<button class="switch" role="switch" aria-checked="${on}" aria-label="${label}" data-act="set-toggle" data-k="${k}" data-fid="sw-${k}"><span class="t on">ON</span><span class="t off">OFF</span></button>`;
+  return `<div class="screen od-screen">${sbar('Settings')}
+  <div class="od-scroll"><div class="rail jump" id="jumpbar" role="navigation" aria-label="Settings sections">${[['restart', 'Restart'], ['display', 'Display'], ['time', 'Time'], ['network', 'Network'], ['remote', 'Remote'], ['security', 'Security'], ['storage', 'Storage'], ['backup', 'Backup'], ['firmware', 'Firmware'], ['nodes', 'Nodes'], ['danger', 'Danger']].map(([k, l]) => `<button class="fchip" data-act="jump" data-id="sec-${k}" data-fid="jump-${k}">${l}</button>`).join('')}</div>
+    <section class="sec" id="sec-restart"><h2>Restart</h2>
+      <div class="srow"><div class="od-field"><span class="val">Restart hub</span><span class="cap">Feeding in progress is aborted. Nodes keep their saved schedules and limits.</span></div><button class="btn sm" data-act="reboot" data-fid="reboot">${icon('play')}Restart hub</button></div>
+    </section>
+    <section class="sec" id="sec-display"><h2>Display</h2>
+      <div><label class="lab" for="bright">Brightness · <span class="num">${s.bright}%</span></label><input id="bright" type="range" min="20" max="100" step="5" value="${s.bright}" data-bind="bright" data-fid="bright"></div>
+      <div class="srow"><div class="od-field"><span class="val">Screen off after</span><span class="cap">Dims after this idle time. Touch wakes it.</span></div>
+        <select data-bind="off" data-fid="off" aria-label="Screen off after"><option value="15" ${s.off == 15 ? 'selected' : ''}>15 seconds</option><option value="60" ${s.off == 60 ? 'selected' : ''}>1 minute</option><option value="300" ${s.off == 300 ? 'selected' : ''}>5 minutes</option><option value="0" ${s.off == 0 ? 'selected' : ''}>Never</option></select></div>
+      <div class="srow"><div class="od-field"><label class="val" for="theme">Theme</label><span class="cap">Light is easier to read in a bright room.</span></div>
+        <select id="theme" data-bind="theme" data-fid="theme"><option value="dark" ${s.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${s.theme === 'light' ? 'selected' : ''}>Light</option></select></div>
+    </section>
+    <section class="sec" id="sec-time"><h2>Time</h2>
+      <div class="srow"><div class="od-field"><span class="val">Sync with NTP</span><span class="cap">${s.ntp ? 'Synced ' + ago(S.syncedAt) : 'Using last-known time. Nodes refuse scheduled feeds if time goes stale.'}</span></div>${sw('ntp', s.ntp, 'Sync with NTP')}</div>
+      <div class="srow"><div class="od-field"><label class="val" for="tz">Time zone</label></div><select id="tz" data-bind="tz" data-fid="tz">${tzs.map(z => `<option ${z === s.tz ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select></div>
+    </section>
+    <section class="sec" id="sec-network"><h2>Network</h2>
+      <div class="srow"><div class="od-field"><label class="val" for="ssid">Wi-Fi network</label><span class="cap">Nodes follow the hub's channel (now 6).</span></div><input id="ssid" type="text" value="${esc(s.ssid)}" data-bind="ssid" data-fid="ssid" style="width:240px"></div>
+    </section>
+    <section class="sec" id="sec-remote"><h2>Remote access</h2>
+      <div class="srow"><div class="od-field"><span class="val">Web dashboard and MQTT</span><span class="cap">${remoteSummary()}. Optional — feeding works without them.</span></div><button class="btn sm" data-act="remote" data-fid="open-remote">${icon('link')}Open</button></div>
+    </section>
+    <section class="sec" id="sec-security"><h2>Security</h2>
+      <div class="srow"><div class="od-field"><span class="val">PIN lock</span><span class="cap">${s.pin ? 'A 4-digit PIN is set.' : 'Anyone at the screen can feed or change settings.'}</span></div>${sw('pin', s.pin, 'PIN lock')}</div>
+      ${s.pin ? `<div class="srow"><div class="od-field"><label class="val" for="pinscope">PIN protects</label><span class="cap">Unlocked for 60 s after a correct PIN.</span></div><select id="pinscope" data-bind="pinScope" data-fid="pinscope"><option value="settings" ${s.pinScope === 'settings' ? 'selected' : ''}>Settings only</option><option value="all" ${s.pinScope === 'all' ? 'selected' : ''}>Settings and manual feeds</option></select></div>` : ''}
+    </section>
+    <section class="sec" id="sec-storage"><h2>Storage</h2>
+      <div class="srow"><div class="od-field"><label class="val" for="retain">Keep feed history for</label><span class="cap">Older events are removed from the log. The config backup is not affected.</span></div><select id="retain" data-bind="retain" data-fid="retain"><option value="7" ${s.retain == 7 ? 'selected' : ''}>7 days</option><option value="30" ${s.retain == 30 ? 'selected' : ''}>30 days</option><option value="90" ${s.retain == 90 ? 'selected' : ''}>90 days</option></select></div>
+      <div class="srow"><div class="od-field"><span class="val">SD card</span><span class="cap">${S.sd === 'ok' ? 'Working. 12.4 GB free of 29.7 GB.' : S.sd === 'full' ? 'Full. New events are not saved.' : 'Not found. New events are not saved.'}</span></div><span class="pill ${S.sd === 'ok' ? 'ok' : 'bad'}">${icon(S.sd === 'ok' ? 'check' : 'alert', 16)}${S.sd === 'ok' ? 'OK' : S.sd === 'full' ? 'Full' : 'Missing'}</span></div>
+    </section>
+    <section class="sec" id="sec-backup"><h2>Backup and export</h2>
+      <div class="srow"><div class="od-field"><span class="val">Back up settings to SD</span><span class="cap">${S.backupAt ? 'Last backup ' + esc(ago(S.backupAt)) + '. ' : 'No backup yet. '}Saves nodes, schedules and settings. The PIN and MQTT password are not included.</span></div><button class="btn sm" data-act="backup-now" data-fid="bk-now" ${S.sd === 'ok' ? '' : 'disabled'}>Back up now</button></div>
+      <div class="srow"><div class="od-field"><span class="val">Restore from backup</span><span class="cap">For a replaced hub or a bad change. Feed history is not touched.</span></div><button class="btn sm" data-act="backup-restore" data-fid="bk-restore" ${S.backupAt ? '' : 'disabled'}>Restore</button></div>
+      <div class="srow"><div class="od-field"><span class="val">Download copies</span><span class="cap">Preview only: saves a backup file or the history as CSV to this computer.</span></div><div class="od-cluster" style="--od-gap:8px"><button class="btn sm" data-act="backup-download" data-fid="bk-dl">${icon('download')}Backup</button><button class="btn sm" data-act="export" data-fid="bk-csv">${icon('download')}History CSV</button></div></div>
+    </section>
+    <section class="sec" id="sec-firmware"><h2>Firmware</h2>
+      <div class="srow"><div class="od-field"><span class="val">Hub firmware 0.3.1</span><span class="cap">${S.otaState === 'idle' ? 'Nodes lock their relay OFF during an update.' : S.otaState === 'check' ? 'Checking for updates…' : 'Up to date. Barn Pellets (0.4.1) can update to 0.4.2 when online.'}</span></div>
+        <button class="btn sm" data-act="ota" data-fid="ota" ${S.otaState === 'check' ? 'disabled' : ''}>${S.otaState === 'check' ? 'Checking…' : 'Check for updates'}</button></div>
+      ${S.otaState === 'check' ? '<div class="skel" aria-hidden="true"></div>' : ''}
+    </section>
+    <section class="sec" id="sec-nodes"><h2>Nodes</h2>
+      <div class="srow"><div class="od-field"><span class="val">Setup wizard</span><span class="cap">Time zone, Wi-Fi, a node and its first schedule.</span></div><button class="btn sm" data-act="setup-start" data-fid="set-wiz">${icon('play')}Run wizard</button></div>
+      <div class="srow"><div class="od-field"><span class="val">Pair a new node</span><span class="cap">Opens a 60 s window. Hold the node's button at boot.</span></div><button class="btn sm" data-act="pair" data-fid="set-pair">${icon('link')}Add node</button></div>
+    </section>
+    <section class="sec"><h2>Demo data</h2>
+      <div class="srow"><div class="od-field"><span class="val">Restore sample fleet</span><span class="cap">Changes are kept in this browser when storage is allowed.</span></div><button class="btn sm" data-act="demo-reset" data-fid="demo-reset">Restore sample data</button></div>
+    </section>
+    <section class="sec" id="sec-danger"><h2>Danger zone</h2>
+      <div class="srow"><div class="od-field"><span class="val">Factory reset</span><span class="cap">Erases nodes, schedules and history on this hub.</span></div><button class="btn danger sm" data-act="factory" data-fid="factory">Factory reset</button></div>
+    </section>
+  </div></div>`;
+};
+
+const MQ_PILL = { connected: ['ok', 'check', 'Connected'], connecting: ['warn', 'clock', 'Connecting…'], error: ['bad', 'alert', 'Error'], disabled: ['off', 'wifioff', 'Disabled'] };
+function remoteSummary() { const s = S.settings; return `Web dashboard ${s.web ? 'on' : 'off'} · MQTT ${MQ_PILL[S.mq.state][2].replace('…', '').toLowerCase()}`; }
+const hms = ts => { const p = parts(ts); return `${pad2(p.h)}:${pad2(p.mi)}:${pad2(p.s)}`; };
+
+VIEWS.remote = () => {
+  const s = S.settings, m = S.mq, t = m.touched || {};
+  const portErr = t.port && !portOk() ? 'Use a port from 1 to 65535, for example 80 or 8080.' : '';
+  const brokerErr = (t.broker || m.state === 'error' && !brokerOk()) && !brokerOk() ? 'Enter the broker as host:port, for example mqtt.local:1883.' : '';
+  const port = portOk() ? +s.port : 80;
+  const addr = `http://aio-hub.local${port === 80 ? '' : ':' + port}`, ip = `http://192.168.1.42${port === 80 ? '' : ':' + port}`;
+  const sw = (k, on, label) => `<button class="switch" role="switch" aria-checked="${on}" aria-label="${label}" data-act="set-toggle" data-k="${k}" data-fid="sw-${k}"><span class="t on">ON</span><span class="t off">OFF</span></button>`;
+  const pp = MQ_PILL[m.state];
+  const clients = s.web ? [['Pixel 8 · Chrome', '192.168.1.57', 2], ['iPad · Safari', '192.168.1.63', 18]] : [];
+  const canRe = s.mqtt && brokerOk() && m.state !== 'connecting';
+  const n1 = D.nodes[0] || { id: 'n1', amount: 6, unit: 'pulses' };
+  const topics = [['aio/hub/status', 'online / offline (last will)'], [`aio/node/${n1.id}/state`, 'retained node state'], [`aio/node/${n1.id}/cmd/feed`, `{"amount":${n1.amount},"unit":"${n1.unit}"}`], [`aio/node/${n1.id}/event/feed_result`, 'result of each feed'], [`aio/node/${n1.id}/config`, 'retained profile summary'], ['aio/hub/notify', 'short text for phone notifications']];
+  return `<div class="screen od-screen">${sbar('Remote access', true, `<span class="pill ${pp[0]}" role="status">${icon(pp[1], 16)}MQTT ${pp[2]}</span>`)}
+  <div class="od-scroll"><div class="cols">
+    <section class="panel"><h2>Web dashboard</h2>
+      <div class="srow" style="margin-bottom:12px"><div class="od-field"><span class="val">Serve dashboard</span><span class="cap">Status, manual feed and history on your network.</span></div>${sw('web', s.web, 'Serve web dashboard')}</div>
+      ${s.web ? `<div class="od-stack" style="--od-gap:12px">
+        <div><span class="lab">Open on a phone</span><div class="od-row"><span class="val num od-fill od-truncate">${esc(addr)}</span><button class="btn sm" data-act="copy-addr" data-fid="copy-addr">Copy</button></div><span class="cap num">or ${esc(ip)}</span></div>
+        <div><label class="lab" for="web-port">Port</label><input id="web-port" type="text" inputmode="numeric" value="${esc(s.port)}" data-bind="port" data-fid="web-port" style="width:120px" ${portErr ? 'aria-invalid="true"' : ''}>${portErr ? `<p class="err">${portErr}</p>` : ''}</div>
+        <div class="srow"><div class="od-field"><span class="val">Require login</span><span class="cap">${s.login ? 'Visitors sign in with the hub PIN.' : ''}</span></div>${sw('login', s.login, 'Require login')}</div>
+        ${s.login ? '' : `<p class="err" role="alert">${icon('alert', 16)} Anyone on this network can feed and change schedules. Turn login on unless the network is trusted.</p>`}
+        <div><span class="lab">Connected browsers</span>${clients.map(c => `<div class="kv"><span class="od-truncate">${esc(c[0])}</span><span class="num">${c[1]} · ${c[2]} min ago</span></div>`).join('')}</div>
+      </div>` : `<div class="empty" style="min-height:140px">${icon('wifioff')}<b>Dashboard is off</b><span>Phones and browsers can't reach the hub. Feeding and schedules are not affected.</span></div>`}
+    </section>
+    <section class="panel"><h2>MQTT and Home Assistant</h2>
+      <div class="srow" style="margin-bottom:12px"><div class="od-field"><span class="val">Connect to broker</span><span class="cap">Simulated link. No real network is used here.</span></div>${sw('mqtt', s.mqtt, 'Connect to MQTT broker')}</div>
+      <div class="od-stack" style="--od-gap:12px">
+        <div><label class="lab" for="broker">Broker (host:port)</label><input id="broker" type="text" value="${esc(s.broker)}" data-bind="broker" data-fid="broker" style="width:100%" ${brokerErr ? 'aria-invalid="true"' : ''}>${brokerErr ? `<p class="err">${brokerErr}</p>` : ''}</div>
+        <div class="od-row" style="align-items:flex-end"><div class="od-fill"><label class="lab" for="muser">User</label><input id="muser" type="text" value="${esc(s.muser)}" data-bind="muser" data-fid="muser" style="width:100%"></div>
+          <div class="od-fill"><label class="lab" for="mpass">Password</label><input id="mpass" type="${m.showPw ? 'text' : 'password'}" value="${esc(s.mpass)}" data-bind="mpass" data-fid="mpass" style="width:100%"></div>
+          <button class="btn sm" data-act="pw-toggle" data-fid="pw-toggle" aria-pressed="${m.showPw}">${m.showPw ? 'Hide' : 'Show'}</button></div>
+        <div class="srow"><div class="od-field"><span class="val">TLS</span><span class="cap">Needs a broker that supports it.</span></div>${sw('tls', s.tls, 'Use TLS')}</div>
+        <div class="srow"><div class="od-field"><span class="val">Home Assistant discovery</span></div>${sw('ha', s.ha, 'Home Assistant discovery')}</div>
+        <div><div class="kv"><span>Status</span><span><span class="pill ${pp[0]}">${icon(pp[1], 16)}${pp[2]}</span></span></div>
+          <div class="kv"><span>Last connected</span><span class="num">${m.state === 'disabled' ? '—' : esc(ago(m.lastConn))}</span></div>
+          <div class="kv"><span>Messages in / out</span><span class="num">${m.inN} / ${m.outN}</span></div></div>
+        ${m.err ? `<p class="err" role="alert">${icon('alert', 16)} ${esc(m.err)}</p>` : ''}
+        <div class="actions"><button class="btn primary sm" data-act="mq-reconnect" data-fid="mq-reconnect" ${canRe ? '' : 'disabled'}>${icon('link')}${m.state === 'connecting' ? 'Connecting…' : 'Reconnect'}</button>
+          <button class="btn sm" data-act="mq-test" data-fid="mq-test" ${m.state === 'connected' ? '' : 'disabled'}>${icon('play')}Send test feed</button></div>
+      </div>
+    </section>
+  </div>
+  <div class="pad" style="padding-top:0"><section class="panel"><h2>Phone notification messages</h2>
+    <div class="srow" style="margin-bottom:8px"><div class="od-field"><span class="val">Send short messages</span><span class="cap">Published on aio/hub/notify. Home Assistant or another app can turn them into phone notifications. Needs the MQTT link.</span></div>${sw('nOn', s.nOn, 'Send notification messages')}</div>
+    ${s.nOn ? `<div class="srow"><span class="val">Node offline for 30 min</span>${sw('nOffline', s.nOffline, 'Message when a node is offline')}</div>
+    <div class="srow"><span class="val">Fault</span>${sw('nFault', s.nFault, 'Message on a fault')}</div>
+    <div class="srow"><span class="val">Missed feed</span>${sw('nMissed', s.nMissed, 'Message on a missed feed')}</div>
+    <div class="srow"><span class="val">Hopper estimated low</span>${sw('nLow', s.nLow, 'Message when the estimate is low')}</div>
+    <div class="actions" style="margin:8px 0"><button class="btn sm" data-act="notif-test" data-fid="notif-test">${icon('bell')}Send test message</button></div>
+    <span class="lab">Recent messages</span>
+    ${S.notif.length ? S.notif.map(x => `<div class="kv"><span class="num">${hms(x.t)}</span><span class="od-truncate" style="max-width:480px">${esc(x.text)} <span class="pill ${x.sent ? 'ok' : 'warn'}" style="height:24px">${x.sent ? 'Sent' : 'Not sent: MQTT is not connected'}</span></span></div>`).join('') : '<p class="cap">No messages yet.</p>'}` : ''}
+  </section></div>
+  <div class="pad" style="padding-top:0"><section class="panel"><h2>Topics</h2>
+    ${topics.map(x => `<div class="kv"><span class="num od-truncate" style="color:var(--text)">${esc(x[0])}</span><span class="od-truncate">${esc(x[1])}</span></div>`).join('')}
+    <h2 style="margin-top:12px">Live log</h2>
+    ${m.log.length && m.state !== 'disabled' ? m.log.map(l => `<div class="kv"><span class="num">${hms(l.t)} <span class="pill off" style="height:24px">${l.dir === 'in' ? 'IN' : 'OUT'}</span></span><span class="num od-truncate" style="max-width:520px">${esc(l.topic)} ${esc(l.payload)}</span></div>`).join('') : '<p class="cap">No messages. Connect to the broker to see traffic.</p>'}
+  </section></div></div></div>`;
+};
+
+VIEWS.setup = () => {
+  const w = S.setup, s = S.settings, names = ['Time', 'Wi-Fi', 'Node', 'Hopper', 'Schedule', 'Done'];
+  const tzs = Array.from(new Set([s.tz, 'UTC', 'Asia/Manila', 'Europe/London', 'America/New_York', 'America/Los_Angeles', 'Australia/Sydney']));
+  const sw = (k, on, label) => `<button class="switch" role="switch" aria-checked="${on}" aria-label="${label}" data-act="set-toggle" data-k="${k}" data-fid="sw-${k}"><span class="t on">ON</span><span class="t off">OFF</span></button>`;
+  const n = w.nodeId && node(w.nodeId);
+  const steps = `<div class="steps" aria-hidden="true">${names.map((_, i) => `<span class="${i <= w.step ? 'on' : ''}"></span>`).join('')}</div><p class="cap">Step ${w.step + 1} of ${names.length} · ${names[w.step]}</p>`;
+  let body = '', next = `<button class="btn primary" data-act="wz-next" data-fid="wz-next">Next</button>`;
+  if (w.step === 0) body = `<p class="val">Set the time zone</p><p class="cap">Schedules run on the hub's clock. A wrong zone feeds at the wrong hour.</p>
+    <div class="srow"><label class="val" for="wz-tz">Time zone</label><select id="wz-tz" data-wz="tz" data-fid="wz-tz">${tzs.map(z => `<option ${z === s.tz ? 'selected' : ''}>${esc(z)}</option>`).join('')}</select></div>
+    <div class="srow"><div class="od-field"><span class="val">Sync with NTP</span><span class="cap">Recommended. Nodes pause scheduled feeds if the time goes stale.</span></div>${sw('ntp', s.ntp, 'Sync with NTP')}</div>
+    <p class="cap num">Hub time now: ${hhmm(Date.now())}</p>`;
+  else if (w.step === 1) body = `<p class="val">Connect to Wi-Fi</p><p class="cap">Optional. Feeding works without it, but time sync and the dashboard need it.</p>
+    <div class="srow"><label class="val" for="wz-ssid">Network name</label><input id="wz-ssid" type="text" value="${esc(s.ssid)}" data-wz="ssid" data-fid="wz-ssid" style="width:240px"></div>
+    <div class="srow"><div class="od-field"><span class="val">Connection</span><span class="cap">Simulated. No real network is used here.</span></div><div class="od-row" style="--od-gap:8px"><span class="pill ${w.wifi === 'ok' ? 'ok' : w.wifi === 'busy' ? 'warn' : 'off'}">${icon(w.wifi === 'ok' ? 'check' : w.wifi === 'busy' ? 'clock' : 'wifioff', 16)}${w.wifi === 'ok' ? 'Connected' : w.wifi === 'busy' ? 'Connecting…' : 'Not tested'}</span><button class="btn sm" data-act="wz-wifi" data-fid="wz-wifi" ${w.wifi === 'busy' ? 'disabled' : ''}>${icon('wifi')}Test</button></div></div>`;
+  else if (w.step === 2) {
+    body = `<p class="val">Choose the first feeder</p>${D.nodes.length ? `<p class="cap">Pick a node that is already paired, or pair a new one.</p><div class="od-cluster" style="--od-gap:8px">${D.nodes.map(x => `<button class="fchip" data-act="wz-node" data-id="${x.id}" data-fid="wz-n-${x.id}" aria-pressed="${w.nodeId === x.id}">${esc(x.name)}</button>`).join('')}</div>` : `<div class="empty" style="min-height:120px">${icon('link')}<b>No nodes paired yet</b><span>Power a node with its pairing button held, then pair it here.</span></div>`}
+      <div class="actions" style="margin-top:12px"><button class="btn sm" data-act="pair" data-fid="wz-pair">${icon('plus')}Pair a new node</button></div>`;
+    if (!n) next = next.replace('class="btn primary"', 'class="btn primary" disabled');
+  } else if (w.step === 3 && n) {
+    body = `<p class="val">Hopper size for ${esc(n.name)}</p><p class="cap">Enter how much the ${esc(hopperTxt(n).toLowerCase())} holds when full and how much is in it now. The level is an estimate that counts down from what the node feeds.</p>
+      <div class="od-row" style="--od-gap:16px;align-items:flex-end;flex-wrap:wrap"><div><label class="lab" for="wz-ct">Total capacity when full (${esc(n.unit)})</label><input id="wz-ct" type="number" inputmode="numeric" min="1" max="100000" step="10" value="${esc(String(w.capTotal))}" data-fid="wz-ct" style="width:170px"></div>
+      <div><label class="lab" for="wz-cn">Amount in it now (${esc(n.unit)})</label><input id="wz-cn" type="number" inputmode="numeric" min="0" max="100000" step="10" value="${esc(String(w.capNow))}" data-fid="wz-cn" style="width:170px"></div></div>
+      ${w.capErr ? `<p class="err" role="alert">${esc(w.capErr)}</p>` : ''}`;
+  } else if (w.step === 4 && n) {
+    const st = (k, v, lab) => `<div class="od-stack" style="align-items:center;--od-gap:4px"><button class="btn" data-act="wz-step" data-k="${k}" data-d="1" data-fid="wz-${k}p" aria-label="Increase ${lab}">${icon('plus')}</button><output class="num" style="font-size:var(--fs-big);font-weight:700" aria-label="${lab}">${pad2(v)}</output><button class="btn" data-act="wz-step" data-k="${k}" data-d="-1" data-fid="wz-${k}m" aria-label="Decrease ${lab}">${icon('minus')}</button></div>`;
+    const over = w.amount > n.maxAmount;
+    body = `<p class="val">First schedule for ${esc(n.name)}</p><p class="cap">You can add more later in Schedule.</p>
+      <div class="srow" style="justify-content:flex-start;gap:24px"><div><span class="lab">Time (${esc(s.tz)})</span><div class="od-row" style="--od-gap:8px">${st('h', w.h, 'hours')}<span class="num" style="font-size:var(--fs-big)">:</span>${st('m', w.m, 'minutes')}</div></div>
+        <div><span class="lab">Amount</span><div class="stepper"><button class="btn" data-act="wz-amt" data-d="-1" data-fid="wz-am" aria-label="Decrease amount">${icon('minus')}</button><output class="num" style="min-width:96px">${w.amount} ${n.unit}</output><button class="btn" data-act="wz-amt" data-d="1" data-fid="wz-ap" aria-label="Increase amount">${icon('plus')}</button></div></div></div>
+      <div><span class="lab">Days</span><div class="od-cluster" style="--od-gap:8px">${[['all', 'Every day'], ['weekdays', 'Weekdays'], ['weekends', 'Weekends']].map(([k, l]) => `<button class="fchip" data-act="wz-days" data-v="${k}" data-fid="wz-d-${k}" aria-pressed="${w.days === k}">${l}</button>`).join('')}</div></div>
+      ${over ? `<p class="err">${w.amount} ${n.unit} is over this node's per-feed cap of ${n.maxAmount}. Lower the amount.</p>` : ''}`;
+    next = `<button class="btn primary" data-act="wz-save" data-fid="wz-save" ${over ? 'disabled' : ''}>Save and finish</button>`;
+  } else {
+    body = `<div class="empty" style="min-height:120px">${icon('check')}<b>Setup done</b><span>${esc(s.tz)} · ${esc(s.ssid)}${n ? ' · ' + esc(n.name) + (w.saved ? ' at ' + w.saved : '') : ''}</span></div><p class="cap">Next: calibrate the feeder from its page so amounts are accurate, and tap Refilled on the node page whenever you top up, so the estimate stays close.</p>`;
+    next = `<button class="btn primary" data-act="wz-done" data-fid="wz-done">Go to Home</button>`;
+  }
+  return `<div class="screen od-screen">${sbar('Setup', true)}<div class="od-scroll"><div class="pad od-stack" style="--od-gap:16px;max-width:560px">${steps}${body}<div class="actions" style="margin-top:8px">${w.step < 5 ? '<button class="btn" data-act="back" data-fid="wz-back">Back</button>' : ''}${next}</div></div></div></div>`;
+};
+
+VIEWS.pair = () => {
+  const p = D.pairing;
+  if (!p) return VIEWS.settings();
+  const left = Math.max(0, Math.ceil((p.until - Date.now()) / 1000));
+  const found = p.found.filter(f => !f.taken);
+  let body;
+  if (left === 0 && !found.length) body = `<div class="empty">${icon('wifioff')}<b>No node found</b><span>The pairing window closed. Hold the node's button while powering it on, then try again.</span><button class="btn primary" data-act="pair-restart" data-fid="pr">Restart window</button></div>`;
+  else body = (left === 0 ? '<p class="cap pad">Window closed. Discovered nodes can still be accepted.</p>' : '') + (found.length ? found.map(f => `<div class="item"><div class="od-fill"><div class="val num">${esc(f.mac)}</div><div class="cap">${f.mcu} · fw ${f.fw} · RSSI ${f.rssi} dBm</div></div><button class="btn primary sm" data-act="pair-pick" data-id="${f.mac}" data-fid="pp-${f.mac}">Accept</button></div>`).join('') : `<div class="empty"><div class="skel" style="width:360px" aria-hidden="true"></div><b>Listening for nodes…</b><span>Power the node with its pairing button held.</span></div>`);
+  return `<div class="screen od-screen">${sbar('Add node', true, `<span class="pill ${left ? 'ok' : 'off'} num" id="pcount">${left ? left + ' s left' : 'Closed'}</span>`)}<div class="od-scroll">${body}</div></div>`;
+};
+
+VIEWS.cal = () => {
+  const c = S.cal, n = node(c.nodeId);
+  const stepN = c.step === 'setup' ? 1 : c.step === 'run' ? 2 : c.step === 'weigh' ? 3 : 4;
+  const steps = `<div class="steps" aria-hidden="true">${[1, 2, 3, 4].map(i => `<span class="${i <= stepN ? 'on' : ''}"></span>`).join('')}</div>`;
+  let body = '';
+  const inU = n.calIn === 's' ? 's' : 'pulses';
+  if (c.step === 'setup') body = `
+    <p class="val">Run ${c.runs.length + 1} of 3</p>
+    <p class="cap">Place a container under the outlet. The node runs a test under its normal safety limits.</p>
+    <div class="srow"><span>Test amount</span><div class="stepper"><button class="btn" data-act="cal-amt" data-d="-1" data-fid="ca-m" aria-label="Decrease test amount">${icon('minus')}</button><output class="num">${c.test} ${inU}</output><button class="btn" data-act="cal-amt" data-d="1" data-fid="ca-p" aria-label="Increase test amount">${icon('plus')}</button></div></div>
+    ${c.runs.length ? `<p class="cap num">Recorded: ${c.runs.map(r => r.toFixed(2)).join(' · ')} ${n.calOut}/${inU === 's' ? 's' : 'pulse'}</p>` : ''}
+    <div class="actions"><button class="btn primary" data-act="cal-run" data-fid="cal-run">Dispense test</button></div>`;
+  else if (c.step === 'run') body = `<p class="val">Dispensing ${c.test} ${inU}…</p><div class="prog" role="progressbar" aria-label="Test dispense"><div id="calprog"></div></div><p class="cap">The node enforces its own on-time limit of ${(n.maxOnMs / 1000).toFixed(1)} s.</p>`;
+  else if (c.step === 'weigh') body = `
+    <p class="val">How much came out?</p>
+    <div class="srow"><span>Measured ${n.calOut === 'g' ? 'weight' : 'volume'}</span><div class="stepper"><button class="btn" data-act="cal-w" data-d="-1" data-fid="cw-m" aria-label="Decrease measured value">${icon('minus')}</button><output class="num">${c.w} ${n.calOut}</output><button class="btn" data-act="cal-w" data-d="1" data-fid="cw-p" aria-label="Increase measured value">${icon('plus')}</button></div></div>
+    ${c.w < 5 ? `<p class="err" role="alert">Under 5 ${n.calOut} is too little to weigh reliably. Run a longer test.</p>` : ''}
+    <div class="actions"><button class="btn primary" data-act="cal-rec" data-fid="cal-rec" ${c.w < 5 ? 'disabled' : ''}>Record result</button></div>`;
+  else { const med = median(c.runs), ratio = med / n.cal, bad = ratio < .5 || ratio > 2;
+    body = `<p class="val">Review (median of ${c.runs.length} runs)</p>
+    <div class="kv"><span>Before</span><span class="num">${n.cal} ${n.calOut}/${inU === 's' ? 's' : 'pulse'}</span></div>
+    <div class="kv"><span>After</span><span class="num">${med.toFixed(2)} ${n.calOut}/${inU === 's' ? 's' : 'pulse'}</span></div>
+    ${bad ? `<p class="err">This is far from the old value (${Math.round(ratio * 100)}%). Check the container, then redo the runs.</p>` : ''}
+    <div class="actions"><button class="btn primary" data-act="cal-save" data-fid="cal-save" ${bad ? 'disabled' : ''}>Save and push to node</button><button class="btn" data-act="cal-redo" data-fid="cal-redo">Redo runs</button></div>`; }
+  return `<div class="screen od-screen">${sbar('Calibrate · ' + n.name, true)}<div class="od-scroll"><div class="pad od-stack" style="--od-gap:16px;max-width:560px">${steps}${body}</div></div></div>`;
+};
+
+/* ===== Toast / dialog ===== */
+let toastT;
+function fbInfo(n) {
+  const pushed = n.pushedAt || (Date.now() - 2 * HOUR), left = pushed + 7 * 86400000 - Date.now();
+  return { pushed, left, valid: left > 0 };
+}
+function backOnline(n) {
+  n.status = 'online'; n.seen = Date.now(); n.offNotified = false;
+  D.alerts.filter(a => a.nodeId === n.id && a.sev === 'warn' && /offline|Missed/.test(a.text)).forEach(a => { a.ack = true; });
+  const p = n.pendingCatch; n.pendingCatch = null;
+  if (p && n.missed === 'catch' && Date.now() < p.until) { toast(`${n.name} is back — running one catch-up feed`, 'ok'); enqueue(n.id, p.amount, 'catchup'); }
+  else toast(`${n.name} is back online${p ? '. The catch-up window had passed, so the missed feed stays skipped.' : ''}`, p ? 'warn' : 'ok');
+}
+function needPin(kind) {
+  const s = S.settings;
+  if (!s.pin || !s.pinCode || Date.now() < S.unlockUntil) return false;
+  return kind === 'settings' || s.pinScope === 'all';
+}
+function askPin(then, why) {
+  S.pinThen = then; S.pinErr = '';
+  openDlg(() => `<h2>Enter PIN</h2><p class="cap" style="margin-bottom:12px">${esc(why)}</p><label class="lab" for="pinin">PIN (4 digits)</label><input id="pinin" type="password" inputmode="numeric" maxlength="4" data-first data-fid="pinin" style="width:160px" ${S.pinErr ? 'aria-invalid="true"' : ''}>${S.pinErr ? `<p class="err">${S.pinErr}</p>` : ''}<div class="foot"><button class="btn" data-act="dlg-close" data-fid="pcancel">Cancel</button><button class="btn primary" data-act="pin-check" data-fid="pcheck">Unlock</button></div>`);
+}
+function rebootHub(cold) {
+  S.rebooting = true; S.cold = !!cold; Q.length = 0; busy = false;
+  for (const n of D.nodes) { if (n.feed && n.feed.state === 'ON') record(n, n.amount, 'ABORTED', 0, 'reboot'); n.feed = null; }
+  const steps = ['Relay outputs OFF', 'Loading saved settings', 'Syncing time', 'Reaching nodes'];
+  const boot = $('#boot'), list = $('#bootsteps'), bar = $('#bootprog');
+  $('#dim').hidden = true; boot.hidden = false;
+  let i = 0;
+  const draw = () => {
+    list.innerHTML = steps.map((t, k) => `<li class="${k < i ? 'done' : ''}">${k < i ? icon('check') : '<span class="od-icon" aria-hidden="true"></span>'}<span>${t}${k === i ? '…' : ''}</span></li>`).join('');
+    bar.style.width = (i / steps.length * 100) + '%';
+  };
+  draw();
+  const iv = setInterval(() => {
+    i++;
+    if (i >= steps.length) { clearInterval(iv); bar.style.width = '100%'; S.bootAbort = null; setTimeout(finishReboot, 700); return; }
+    draw();
+  }, 900);
+  S.bootAbort = () => { clearInterval(iv); S.bootAbort = null; finishReboot(); };
+}
+function finishReboot() {
+  $('#boot').hidden = true; S.rebooting = false; S.unlockUntil = 0;
+  if (S.settings.ntp) S.syncedAt = Date.now();
+  if (S.cold) { S.cold = false; go('home', { nodeId: null, cal: null }); wake(); return; }
+  S.mq.inN = 0; S.mq.outN = 0; S.mq.log = [];
+  D.alerts.unshift({ id: uid('a'), sev: 'warn', nodeId: null, text: 'Hub restarted from Settings. Schedules resumed after the time sync; feeds missed during the restart were skipped.', t: Date.now(), ack: true });
+  go('home', { nodeId: null, cal: null });
+  toast('Hub restarted. Missed feeds were not caught up.', 'ok');
+  if (S.settings.mqtt) { S.mq.state = 'connecting'; mqConnect(); } else S.mq.state = 'disabled';
+  wake();
+}
+function logMq(dir, topic, payload) {
+  const m = S.mq; m.log.unshift({ t: Date.now(), dir, topic, payload }); m.log.length = Math.min(m.log.length, 8);
+  if (dir === 'in') m.inN++; else m.outN++;
+}
+function brokerOk() {
+  const mt = /^([A-Za-z0-9.-]+):(\d{1,5})$/.exec(String(S.settings.broker).trim());
+  return !!mt && +mt[2] >= 1 && +mt[2] <= 65535;
+}
+function portOk() { const p = String(S.settings.port).trim(); return /^\d+$/.test(p) && +p >= 1 && +p <= 65535; }
+function mqConnect() {
+  const s = S.settings, m = S.mq;
+  if (!s.mqtt) { m.state = 'disabled'; render(); return; }
+  if (!brokerOk()) { m.state = 'error'; m.err = 'Broker address is not valid.'; render(); return; }
+  m.state = 'connecting'; m.err = ''; render();
+  setTimeout(() => {
+    if (!S.settings.mqtt) m.state = 'disabled';
+    else if (/^fail\.local/i.test(s.broker.trim())) { m.state = 'error'; m.err = `Connection refused by ${s.broker.trim()}. Check the address and that the broker is running.`; }
+    else if (s.muser && !s.mpass) { m.state = 'error'; m.err = 'Not authorised: the password is empty.'; }
+    else { m.state = 'connected'; m.err = ''; m.lastConn = Date.now(); logMq('out', 'aio/hub/status', 'online'); }
+    render();
+  }, 1400);
+}
+let undoFn = null;
+function toast(msg, kind, undo) {
+  const t = $('#toast'); t.textContent = msg; undoFn = undo || null;
+  if (undo) { const b = document.createElement('button'); b.className = 'btn sm'; b.dataset.act = 'undo'; b.textContent = 'Undo'; t.append(b); }
+  t.className = 'show ' + (kind || '') + (undo ? ' undo' : '');
+  clearTimeout(toastT); toastT = setTimeout(() => { t.classList.remove('show'); undoFn = null; }, undo ? 6000 : 2800);
+}
+let dlgTrigger = null, dlgRender = null;
+function openDlg(fn) {
+  dlgTrigger = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.fid : null;
+  dlgRender = fn; $('#scrim').hidden = false; const d = $('#dlg'); d.innerHTML = fn(); d.show(); capLive();
+  const f = d.querySelector('[data-first]') || d.querySelector('button,input,select'); if (f) f.focus();
+}
+function redrawDlg() {
+  const d = $('#dlg'); if (!dlgRender || !d.open) return;
+  const fid = document.activeElement && d.contains(document.activeElement) ? document.activeElement.dataset.fid : null;
+  d.innerHTML = dlgRender(); capLive(); if (fid) { const t = d.querySelector(`[data-fid="${CSS.escape(fid)}"]`); if (t) t.focus(); }
+}
+function closeDlg() {
+  const d = $('#dlg'); d.close(); d.innerHTML = ''; $('#scrim').hidden = true; dlgRender = null;
+  render();
+  const t = dlgTrigger && $('#view').querySelector(`[data-fid="${CSS.escape(dlgTrigger)}"]`);
+  (t || $('#view').querySelector('.btn.primary, button') || $('#view')).focus();
+}
+const confirmDlg = (title, text, label, act, id) => openDlg(() => `<h2>${esc(title)}</h2><p>${esc(text)}</p><div class="foot"><button class="btn" data-act="dlg-close" data-first data-fid="d-cancel">Cancel</button><button class="btn danger" data-act="${act}" data-id="${id || ''}" data-fid="d-ok">${esc(label)}</button></div>`);
+
+function schedDlg() {
+  const e = S.edit, n = node(e.nodeId);
+  const st = (k, v, lab) => `<div class="od-stack" style="align-items:center;--od-gap:4px"><button class="btn" data-act="ed-step" data-k="${k}" data-d="1" data-fid="e-${k}p" aria-label="Increase ${lab}">${icon('plus')}</button><output class="num" style="font-size:var(--fs-big);font-weight:700" aria-label="${lab}">${pad2(v)}</output><button class="btn" data-act="ed-step" data-k="${k}" data-d="-1" data-fid="e-${k}m" aria-label="Decrease ${lab}">${icon('minus')}</button></div>`;
+  return `<h2>${e.id ? 'Edit schedule' : 'New schedule'} · ${esc(n.name)}</h2><div class="stack">
+    <div class="srow" style="justify-content:flex-start;gap:24px"><div><span class="lab">Time (${esc(S.settings.tz)})</span><div class="od-row" style="--od-gap:8px">${st('h', e.h, 'hours')}<span class="num" style="font-size:var(--fs-big)">:</span>${st('m', e.m, 'minutes')}</div></div>
+      <div><span class="lab">Amount</span><div class="stepper"><button class="btn" data-act="ed-amt" data-d="-1" data-fid="e-am" aria-label="Decrease amount">${icon('minus')}</button><output class="num" style="min-width:96px">${e.amount} ${n.unit}</output><button class="btn" data-act="ed-amt" data-d="1" data-fid="e-ap" aria-label="Increase amount">${icon('plus')}</button></div></div></div>
+    <div><span class="lab">Days</span><div class="od-cluster" style="--od-gap:6px">${e.days.map((d, i) => `<button class="fchip" style="min-width:56px;padding:0 8px" data-act="ed-day" data-i="${i}" data-fid="e-d${i}" aria-pressed="${!!d}">${DAYS[i]}</button>`).join('')}</div>${e.errDays ? '<p class="err">Pick at least one day so this schedule can run.</p>' : ''}${e.errAmt ? `<p class="err">${e.amount} ${n.unit} is over this node's per-feed cap of ${n.maxAmount}. Lower the amount.</p>` : ''}<p class="cap" style="margin-top:8px">Daylight saving: a time inside the skipped hour runs just after the gap. A time in the repeated hour runs once.</p></div>
+    <div class="srow"><div><span class="lab">Quick minutes</span><div class="od-cluster" style="--od-gap:6px">${[0, 15, 30, 45].map(v => `<button class="fchip" data-act="ed-min" data-v="${v}" data-fid="e-q${v}" aria-pressed="${e.m === v}">:${pad2(v)}</button>`).join('')}</div></div>
+      <div class="od-row" style="--od-gap:12px"><span class="val">Enabled</span><button class="switch" role="switch" aria-checked="${e.on}" aria-label="Enabled" data-act="ed-on" data-fid="e-on"><span class="t on">ON</span><span class="t off">OFF</span></button></div></div>
+  </div><div class="foot">${e.id ? `<button class="btn danger" style="margin-right:auto" data-act="ed-del" data-fid="e-del">${icon('trash')}Delete</button>` : ''}<button class="btn" data-act="dlg-close" data-fid="e-cancel">Cancel</button><button class="btn primary" data-act="ed-save" data-fid="e-save">Save</button></div>`;
+}
+function pairNameDlg(f) {
+  const d = S.pairDraft || { name: '', tpl: 'gate', total: PCAP.gate, now: PCAP.gate }, u = d.tpl === 'pump' ? 'ml' : 'g';
+  const opt = (v, l) => `<option value="${v}" ${d.tpl === v ? 'selected' : ''}>${l}</option>`;
+  return `<h2>Name this node</h2><div class="stack"><p class="cap num">${esc(f.mac)} · ${f.mcu} · fw ${f.fw}</p>
+  <div><label class="lab" for="pn">Name (required)</label><input id="pn" type="text" maxlength="24" value="${esc(d.name)}" data-first data-fid="pn" style="width:100%" ${S.pairErr ? 'aria-invalid="true"' : ''}></div>
+  <div><label class="lab" for="pt">Profile template</label><select id="pt" data-fid="pt" style="width:100%">${opt('gate', 'Solenoid gate — pellets, kibble')}${opt('auger', 'Auger via relay — grain, powder')}${opt('pump', 'Pump via relay — liquids')}</select></div>
+  <div class="od-row" style="--od-gap:16px;align-items:flex-end;flex-wrap:wrap"><div><label class="lab" for="pc-total">Hopper size when full (<span class="pc-u">${u}</span>)</label><input id="pc-total" type="number" inputmode="numeric" min="1" max="100000" step="10" value="${esc(String(d.total))}" data-fid="pc-total" style="width:150px"></div>
+  <div><label class="lab" for="pc-now">Amount in it now (<span class="pc-u">${u}</span>)</label><input id="pc-now" type="number" inputmode="numeric" min="0" max="100000" step="10" value="${esc(String(d.now))}" data-fid="pc-now" style="width:150px"></div></div>
+  <p class="cap">The level is an estimate. It counts down from what the node feeds. You can change both later on the node page.</p>
+  ${S.pairErr ? `<p class="err" role="alert">${esc(S.pairErr)}</p>` : ''}</div>
+  <div class="foot"><button class="btn" data-act="dlg-close" data-fid="pcancel">Cancel</button><button class="btn primary" data-act="pair-accept" data-id="${f.mac}" data-fid="paccept">Accept and pair</button></div>`;
+}
+
+/* ===== Actions ===== */
+const TEMPL = { gate: ['Solenoid gate', 'g', 10, 5, 25, 40, 100, 10000], auger: ['Auger via relay', 'g', 100, 10, 300, 400, 900, 15000], pump: ['Pump via relay', 'ml', 30, 5, 100, 150, 400, 12000] };
+function capPct(tv, nv, unit) {
+  const t = Number(tv), n = Number(nv);
+  if (!tv || !nv && nv !== 0 || !Number.isFinite(t) || !Number.isFinite(n) || t < 1 || n < 0) return 'Enter both numbers to see the level.';
+  if (n > t) return 'The amount is more than the total.';
+  return `About ${Math.round(n / t * 100)}% full · ${Math.round(t - n)} ${unit} to fill`;
+}
+function capLive() {
+  const t = $('#cap-total'), n = $('#cap-now'), o = $('#cap-pct'), b = $('#cap-bar'); if (!t || !n || !o) return;
+  const nd = S.capDraft && node(S.capDraft.id), u = nd ? nd.unit : 'g', tv = Number(t.value), nv = Number(n.value), ok = t.value !== '' && n.value !== '' && tv >= 1 && nv >= 0 && nv <= tv;
+  o.textContent = capPct(t.value, n.value, u);
+  if (b) { const pct = ok ? nv / tv * 100 : 0; b.firstElementChild.style.width = pct + '%'; b.classList.toggle('low', ok && pct <= 20); }
+}
+const PCAP = { gate: 1500, auger: 5000, pump: 1000 };
+function capCheck(tv, nv, unit) {
+  const total = Number(tv), now = Number(nv);
+  if (!tv || !Number.isFinite(total) || total < 1 || total > 100000) return `Enter a total from 1 to 100000 ${unit}, for example 1500.`;
+  if (!nv || !Number.isFinite(now) || now < 0) return `Enter the amount in it now, 0 or more ${unit}.`;
+  if (now > total) return `The amount now (${now} ${unit}) is more than the total capacity (${total} ${unit}).`;
+  return '';
+}
+function setCap(nd, total, now) {
+  nd.capacity = Math.round(total); nd.capCustom = Math.round(total) !== (PCAP[nd.kind] || 1500); nd.lvl = +(now / total * 100).toFixed(1); nd.hopper = nd.lvl <= 20 ? 'low' : 'ok';
+  nd.refills = [{ t: Date.now(), lvl: nd.lvl, set: true }].concat(nd.refills || []).slice(0, 10);
+}
+const ACT = {
+  nav: b => {
+    const v = b.dataset.view;
+    if (v === 'settings' && needPin('settings')) return askPin(() => go('settings', { nodeId: null, cal: null }), 'Settings are locked.');
+    go(v, { nodeId: null, cal: null, setup: null });
+  },
+  open: b => go('node', { nodeId: b.dataset.id }),
+  remote: () => go('remote'),
+  jump: b => {
+    const sc = $('.od-scroll', $('#view')), el = document.getElementById(b.dataset.id), bar = $('#jumpbar');
+    if (!sc || !el) return;
+    const k = sc.getBoundingClientRect().height / sc.offsetHeight || 1;
+    sc.scrollTop += (el.getBoundingClientRect().top - sc.getBoundingClientRect().top) / k - (bar ? bar.offsetHeight : 0);
+  },
+  reboot: () => {
+    const active = D.nodes.filter(n => n.feed).length;
+    openDlg(() => `<h2>Restart the hub?</h2><p>The screen goes dark for a few seconds and relay outputs stay OFF.</p>${active ? `<p class="err" role="alert" style="margin-top:8px">${icon('alert', 16)} ${active} feed${active > 1 ? 's are' : ' is'} in progress and will be aborted.</p>` : ''}<p class="cap" style="margin-top:8px">Nodes keep their saved schedules and limits. Feeds missed during the restart are skipped, not caught up.</p><div class="foot"><button class="btn" data-act="dlg-close" data-first data-fid="d-cancel">Cancel</button><button class="btn primary" data-act="reboot-ok" data-fid="d-ok">Restart hub</button></div>`);
+  },
+  'reboot-ok': () => { $('#dlg').close(); $('#scrim').hidden = true; dlgRender = null; rebootHub(); },
+  missed: b => { const n = node(S.nodeId); n.missed = b.dataset.v; if (n.missed !== 'catch') n.pendingCatch = null; render(); },
+  ping: b => { const n = node(b.dataset.id); n.pinging = true; render(); setTimeout(() => { n.pinging = false; backOnline(n); render(); }, 1500); },
+  'pin-check': () => {
+    const v = $('#pinin').value;
+    if (v !== S.settings.pinCode) { S.pinErr = 'Wrong PIN. Try again.'; redrawDlg(); const i = $('#pinin'); if (i) i.focus(); return; }
+    S.unlockUntil = Date.now() + 60000; const f = S.pinThen; S.pinThen = null; closeDlg(); if (f) f();
+  },
+  'pw-toggle': () => { S.mq.showPw = !S.mq.showPw; render(); },
+  'copy-addr': () => {
+    const a = 'http://aio-hub.local' + (portOk() && +S.settings.port !== 80 ? ':' + S.settings.port : '');
+    try { navigator.clipboard.writeText(a).then(() => toast('Address copied', 'ok'), () => toast('Copy is blocked here. Type the address by hand.', 'warn')); } catch (e) { toast('Copy is blocked here. Type the address by hand.', 'warn'); }
+  },
+  'mq-reconnect': () => mqConnect(),
+  'mq-test': () => {
+    const n = D.nodes.find(x => x.status === 'online'); if (!n || S.mq.state !== 'connected') return toast('MQTT is not connected', 'warn');
+    logMq('in', `aio/node/${n.id}/cmd/feed`, JSON.stringify({ amount: n.amount, unit: n.unit }));
+    toast(`Test feed from Home Assistant → ${n.name}`, 'ok'); enqueue(n.id, n.amount, 'mqtt');
+  },
+  back: () => { if (S.view === 'setup') { if (S.setup.step > 0 && S.setup.step < 5) { S.setup.step--; render(); } else { S.setup = null; go('home'); } } else if (S.view === 'remote') go('settings'); else if (S.view === 'cal') go('node', { cal: null }); else if (S.view === 'pair') { D.pairing = null; if (S.setup) go('setup'); else go('home'); } else go('home', { nodeId: null }); },
+  amt: b => { const n = node(S.nodeId); n.amount = Math.max(n.step, Math.min(n.maxAmount, n.amount + (+b.dataset.d) * n.step)); render(); },
+  clearfault: b => { const n = node(b.dataset.id); openDlg(() => `<h2>Clear fault on ${esc(n.name)}?</h2><p>Check that the gate is physically closed and moves freely before clearing. After this the node accepts feeds again.</p><div class="foot"><button class="btn" data-act="dlg-close" data-first data-fid="d-cancel">Not yet</button><button class="btn primary" data-act="clearfault-ok" data-id="${n.id}" data-fid="d-ok">Gate is closed — clear fault</button></div>`); },
+  'clearfault-ok': b => { const n = node(b.dataset.id); n.status = 'online'; n.faultCode = null; D.alerts.filter(a => a.nodeId === n.id && a.sev === 'bad').forEach(a => a.ack = true); $('#dlg').close(); $('#scrim').hidden = true; dlgRender = null; toast(`${n.name}: fault cleared by hub`, 'ok'); render(); },
+  undo: () => { if (undoFn) { const f = undoFn; undoFn = null; $('#toast').classList.remove('show'); f(); } },
+  'ed-min': b => { S.edit.m = +b.dataset.v; redrawDlg(); },
+  'demo-reset': () => { D = seed(); Q.length = 0; busy = false; toast('Demo data restored', 'ok'); render(); },
+  pause: b => { const n = node(b.dataset.id); n.paused = !n.paused; toast(n.paused ? `${n.name}: schedule paused` : `${n.name}: schedule resumed`); render(); },
+  remove: b => confirmDlg('Remove this node?', 'The hub will tell the node to factory-reset and forget its schedules. History is kept.', 'Remove node', 'remove-ok', b.dataset.id),
+  'remove-ok': b => {
+    const n = node(b.dataset.id), idx = D.nodes.indexOf(n), gone = D.alerts.filter(a => a.nodeId === n.id);
+    D.nodes = D.nodes.filter(x => x !== n); D.alerts = D.alerts.filter(a => a.nodeId !== n.id);
+    $('#dlg').close(); $('#scrim').hidden = true; dlgRender = null;
+    go('home', { nodeId: null });
+    toast(`${n.name} removed`, '', () => { D.nodes.splice(idx, 0, n); D.alerts.push(...gone); toast(`${n.name} restored`, 'ok'); render(); });
+  },
+  'feed-again': b => { const id = b.dataset.id, amt = +b.dataset.amt; closeDlg(); const nd = node(id); if (nd) toast(`Feeding ${nd.name}: ${amt} ${nd.unit}…`, 'ok'); enqueue(id, amt, 'manual'); },
+  'cap-edit': b => {
+    const nd = node(b.dataset.id); S.capDraft = { id: nd.id, total: capOf(nd), now: Math.round(lvlOf(nd) / 100 * capOf(nd)), err: '' };
+    openDlg(() => { const d = S.capDraft; return `<h2>${esc(hopperTxt(nd))} size and level · ${esc(nd.name)}</h2><div class="stack">
+      <div class="capform"><div><label class="lab" for="cap-total">Total capacity when full</label><div class="unitfield"><input id="cap-total" type="number" inputmode="numeric" min="1" max="100000" step="10" value="${d.total}" data-first data-fid="cap-total"><span class="u" aria-hidden="true">${esc(nd.unit)}</span></div></div>
+      <div><label class="lab" for="cap-now">Amount in it now</label><div class="unitfield"><input id="cap-now" type="number" inputmode="numeric" min="0" max="100000" step="10" value="${d.now}" data-fid="cap-now"><span class="u" aria-hidden="true">${esc(nd.unit)}</span></div></div></div>
+      <div class="capsum"><button class="btn sm" data-act="cap-full" data-fid="cap-full">${icon('hopper')}It is full</button><span class="cap num" id="cap-pct" role="status" aria-live="polite">${capPct(d.total, d.now, nd.unit)}</span><div class="capbar" id="cap-bar" aria-hidden="true"><i></i></div></div>
+      ${d.err ? `<p class="err" role="alert">${esc(d.err)}</p>` : ''}
+      <p class="cap">Use the real size of your hopper or reservoir and what you put in it. The level then counts down from what the node feeds, and is still only an estimate.</p></div>
+      <div class="foot"><button class="btn" data-act="dlg-close" data-fid="cap-cancel">Cancel</button><button class="btn primary" data-act="cap-save" data-id="${nd.id}" data-fid="cap-save">Save</button></div>`; });
+  },
+  'cap-full': () => { $('#cap-now').value = $('#cap-total').value; capLive(); $('#cap-now').focus(); },
+  'cap-save': b => {
+    const nd = node(b.dataset.id), d = S.capDraft, tv = $('#cap-total').value.trim(), nv = $('#cap-now').value.trim();
+    d.total = tv; d.now = nv;
+    const total = Number(tv), now = Number(nv);
+    if (!tv || !Number.isFinite(total) || total < 1 || total > 100000) d.err = `Enter a total from 1 to 100000 ${nd.unit}, for example 1500.`;
+    else if (!nv || !Number.isFinite(now) || now < 0) d.err = `Enter the amount in it now, 0 or more ${nd.unit}.`;
+    else if (now > total) d.err = `The amount now (${now} ${nd.unit}) is more than the total capacity (${total} ${nd.unit}).`;
+    else d.err = '';
+    if (d.err) { redrawDlg(); const f = $(d.err.startsWith('Enter the amount') ? '#cap-now' : '#cap-total'); if (f) f.focus(); return; }
+    const prev = { cap: nd.capacity, lvl: nd.lvl, hop: nd.hopper, custom: nd.capCustom, rf: (nd.refills || []).slice() };
+    nd.capacity = Math.round(total); nd.capCustom = true; nd.lvl = +(now / total * 100).toFixed(1); nd.hopper = nd.lvl <= 20 ? 'low' : 'ok';
+    nd.refills = [{ t: Date.now(), lvl: nd.lvl, set: true }].concat(nd.refills || []).slice(0, 10);
+    S.capDraft = null; closeDlg();
+    toast(`${nd.name}: ${Math.round(now)} of ${Math.round(total)} ${nd.unit} set`, 'ok', () => { nd.capacity = prev.cap; nd.lvl = prev.lvl; nd.hopper = prev.hop; nd.capCustom = prev.custom; nd.refills = prev.rf; render(); });
+  },
+  refill: b => { const nd = node(b.dataset.id); openDlg(() => `<h2>${hopperTxt(nd)} refilled</h2><p>How full is it now? The level is only an estimate, so pick the closest.</p><div class="od-cluster" style="--od-gap:8px;margin-top:12px">${[[100, 'Full'], [75, 'About 75%'], [50, 'About 50%']].map(([v, l]) => `<button class="btn" data-act="refill-set" data-id="${nd.id}" data-v="${v}" data-fid="rf-${v}">${l}</button>`).join('')}</div><div class="foot"><button class="btn" data-act="dlg-close" data-first data-fid="d-cancel">Cancel</button></div>`); },
+  'refill-set': b => {
+    const nd = node(b.dataset.id), v = +b.dataset.v, prev = lvlOf(nd), prevHop = nd.hopper;
+    nd.lvl = v; nd.hopper = v <= 20 ? 'low' : 'ok'; nd.refills = [{ t: Date.now(), lvl: v }].concat(nd.refills || []).slice(0, 10);
+    const acked = D.alerts.filter(a => a.nodeId === nd.id && !a.ack && /level (is )?estimated low/.test(a.text)); acked.forEach(a => { a.ack = true; });
+    closeDlg();
+    toast(`${nd.name}: ${hopperTxt(nd).toLowerCase()} set to about ${v}%`, 'ok', () => { nd.lvl = prev; nd.hopper = prevHop; nd.refills.shift(); acked.forEach(a => { a.ack = false; }); render(); });
+  },
+  'note-edit': b => { const nd = node(b.dataset.id); openDlg(() => `<h2>Note · ${esc(nd.name)}</h2><label class="lab" for="nn">Note (up to 160 characters)</label><textarea id="nn" rows="4" maxlength="160" data-first data-fid="nn" style="width:100%">${esc(nd.note || '')}</textarea><div class="foot"><button class="btn" data-act="dlg-close" data-fid="n-cancel">Cancel</button><button class="btn primary" data-act="note-save" data-id="${nd.id}" data-fid="n-save">Save</button></div>`); },
+  'note-save': b => { const nd = node(b.dataset.id); nd.note = $('#nn').value.trim(); closeDlg(); toast('Note saved', 'ok'); },
+  'sched-skip': b => {
+    const nd = node(S.schedNode), sc = nd.scheds.find(x => x.id === b.dataset.id);
+    if (skipOn(sc)) { sc.skip = 0; toast('Skip removed', 'ok'); }
+    else { const t = nextOccurrence(sc.h, sc.m, sc.days); if (!t) return; sc.skip = t; toast(`${stamp(t)} feed skipped for ${nd.name}`, '', () => { sc.skip = 0; render(); }); }
+    nd.pushedAt = Date.now(); render();
+  },
+  'hold-open': () => openDlg(() => `<h2>Hold all scheduled feeds</h2><p>Use this when you are away or feeding by hand. Scheduled feeds are skipped on every node until the time you pick. Manual feeds still work.</p><p class="cap" style="margin-top:8px">The hub tells online nodes to pause. A node that is offline keeps its saved fallback schedule until it reconnects.</p><div class="od-cluster" style="--od-gap:8px;margin-top:12px">${[[1, '1 day'], [3, '3 days'], [7, '1 week'], [14, '2 weeks']].map(([d, l]) => `<button class="fchip" data-act="hold-set" data-d="${d}" data-fid="hs-${d}">${l}</button>`).join('')}</div><div class="foot"><button class="btn" data-act="dlg-close" data-first data-fid="d-cancel">Cancel</button></div>`),
+  'hold-set': b => { S.settings.holdUntil = Date.now() + (+b.dataset.d) * 86400000; closeDlg(); toast(`Hold until ${stamp(S.settings.holdUntil)}`, 'ok'); },
+  'hold-end': () => { S.settings.holdUntil = 0; toast('Hold ended. Scheduled feeds resume.', 'ok'); render(); },
+  'backup-now': () => {
+    if (S.sd !== 'ok') return toast('No SD card to back up to', 'warn');
+    BACKUP = makeBackup(); S.backupAt = BACKUP.savedAt;
+    try { localStorage.setItem('aio-backup-v1', JSON.stringify(BACKUP)); } catch (e) { }
+    toast('Backup saved to SD (simulated)', 'ok'); render();
+  },
+  'backup-restore': () => confirmDlg('Restore from the backup?', `This replaces nodes, schedules and settings with the backup from ${stamp(S.backupAt)}. Feed history is not changed. The PIN and MQTT password stay as they are now.`, 'Restore', 'backup-restore-ok'),
+  'backup-restore-ok': () => {
+    if (!BACKUP) return;
+    D.nodes = JSON.parse(JSON.stringify(BACKUP.nodes)); D.nodes.forEach(nd => { nd.feed = null; });
+    Object.assign(S.settings, BACKUP.settings); setTz(S.settings.tz);
+    $('#dlg').close(); $('#scrim').hidden = true; dlgRender = null; applyTheme(); applyBright();
+    toast('Settings restored from backup', 'ok'); go('settings');
+  },
+  'backup-download': () => {
+    const bk = makeBackup(), d = new Date(), nm = `aio-backup-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}.json`;
+    toast(saveFile(nm, JSON.stringify(bk, null, 2), 'application/json') ? `Saved ${nm}` : 'Download is blocked in this preview', 'ok');
+  },
+  'notif-test': () => { notify('Test', 'Test message from the AIO hub.', true); render(); },
+  'setup-start': () => { D.pairing = null; S.setup = { step: 0, nodeId: null, h: 7, m: 0, days: 'all', amount: 0, wifi: '', saved: '', capNode: null, capTotal: '', capNow: '', capErr: '' }; go('setup'); },
+  'wz-next': () => {
+    const w = S.setup; if (w.step === 2 && !node(w.nodeId)) return;
+    if (w.step === 3) {
+      const nd = node(w.nodeId), tv = $('#wz-ct').value.trim(), nv = $('#wz-cn').value.trim();
+      w.capTotal = tv; w.capNow = nv; w.capErr = capCheck(tv, nv, nd.unit);
+      if (w.capErr) { render(); $(/^Enter the amount|more than/.test(w.capErr) ? '#wz-cn' : '#wz-ct').focus(); return; }
+      setCap(nd, Number(tv), Number(nv));
+    }
+    w.step = Math.min(5, w.step + 1);
+    if (w.step === 3) { const nd = node(w.nodeId); if (nd && w.capNode !== nd.id) { w.capNode = nd.id; w.capTotal = capOf(nd); w.capNow = Math.round(lvlOf(nd) / 100 * capOf(nd)); w.capErr = ''; } }
+    if (w.step === 4 && !w.amount) { const nd = node(w.nodeId); if (nd) w.amount = nd.amount; }
+    render();
+  },
+  'wz-node': b => { const nd = node(b.dataset.id); S.setup.nodeId = nd.id; S.setup.amount = nd.amount; render(); },
+  'wz-wifi': () => { const w = S.setup; w.wifi = 'busy'; render(); setTimeout(() => { if (S.setup === w) { w.wifi = 'ok'; if (S.view === 'setup') render(); } }, 1200); },
+  'wz-step': b => { const w = S.setup, d = +b.dataset.d; if (b.dataset.k === 'h') w.h = (w.h + d + 24) % 24; else w.m = (w.m + d + 60) % 60; render(); },
+  'wz-amt': b => { const w = S.setup, nd = node(w.nodeId); w.amount = Math.max(nd.step, w.amount + (+b.dataset.d) * nd.step); render(); },
+  'wz-days': b => { S.setup.days = b.dataset.v; render(); },
+  'wz-save': () => {
+    const w = S.setup, nd = node(w.nodeId); if (!nd || w.amount > nd.maxAmount) return;
+    nd.scheds.push({ id: uid('s'), h: w.h, m: w.m, days: [...PRESET[w.days]], amount: w.amount, on: true }); nd.pushedAt = Date.now();
+    w.saved = `${pad2(w.h)}:${pad2(w.m)}`; w.step = 5; toast('Schedule saved', 'ok'); render();
+  },
+  'wz-done': () => { S.setup = null; go('home'); },
+  'dlg-close': () => closeDlg(),
+  'sched-open': b => go('schedule', { schedNode: b.dataset.id, nodeId: null }),
+  'sched-node': b => { S.schedNode = b.dataset.id; render(); },
+  'sched-toggle': b => { const n = node(S.schedNode), s = n.scheds.find(x => x.id === b.dataset.id); s.on = !s.on; n.pushedAt = Date.now(); render(); },
+  'sched-edit': b => {
+    const n = node(S.schedNode), s = b.dataset.id && n.scheds.find(x => x.id === b.dataset.id);
+    S.edit = s ? { nodeId: n.id, id: s.id, h: s.h, m: s.m, days: [...s.days], amount: s.amount, on: s.on } : { nodeId: n.id, id: null, h: 12, m: 0, days: [1, 1, 1, 1, 1, 1, 1], amount: n.amount, on: true };
+    openDlg(schedDlg);
+  },
+  'ed-step': b => { const e = S.edit, d = +b.dataset.d; if (b.dataset.k === 'h') e.h = (e.h + d + 24) % 24; else e.m = (e.m + d + 60) % 60; redrawDlg(); },
+  'ed-amt': b => { const e = S.edit, n = node(e.nodeId); e.amount = Math.max(n.step, e.amount + (+b.dataset.d) * n.step); e.errAmt = false; redrawDlg(); },
+  'ed-day': b => { const e = S.edit; e.days[+b.dataset.i] = e.days[+b.dataset.i] ? 0 : 1; e.errDays = false; redrawDlg(); },
+  'ed-on': () => { S.edit.on = !S.edit.on; redrawDlg(); },
+  'ed-save': () => {
+    const e = S.edit, n = node(e.nodeId);
+    e.errDays = !e.days.some(Boolean); e.errAmt = e.amount > n.maxAmount;
+    if (e.errDays || e.errAmt) { redrawDlg(); return; }
+    if (e.id) Object.assign(n.scheds.find(s => s.id === e.id), { h: e.h, m: e.m, days: e.days, amount: e.amount, on: e.on });
+    else n.scheds.push({ id: uid('s'), h: e.h, m: e.m, days: e.days, amount: e.amount, on: e.on });
+    n.pushedAt = Date.now(); closeDlg(); toast(`Saved. Pushing to ${n.name}…`, 'ok');
+  },
+  'ed-del': () => {
+    const e = S.edit, n = node(e.nodeId), idx = n.scheds.findIndex(s => s.id === e.id), s = n.scheds[idx];
+    n.scheds.splice(idx, 1); n.pushedAt = Date.now(); closeDlg();
+    toast('Schedule deleted', '', () => { n.scheds.splice(Math.min(idx, n.scheds.length), 0, s); toast('Schedule restored', 'ok'); render(); });
+  },
+  hfilter: b => { S.hFilter = b.dataset.k; render(); },
+  export: () => {
+    const d = new Date(), nm = `feedlog-${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}.csv`;
+    const rows = [['time', 'node', 'amount', 'unit', 'result', 'source']].concat(D.history.map(h => { const nd = node(h.nodeId); return [new Date(h.t).toISOString(), nd ? nd.name : 'Removed node', h.amount, h.unit, h.code, h.src]; }));
+    const ok = saveFile(nm, rows.map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n'), 'text/csv');
+    toast(ok ? `Exported ${D.history.length} rows as ${nm}` : `Export is blocked in this preview (${D.history.length} rows)`, ok ? 'ok' : 'warn');
+  },
+  ack: b => { D.alerts.find(a => a.id === b.dataset.id).ack = true; render(); },
+  ackall: () => { D.alerts.forEach(a => a.ack = true); render(); },
+  'set-toggle': b => {
+    const k = b.dataset.k;
+    if (k === 'pin' && !S.settings.pin) { S.pinErr = ''; return openDlg(() => `<h2>Set a PIN</h2><div class="stack"><div><label class="lab" for="pin">4-digit PIN (required)</label><input id="pin" type="password" inputmode="numeric" maxlength="4" data-first data-fid="pin" ${S.pinErr ? 'aria-invalid="true"' : ''}>${S.pinErr ? `<p class="err">${S.pinErr}</p>` : ''}</div></div><div class="foot"><button class="btn" data-act="dlg-close" data-fid="pcancel">Cancel</button><button class="btn primary" data-act="pin-save" data-fid="psave">Enable PIN</button></div>`); }
+    S.settings[k] = !S.settings[k]; if (k === 'ntp' && S.settings.ntp) S.syncedAt = Date.now();
+    if (k === 'mqtt') { if (S.settings.mqtt) mqConnect(); else { S.mq.state = 'disabled'; S.mq.err = ''; } }
+    render();
+  },
+  'pin-save': () => { const v = $('#pin').value; if (!/^\d{4}$/.test(v)) { S.pinErr = 'Use exactly 4 digits, for example 4821.'; redrawDlg(); return; } S.settings.pin = true; S.settings.pinCode = v; S.unlockUntil = Date.now() + 60000; closeDlg(); toast('PIN lock enabled', 'ok'); },
+  ota: () => { S.otaState = 'check'; render(); setTimeout(() => { S.otaState = 'done'; render(); toast('Hub firmware is up to date', 'ok'); }, 2200); },
+  factory: () => openDlg(() => `<h2>Factory reset this hub?</h2><p>This erases all nodes, schedules and history. It cannot be undone.</p><label class="lab" for="rst" style="margin-top:12px">Type RESET to confirm</label><input id="rst" type="text" autocomplete="off" data-first data-fid="rst" style="width:200px"><div class="foot"><button class="btn" data-act="dlg-close" data-fid="d-cancel">Cancel</button><button class="btn danger" id="rst-go" data-act="factory-ok" data-fid="rst-go" disabled>Erase everything</button></div>`),
+  'factory-ok': () => { try { localStorage.removeItem(KEY); } catch (e) { } D = seed(); Q.length = 0; busy = false; $('#dlg').close(); $('#scrim').hidden = true; dlgRender = null; toast('Hub reset. Sample data restored.', 'warn'); go('home'); },
+  pair: () => { D.pairing = { until: Date.now() + 60000, found: [] }; schedulePairFind(); go('pair'); },
+  'pair-restart': () => { D.pairing.until = Date.now() + 60000; schedulePairFind(); render(); },
+  'pair-pick': b => { const f = D.pairing.found.find(x => x.mac === b.dataset.id); S.pairErr = ''; S.pairDraft = null; openDlg(() => pairNameDlg(f)); },
+  'pair-accept': b => {
+    const name = $('#pn').value.trim(), f = D.pairing.found.find(x => x.mac === b.dataset.id), kind = $('#pt').value, tpl = TEMPL[kind];
+    const tv = $('#pc-total').value.trim(), nv = $('#pc-now').value.trim();
+    S.pairDraft = { name, tpl: kind, total: tv, now: nv };
+    S.pairErr = !name ? 'Give the node a name, for example "Chicken Run".' : capCheck(tv, nv, tpl[1]);
+    if (S.pairErr) { $('#dlg').innerHTML = pairNameDlg(f); $(!name ? '#pn' : (/^Enter the amount|more than/.test(S.pairErr) ? '#pc-now' : '#pc-total')).focus(); return; }
+    const total = Math.round(Number(tv)), lvl0 = +(Number(nv) / Number(tv) * 100).toFixed(1);
+    S.pairDraft = null; S.pairErr = '';
+    f.taken = true;
+    D.nodes.push({ id: uid('n'), name, mcu: f.mcu, mech: tpl[0], kind, unit: tpl[1], status: 'online', hopper: lvl0 <= 20 ? 'low' : 'ok', vin: 12000, rssi: f.rssi, fw: f.fw, amount: tpl[2], step: tpl[3], cal: kind === 'gate' ? 4 : kind === 'auger' ? 20 : 8, calIn: 's', calOut: kind === 'pump' ? 'ml' : 'g', test: kind === 'gate' ? 2 : 5, maxAmount: tpl[4], hourCap: tpl[5], dayCap: tpl[6], maxOnMs: tpl[7], cooldownS: 15, feed: null, paused: false, lastAct: 0, calAt: Date.now(), scheds: [], lvl: lvl0, capacity: total, capCustom: total !== PCAP[kind], note: '', refills: [{ t: Date.now(), lvl: lvl0, set: true }] });
+    $('#dlg').close(); $('#scrim').hidden = true; dlgRender = null; D.pairing = null; toast(`${name} paired. Calibrate it before first use.`, 'ok');
+    if (S.setup) { const nn = D.nodes[D.nodes.length - 1]; S.setup.nodeId = nn.id; S.setup.amount = nn.amount; S.setup.step = 4; go('setup'); } else go('home');
+  },
+  calstart: b => { const n = node(b.dataset.id); S.cal = { nodeId: n.id, step: 'setup', runs: [], test: n.test, w: 0 }; go('cal'); },
+  'cal-amt': b => { const n = node(S.cal.nodeId); S.cal.test = Math.min(Math.max(1, Math.floor(n.maxOnMs / 1000)), Math.max(1, S.cal.test + (+b.dataset.d))); render(); },
+  'cal-run': () => {
+    const c = S.cal, n = node(c.nodeId); c.step = 'run'; render();
+    let p = 0; const iv = setInterval(() => { p += 10; const el = $('#calprog'); if (el) el.style.width = p + '%'; if (p >= 100) { clearInterval(iv); c.w = Math.max(1, Math.round(c.test * n.cal * (0.95 + Math.random() * 0.1))); c.step = 'weigh'; render(); } }, 220);
+  },
+  'cal-w': b => { S.cal.w = Math.max(1, S.cal.w + (+b.dataset.d)); render(); },
+  'cal-rec': () => { const c = S.cal; c.runs.push(c.w / c.test); c.step = c.runs.length >= 3 ? 'review' : 'setup'; render(); },
+  'cal-redo': () => { S.cal.runs = []; S.cal.step = 'setup'; render(); },
+  'cal-save': () => { const c = S.cal, n = node(c.nodeId); n.cal = +median(c.runs).toFixed(2); n.calAt = Date.now(); toast(`${n.name}: calibration saved`, 'ok'); go('node', { cal: null }); }
+};
+
+function schedulePairFind() {
+  const p = D.pairing, pool = [['7C:DF:A1:3B:09:E4', 'ESP32-C3', '0.4.2', -57], ['A4:CF:12:8E:55:10', 'ESP8266', '0.4.1', -71]];
+  pool.forEach((f, i) => setTimeout(() => { if (D.pairing === p && !p.found.some(x => x.mac === f[0]) && Date.now() < p.until + 1) { p.found.push({ mac: f[0], mcu: f[1], fw: f[2], rssi: f[3] }); if (S.view === 'pair') render(); } }, 1800 + i * 3500));
+}
+
+/* ===== Events ===== */
+document.addEventListener('click', e => {
+  wake();
+  const h = e.target.closest('[data-hold]');
+  if (h) { if (!h.disabled && Date.now() - hold.fired > 600 && e.detail > 0) toast('Press and hold the button to confirm the feed'); return; }
+  const b = e.target.closest('[data-act]');
+  if (b && ACT[b.dataset.act]) ACT[b.dataset.act](b);
+});
+document.addEventListener('change', e => {
+  if (e.target.id === 'pt') {
+    const k = e.target.value, t = $('#pc-total'), n = $('#pc-now'); if (t && n) { t.value = PCAP[k]; n.value = PCAP[k]; }
+    document.querySelectorAll('.pc-u').forEach(x => { x.textContent = k === 'pump' ? 'ml' : 'g'; }); return;
+  }
+  const wz = e.target.dataset && e.target.dataset.wz;
+  if (wz) { if (wz === 'tz') { S.settings.tz = e.target.value; setTz(e.target.value); } else if (wz === 'ssid') S.settings.ssid = e.target.value; render(); return; }
+  const k = e.target.dataset && e.target.dataset.bind; if (!k) return;
+  const v = e.target.value, s = S.settings;
+  if (k === 'hnode') S.hNode = v;
+  else if (k === 'tz') { s.tz = v; setTz(v); } else if (k === 'off') s.off = +v; else if (k === 'bright') s.bright = +v;
+  else { s[k] = v; S.mq.touched[k] = true; if (['broker', 'muser', 'mpass'].includes(k) && s.mqtt) mqConnect(); }
+  render(); applyBright(); applyTheme();
+});
+document.addEventListener('input', e => { if (e.target.id === 'cap-total' || e.target.id === 'cap-now') { capLive(); return; } if (e.target.id === 'rst') { const g = $('#rst-go'); if (g) g.disabled = e.target.value.trim().toUpperCase() !== 'RESET'; return; } if (e.target.dataset && e.target.dataset.bind === 'bright') { S.settings.bright = +e.target.value; applyBright(); const l = $('label[for=bright] .num'); if (l) l.textContent = S.settings.bright + '%'; } });
+
+/* hold-to-confirm */
+function startHold(el, e) {
+  if (el.disabled || hold.active) return;
+  hold.active = true; hold.id = el.dataset.hold; hold.x = e ? e.clientX : NaN; hold.y = e ? e.clientY : NaN;
+  el.classList.add('holding'); el.querySelector('.lbl').textContent = 'Keep holding…';
+  hold.timer = setTimeout(() => {
+    hold.fired = Date.now(); hold.active = false;
+    const amt = +el.dataset.amt, id = el.dataset.hold; hold.dirty = false;
+    try { if (navigator.vibrate) navigator.vibrate(40); } catch (err) { }
+    if (needPin('feed')) { render(); return askPin(() => manualFeed(id, amt), 'Manual feeding is locked.'); }
+    manualFeed(id, amt);
+  }, 800);
+}
+function applyTheme() { document.documentElement.dataset.theme = S.settings.theme === 'light' ? 'light' : 'dark'; }
+document.addEventListener('pointermove', e => { if (hold.active && Math.hypot(e.clientX - hold.x, e.clientY - hold.y) > 14) endHold($('[data-hold].holding')); });
+function endHold(el) {
+  if (!hold.active) return;
+  clearTimeout(hold.timer); hold.active = false;
+  if (el) { el.classList.remove('holding'); }
+  if (hold.dirty) { hold.dirty = false; render(); } else render();
+}
+document.addEventListener('pointerdown', e => { wake(); const h = e.target.closest('[data-hold]'); if (h) startHold(h, e); });
+['pointerup', 'pointercancel'].forEach(t => document.addEventListener(t, e => { if (hold.active) endHold($('[data-hold].holding')); }));
+document.addEventListener('pointerleave', () => { if (hold.active) endHold($('[data-hold].holding')); }, true);
+document.addEventListener('keydown', e => {
+  wake();
+  const h = e.target.closest && e.target.closest('[data-hold]');
+  if (h && (e.key === ' ' || e.key === 'Enter')) { e.preventDefault(); if (!e.repeat) startHold(h); return; }
+  if (e.key === 'Enter' && e.target.id === 'pinin') { e.preventDefault(); ACT['pin-check'](); return; }
+  const d = $('#dlg');
+  if (d.open) {
+    if (e.key === 'Escape') { e.preventDefault(); closeDlg(); }
+    else if (e.key === 'Tab') { const f = [...d.querySelectorAll('button:not(:disabled),input,select,textarea')]; if (!f.length) return; const first = f[0], last = f[f.length - 1]; if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); } else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); } }
+  }
+});
+document.addEventListener('keyup', e => { if (hold.active && (e.key === ' ' || e.key === 'Enter')) endHold($('[data-hold].holding')); });
+
+/* screen dimming, brightness, scaling */
+let idleT;
+function applyBright() { $('#app').style.filter = `brightness(${0.4 + S.settings.bright / 100 * 0.6})`; }
+function wake() {
+  const dim = $('#dim');
+  if (!dim.hidden) { dim.hidden = true; }
+  clearTimeout(idleT); if (S.settings.off > 0) idleT = setTimeout(() => { if (!document.hidden) { $('#dimclk').textContent = hhmm(Date.now()); $('#dim').hidden = false; } }, S.settings.off * 1000);
+}
+$('#dim').addEventListener('pointerdown', e => { e.stopPropagation(); e.preventDefault(); $('#dim').hidden = true; wake(); });
+function fit() { const s = Math.min(innerWidth / 800, innerHeight / 480); $('#stage').style.transform = `translate(-50%,-50%) scale(${s})`; }
+addEventListener('resize', fit);
+
+/* ===== Boot ===== */
+fit(); applyBright(); applyTheme(); render(); wake();
+$('#boot').addEventListener('pointerdown', () => { if (S.bootAbort) S.bootAbort(); });
+rebootHub(true);
+setInterval(() => {
+  schedTick(); tickClock();
+  if (D.pairing && S.view === 'pair') { const left = Math.max(0, Math.ceil((D.pairing.until - Date.now()) / 1000)); const pc = $('#pcount'); if (pc) { pc.textContent = left ? left + ' s left' : 'Closed'; if (!left) render(); } }
+}, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  host-tests:
+    name: Host unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Run host tests (Unity, native)
+        run: pio test -d test
+
+  firmware:
+    name: Build ${{ matrix.env }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { project: hub, env: hub_esp32s3 }
+          - { project: node, env: node_esp8266 }
+          - { project: node, env: node_esp32c3 }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Build
+        run: pio run -d ${{ matrix.project }} -e ${{ matrix.env }}
+      - name: Upload firmware artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: fw-${{ matrix.env }}
+          path: ${{ matrix.project }}/.pio/build/${{ matrix.env }}/*.bin
+          if-no-files-found: error
+
+  pages:
+    name: Deploy web flasher to GitHub Pages
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: firmware
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Download firmware artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: fw-*
+          path: build
+      - name: Restore per-env build layout
+        run: |
+          for d in build/fw-*; do
+            mv "$d" "build/${d#build/fw-}"
+          done
+      - name: Assemble flasher site
+        run: |
+          VERSION=$(git describe --tags --always --dirty)
+          python tools/flasher/make_manifests.py --build-dir build --version "$VERSION"
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

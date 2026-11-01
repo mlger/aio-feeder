@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AIO Feeder — Web Flasher</title>
+<meta name="description" content="Flash AIO Feeder hub and node firmware from the browser (ESP Web Tools / Web Serial).">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 96 96%27%3E%3Crect width=%2796%27 height=%2796%27 rx=%2718%27 fill=%27%230d1216%27/%3E%3Cpath d=%27M22 22h52L56 48v14l-16 8V48z%27 fill=%27none%27 stroke=%27%232dd4bf%27 stroke-width=%276%27 stroke-linejoin=%27round%27/%3E%3Ccircle cx=%2748%27 cy=%2780%27 r=%275%27 fill=%27%232dd4bf%27/%3E%3C/svg%3E">
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+:root {
+  --bg: #0d1216; --surface: #151c22; --surface-2: #1d2730; --surface-3: #26333e;
+  --line: #2f3d49; --text: #e9eff3; --muted: #a3b3bf;
+  --accent: #2dd4bf; --accent-ink: #04201c; --accent-hover: #5eead4;
+  --ok: #4ade80; --warn: #fbbf24; --warn-ink: #1a1200; --bad: #ff8a80;
+  --fs-cap: 14px; --fs-body: 16px; --fs-lead: 18px; --fs-title: 22px; --fs-big: 30px;
+  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
+  --font-num: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
+  --r-sm: 6px; --r-md: 10px; --t-fast: 150ms;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; padding: 0; }
+body {
+  background: var(--bg); color: var(--text); font-family: var(--font-ui);
+  font-size: var(--fs-body); line-height: 1.45;
+  min-height: 100vh; display: flex; flex-direction: column;
+}
+.wrap { width: 100%; max-width: 880px; margin: 0 auto; padding: 0 var(--s4); }
+header { border-bottom: 1px solid var(--line); background: var(--surface); }
+.hrow { display: flex; align-items: center; gap: var(--s3); padding: var(--s4) 0; }
+.hrow img { width: 40px; height: 40px; }
+h1 { font-size: var(--fs-title); font-weight: 700; margin: 0; }
+.sub { color: var(--muted); font-size: var(--fs-cap); margin: 0; }
+main { flex: 1; padding: var(--s5) 0; }
+.banner { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s3) var(--s4);
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md);
+  font-size: var(--fs-cap); color: var(--muted); }
+.banner strong { color: var(--text); }
+.banner .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--warn); margin-top: 5px; }
+.grid { display: grid; gap: var(--s4); grid-template-columns: 1fr; margin-top: var(--s4); }
+@media (min-width: 720px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+.card { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4);
+  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); min-width: 0; }
+.card h2 { font-size: var(--fs-lead); font-weight: 700; margin: 0; display: flex; align-items: center; gap: var(--s2); }
+.card p { margin: 0; color: var(--muted); font-size: var(--fs-cap); }
+.meta { display: grid; gap: 2px; font-size: var(--fs-cap); color: var(--muted); }
+.meta b { color: var(--text); font-weight: 600; }
+esp-web-install-button { display: block; }
+esp-web-install-button button {
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--s2);
+  width: 100%; min-height: 48px; padding: 0 var(--s4); border-radius: var(--r-md);
+  border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
+  font-weight: 700; font-size: var(--fs-body); cursor: pointer;
+  transition: background var(--t-fast); font-family: var(--font-ui); }
+esp-web-install-button button:hover { background: var(--accent-hover); }
+.no-serial { display: none; width: 100%; min-height: 48px; padding: 0 var(--s4);
+  border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface-2);
+  color: var(--muted); font-weight: 600; font-size: var(--fs-cap); text-align: center; }
+.no-serial.show { display: flex; align-items: center; justify-content: center; }
+.unsupported esp-web-install-button button { display: none; }
+.unsupported .no-serial { display: flex; align-items: center; justify-content: center; }
+.steps { margin-top: var(--s5); padding: var(--s4); background: var(--surface);
+  border: 1px solid var(--line); border-radius: var(--r-md); }
+.steps h2 { font-size: var(--fs-lead); margin: 0 0 var(--s2); }
+.steps ol { margin: 0; padding-left: 20px; display: grid; gap: var(--s2); color: var(--muted); font-size: var(--fs-body); }
+.steps code { font-family: var(--font-num); font-size: var(--fs-cap); background: var(--surface-3);
+  padding: 1px 6px; border-radius: var(--r-sm); color: var(--text); }
+footer { border-top: 1px solid var(--line); background: var(--surface);
+  margin-top: auto; padding: var(--s3) 0; }
+footer .wrap { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); align-items: center;
+  color: var(--muted); font-size: var(--fs-cap); }
+footer a { color: var(--accent); text-decoration: none; }
+footer a:hover { color: var(--accent-hover); }
+footer .ver { margin-left: auto; font-family: var(--font-num); }
+</style>
+</head>
+<body>
+<header>
+  <div class="wrap hrow">
+    <img src="assets/logo.svg" alt="" width="40" height="40">
+    <div>
+      <h1>AIO Feeder — Web Flasher</h1>
+      <p class="sub">Flash the hub and node firmware straight from the browser. No IDE, no drivers on Windows/macOS.</p>
+    </div>
+  </div>
+</header>
+
+<main class="wrap">
+  <div class="banner">
+    <span class="dot" aria-hidden="true"></span>
+    <span><strong>Requirements:</strong> Chrome or Edge on desktop (Web Serial), a USB data cable, and the board in
+    download mode. Close any program holding the serial port (serial monitor, Arduino IDE). Flashing erases the
+    targeted app region — keep the device on stable power until the write finishes.</span>
+  </div>
+
+  <div class="grid">
+    <section class="card" aria-labelledby="hub-h">
+      <h2 id="hub-h">Hub</h2>
+      <p>Waveshare ESP32-S3-Touch-LCD-4.3B — schedules, calibration, logs. Hold <b>BOOT</b>, plug USB, release.</p>
+      <div class="meta"><span><b>Chip:</b> ESP32-S3</span><span><b>Manifest:</b> <code>hub/manifest.json</code></span></div>
+      <esp-web-install-button manifest="hub/manifest.json">
+        <button slot="activate">Install hub firmware</button>
+      </esp-web-install-button>
+      <span class="no-serial">Web Serial unavailable — open in desktop Chrome/Edge over HTTPS.</span>
+    </section>
+
+    <section class="card" aria-labelledby="c3-h">
+      <h2 id="c3-h">Node — ESP32-C3</h2>
+      <p>ESP32-C3 SuperMini + DS3231 + relay + 12 V solenoid. Hold <b>BOOT</b>, plug USB, release.</p>
+      <div class="meta"><span><b>Chip:</b> ESP32-C3</span><span><b>Manifest:</b> <code>node-esp32c3/manifest.json</code></span></div>
+      <esp-web-install-button manifest="node-esp32c3/manifest.json">
+        <button slot="activate">Install C3 node firmware</button>
+      </esp-web-install-button>
+      <span class="no-serial">Web Serial unavailable — open in desktop Chrome/Edge over HTTPS.</span>
+    </section>
+
+    <section class="card" aria-labelledby="8266-h">
+      <h2 id="8266-h">Node — ESP8266</h2>
+      <p>ESP-12F class module + DS3231 + relay + 12 V solenoid. Pull <b>GPIO0</b> low while resetting.</p>
+      <div class="meta"><span><b>Chip:</b> ESP8266</span><span><b>Manifest:</b> <code>node-esp8266/manifest.json</code></span></div>
+      <esp-web-install-button manifest="node-esp8266/manifest.json">
+        <button slot="activate">Install ESP8266 node firmware</button>
+      </esp-web-install-button>
+      <span class="no-serial">Web Serial unavailable — open in desktop Chrome/Edge over HTTPS.</span>
+    </section>
+  </div>
+
+  <section class="steps" aria-labelledby="how-h">
+    <h2 id="how-h">How to flash</h2>
+    <ol>
+      <li>Plug the board in with a <b>data</b> USB cable (charge-only cables will not enumerate a serial port).</li>
+      <li>Put the board in download mode: hold <b>BOOT</b> (or tie <code>GPIO0</code> low) while connecting USB.</li>
+      <li>Press the install button for your board, pick its serial port, and follow the prompts.</li>
+      <li>First install or recovery: allow the installer to <b>erase the device</b> when asked.</li>
+      <li>When the write finishes, power-cycle the board — it boots the new firmware.</li>
+    </ol>
+  </section>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>AIO Feeder</span>
+    <a href="https://github.com/mlger/aio-feeder">Repository</a>
+    <a href="https://github.com/mlger/aio-feeder/blob/main/PLAN.md">Engineering plan</a>
+    <span class="ver" id="ver"></span>
+  </div>
+</footer>
+
+<script>
+  // Show the unsupported message only when Web Serial is genuinely missing.
+  if (!('serial' in navigator)) {
+    document.querySelectorAll('.card').forEach(function (c) { c.classList.add('unsupported'); });
+  }
+  fetch('build-info.json').then(function (r) { return r.ok ? r.json() : null; })
+    .then(function (j) { if (j && j.version) document.getElementById('ver').textContent = 'firmware ' + j.version; })
+    .catch(function () {});
+</script>
+</body>
+</html>

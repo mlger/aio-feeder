@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp"
+    },
+    "lvgl": {
+      "type": "http",
+      "url": "https://lvgl.mcp.kapa.ai/"
+    }
+  }
+}
