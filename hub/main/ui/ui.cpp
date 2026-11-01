@@ -108,6 +108,12 @@ void publish_alerts(const AlertsView &v) {
   s_alr_seq = s + 1;
 }
 
+void publish_pairing(const PairingView &p) {
+  const uint32_t s = s_pair_seq;
+  s_pair_snap[s & 1] = p;
+  s_pair_seq = s + 1;
+}
+
 uint8_t detail_node() { return s_detail_id; }
 
 void set_detail_node(uint8_t node_id) {
@@ -163,6 +169,18 @@ static lv_obj_t *s_alr_rows[UI_ALERTS_MAX_ACTIVE];
 static lv_obj_t *s_alr_acked_hdr_lbl = nullptr;
 static lv_obj_t *s_alr_acked_rows[UI_ALERTS_MAX_ACKED];
 static lv_obj_t *s_alr_footer_lbl = nullptr;
+
+/* pairing screen (§8.5, M4b) */
+static PairingView s_pair_snap[2];
+static volatile uint32_t s_pair_seq = 0;
+static uint32_t s_pair_seen = 0;
+static lv_obj_t *s_pair_scr = nullptr;
+static lv_obj_t *s_pair_head_lbl = nullptr; /* step title */
+static lv_obj_t *s_pair_left_lbl = nullptr; /* window countdown */
+static lv_obj_t *s_pair_rows[PAIR_MAX_CANDIDATES];
+static lv_obj_t *s_pair_code_lbl = nullptr; /* big digits (CODE step) */
+static lv_obj_t *s_pair_body_lbl = nullptr; /* multi-line body (FORM/DONE/IDLE) */
+static lv_obj_t *s_pair_hint_lbl = nullptr; /* footer hint */
 
 struct Card {
   lv_obj_t *root = nullptr;
@@ -1085,6 +1103,165 @@ static void update_alerts(const AlertsView &v) {
   }
 }
 
+/* --- pairing screen (§8.5) ----------------------------------------------------------- */
+
+static const char *pair_mech_name(uint8_t mech_sel) {
+  switch (mech_sel) {
+    case 1: return "auger";
+    case 2: return "pump";
+    default: return "gate";
+  }
+}
+
+static void build_pairing_screen() {
+  s_pair_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_pair_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_pair_scr, 0, 0);
+
+  /* header */
+  lv_obj_t *header = new_panel(s_pair_scr, UI_W, 30, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_right(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  s_pair_head_lbl = new_label(header, "Pairing", &lv_font_montserrat_16, C_TEXT);
+  lv_obj_t *spacer = lv_obj_create(header);
+  lv_obj_set_size(spacer, 1, 1);
+  lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(spacer, 0, 0);
+  lv_obj_set_flex_grow(spacer, 1);
+  s_pair_left_lbl = new_label(header, "", &lv_font_montserrat_14, C_MUTED);
+
+  /* discovery rows (DISCOVER step) */
+  for (int i = 0; i < PAIR_MAX_CANDIDATES; i++) {
+    lv_obj_t *row = lv_obj_create(s_pair_scr);
+    lv_obj_set_size(row, UI_W - 20, 17);
+    lv_obj_set_pos(row, 10, (int32_t)(38 + i * 19));
+    lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_set_style_pad_left(row, 6, 0);
+    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_TEXT);
+    (void)l;
+    s_pair_rows[i] = row;
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  /* confirmation code (CODE step) */
+  s_pair_code_lbl = new_label(s_pair_scr, "- - - -", &lv_font_montserrat_20, C_TEXT);
+  lv_obj_set_pos(s_pair_code_lbl, 10, 96);
+  lv_obj_add_flag(s_pair_code_lbl, LV_OBJ_FLAG_HIDDEN);
+
+  /* body (FORM / DONE / IDLE) */
+  s_pair_body_lbl = new_label(s_pair_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_label_set_long_mode(s_pair_body_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_pair_body_lbl, UI_W - 20);
+  lv_obj_set_pos(s_pair_body_lbl, 10, 40);
+
+  s_pair_hint_lbl = new_label(s_pair_scr, "", &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_pos(s_pair_hint_lbl, 10, UI_H - 18);
+}
+
+static void update_pairing(const PairingView &v) {
+  char buf[200];
+  if (s_pair_head_lbl) {
+    static const char *TITLES[] = {
+        "Pairing", "Pairing - add a feeder", "Confirm the code", "New feeder", "Paired"};
+    lv_label_set_text(s_pair_head_lbl, TITLES[v.step]);
+  }
+  if (s_pair_left_lbl) {
+    if (v.step == PAIR_IDLE)
+      lv_label_set_text(s_pair_left_lbl, "");
+    else {
+      snprintf(buf, sizeof(buf), "%us left", (unsigned)v.window_left_s);
+      lv_label_set_text(s_pair_left_lbl, buf);
+    }
+  }
+
+  /* discovery rows */
+  const bool rows_active = (v.step == PAIR_DISCOVER);
+  for (int i = 0; i < PAIR_MAX_CANDIDATES; i++) {
+    lv_obj_t *row = s_pair_rows[i];
+    if (!row) continue;
+    if (!rows_active || i >= v.cand_count) {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_t *l = lv_obj_get_child(row, 0);
+    if (!l) continue;
+    const PairCandidateRow &c = v.cand[i];
+    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X  fw %u.%u  %d dBm%s",
+             c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4], c.mac[5],
+             (unsigned)(c.fw_ver >> 8), (unsigned)(c.fw_ver & 0xFF), (int)c.rssi,
+             c.selected ? "  <" : "");
+    lv_label_set_text((lv_obj_t *)l, buf);
+    lv_obj_set_style_text_color(
+        (lv_obj_t *)l, lv_color_hex(c.selected ? C_TEXT : C_MUTED), 0);
+  }
+
+  /* code step */
+  if (s_pair_code_lbl) {
+    if (v.step == PAIR_CODE) {
+      snprintf(buf, sizeof(buf), "%c  %c  %c  %c", v.code_digits[0], v.code_digits[1],
+               v.code_digits[2], v.code_digits[3]);
+      lv_label_set_text(s_pair_code_lbl, buf);
+      lv_obj_remove_flag(s_pair_code_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(s_pair_code_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+
+  /* body per step */
+  if (s_pair_body_lbl) {
+    buf[0] = '\0';
+    switch (v.step) {
+      case PAIR_IDLE:
+        snprintf(buf, sizeof(buf),
+                 "No pairing window open.\n\n\"Add node\" listens for unpaired\nfeeders for 60 s.");
+        break;
+      case PAIR_DISCOVER:
+        if (!v.cand_count)
+          snprintf(buf, sizeof(buf), "Listening... hold the node's button\nat boot to announce it.");
+        break;
+      case PAIR_CODE:
+        snprintf(buf, sizeof(buf), "The feeder shows this code (serial/LED).\n\nDoes it match? Confirm there");
+        break;
+      case PAIR_FORM:
+        snprintf(buf, sizeof(buf),
+                 "Name:  %s\nType:  %s (%s)\nFull:  %lu %s\nIn it: %lu %s\n\n%s",
+                 v.name[0] ? v.name : "(default)", pair_mech_name(v.mech_sel),
+                 pair_template_unit(v.mech_sel), (unsigned long)v.cap_total,
+                 pair_template_unit(v.mech_sel), (unsigned long)v.cap_now,
+                 pair_template_unit(v.mech_sel), v.summary);
+        break;
+      case PAIR_DONE:
+        snprintf(buf, sizeof(buf),
+                 "Feeder #%u added.\n\nThe key was sent wrapped with the\nconfirmed code - it never crossed\nthe air in the clear.",
+                 (unsigned)v.new_node_id);
+        break;
+    }
+    lv_label_set_text(s_pair_body_lbl, buf);
+    /* amber headline colour while the level is low (§8 UX) */
+    lv_obj_set_style_text_color(s_pair_body_lbl,
+                                lv_color_hex(v.step == PAIR_FORM && v.amber ? C_ALERT : C_TEXT),
+                                0);
+  }
+
+  if (s_pair_hint_lbl) {
+    static const char *HINTS[] = {
+        "", "Tap a feeder to compare codes", "Matching code? Confirm on the feeder",
+        "Review, then confirm on the feeder", "Done - back to the dashboard"};
+    lv_label_set_text(s_pair_hint_lbl, HINTS[v.step]);
+  }
+}
+
 /* --- LVGL plumbing ----------------------------------------------------------------- */
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -1106,6 +1283,7 @@ static void ui_task(void *) {
   build_edit_screen();
   build_history_screen();
   build_alerts_screen();
+  build_pairing_screen();
   lv_screen_load(s_scr);
 
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -1122,6 +1300,7 @@ static void ui_task(void *) {
     SH_EDIT = 2,
     SH_HIST = 3,
     SH_ALERTS = 4,
+    SH_PAIR = 5, /* slot index mirrored by the pairing driver in main.cpp */
     SH_COUNT
   };
   constexpr uint32_t SHOT_WINDOW_MS = 25000;
@@ -1139,7 +1318,8 @@ static void ui_task(void *) {
                      : shot == SH_DETAIL  ? s_det_scr
                      : shot == SH_EDIT    ? s_ed_scr
                      : shot == SH_HIST    ? s_hi_scr
-                                          : s_alr_scr);
+                     : shot == SH_ALERTS  ? s_alr_scr
+                                          : s_pair_scr);
       loaded = shot;
       s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
     }
@@ -1169,18 +1349,38 @@ static void ui_task(void *) {
       update_alerts(s_alr_snap[(as - 1) & 1]);
       s_alr_seen = as;
     }
+    const uint32_t ps = s_pair_seq;
+    if (ps != s_pair_seen) {
+      update_pairing(s_pair_snap[(ps - 1) & 1]);
+      s_pair_seen = ps;
+    }
 
     lv_timer_handler();
 
     /* screenshot markers once the first render has settled (runner dumps
-     * g_shot_fb after each marker; repeats every 5 s for reliability) */
+     * g_shot_fb after each marker; repeats every 5 s for reliability). The
+     * pairing slot reports its current step so the runner grabs one PNG per
+     * pairing phase (discover / code / form / done). */
     if (now - boot_ms > 6000 && s_last_flush_ms > 0 &&
         now - s_last_flush_ms > 400 && now - s_last_marker_ms > 5000) {
-      printf("\nAIO_SHOT %s\n", loaded == SH_DASH      ? "dashboard"
-                                : loaded == SH_DETAIL  ? "node_detail"
-                                : loaded == SH_EDIT    ? "sched_editor"
-                                : loaded == SH_HIST    ? "history"
-                                                       : "alerts");
+      const char *shot_name = "alerts";
+      switch (loaded) {
+        case SH_DASH: shot_name = "dashboard"; break;
+        case SH_DETAIL: shot_name = "node_detail"; break;
+        case SH_EDIT: shot_name = "sched_editor"; break;
+        case SH_HIST: shot_name = "history"; break;
+        case SH_ALERTS: shot_name = "alerts"; break;
+        case SH_PAIR: {
+          const PairingView &pv = s_pair_snap[(s_pair_seq - 1) & 1];
+          shot_name = pv.step == PAIR_CODE   ? "pairing_code"
+                      : pv.step == PAIR_FORM ? "pairing_form"
+                      : pv.step == PAIR_DONE ? "pairing_done"
+                                             : "pairing";
+          break;
+        }
+        default: break;
+      }
+      printf("\nAIO_SHOT %s\n", shot_name);
       fflush(stdout);
       s_last_marker_ms = now;
     }
@@ -1201,6 +1401,7 @@ void publish_detail(const NodeDetail &) {}
 void publish_sched_editor(const SchedEditor &) {}
 void publish_history(const HistoryView &) {}
 void publish_alerts(const AlertsView &) {}
+void publish_pairing(const PairingView &) {}
 uint8_t detail_node() { return 1; }
 void set_detail_node(uint8_t) {}
 

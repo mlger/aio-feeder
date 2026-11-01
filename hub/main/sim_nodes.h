@@ -44,6 +44,8 @@ constexpr uint8_t SIM_NODE_MAC[SIM_NODES][6] = {
     {0x02, 0x00, 0x00, 0x00, 0x00, 0x12},
 };
 constexpr uint8_t SIM_OFFLINE_MAC[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x13};
+/* pairing candidate (M4b shot): unpaired node beaconing PAIR_REQ (§6.3.2) */
+constexpr uint8_t SIM_PAIR_MAC[6] = {0x02, 0x00, 0x00, 0x00, 0x00, 0x14};
 
 constexpr size_t SIM_MAX_FRAME = FRAME_HEADER_SIZE + FRAME_MAX_PAYLOAD + FRAME_MAC_SIZE;
 
@@ -96,6 +98,17 @@ class NodeSideTransport : public ILinkTransport {
 
  private:
   int idx_;
+};
+
+/* pairing-candidate transport: stamps the candidate MAC on every frame */
+class PairSideTransport : public ILinkTransport {
+ public:
+  bool send(const uint8_t mac[6], const uint8_t *data, size_t len) override {
+    (void)mac;
+    return g_to_hub.push(SIM_PAIR_MAC, data, len);
+  }
+  void set_channel(uint8_t channel) override { (void)channel; }
+  uint8_t channel() const override { return 1; }
 };
 
 /* hub-role transport: route by destination mac (broadcast → all nodes) */
@@ -199,6 +212,11 @@ static void begin_nodes() {
     g_nodes[i].eng.add_peer(SIM_HUB_MAC, LINK_HUB_ID, g_keys[i], 32);
   }
   printf("sim: %d live node(s) started (accel x%u)\n", SIM_NODES, (unsigned)ACCEL);
+  g_pair_eng.begin(LinkEngine::Role::Node, &g_pair_tr, LinkHandlers{}, 0);
+  g_pair_eng.set_self(0, 0); /* node_id 0 + beacon_state 0 = unpaired */
+  printf("sim: pairing candidate %02X:%02X:%02X:%02X:%02X:%02X beacons PAIR_REQ\n",
+         SIM_PAIR_MAC[0], SIM_PAIR_MAC[1], SIM_PAIR_MAC[2], SIM_PAIR_MAC[3],
+         SIM_PAIR_MAC[4], SIM_PAIR_MAC[5]);
 }
 
 /* --- seeding --------------------------------------------------------------------- */
@@ -294,6 +312,28 @@ static void seed(HubRegistry &reg, EventLog &evlog, aio::ui::AlertsAck &ack) {
          (long long)unix);
 }
 
+/* --- pairing candidate ------------------------------------------------------------ */
+
+/* A fourth live engine in the node role that never pairs: it beacons a
+ * genuine PAIR_REQ (zero-key discovery frame, §6.4) every 1 s of virtual
+ * time so the pairing screen has a candidate to show during its slot. The
+ * hub's PAIR_ACCEPT (unicast) is dropped by the hub-side transport — the
+ * candidate ignores it, exactly like a node whose user hasn't confirmed. */
+static LinkEngine g_pair_eng;
+static PairSideTransport g_pair_tr;
+
+static void pair_tick(uint32_t vms) {
+  static uint32_t next_vms = 200;
+  if ((int32_t)(vms - next_vms) < 0) return;
+  next_vms = vms + 1000;
+  pair_req_payload_t pr{};
+  pr.fw_ver = 0x0103;
+  pr.caps = 0x01;
+  const uint8_t nonce[8] = {0xA1, 0x55, 0x00, 0x0B, 0x5E, 0xED, 0x01, 0x42};
+  memcpy(pr.node_nonce, nonce, 8);
+  g_pair_eng.emit(LINK_BROADCAST, AIO_ZERO_KEY, MSG_PAIR_REQ, 0, &pr, sizeof(pr), vms);
+}
+
 /* --- per-iteration drive (called under the state mutex) -------------------------- */
 
 /* deliver node → hub frames queued since last iteration */
@@ -307,6 +347,7 @@ static void tick_nodes(uint32_t now_ms) {
   const uint32_t vms = now_ms * ACCEL;
   g_virt_ms = vms;
   for (int i = 0; i < SIM_NODES; i++) g_nodes[i].tick(vms);
+  pair_tick(vms);
   for (int i = 0; i < SIM_NODES; i++) {
     SimFrame f;
     while (g_to_node[i].pop(&f)) g_nodes[i].eng.on_rx(SIM_HUB_MAC, f.data, f.len, -60, vms);

@@ -51,7 +51,7 @@ jobs:
             --qemu "$QEMU_BIN" \
             --flash hub/build/flash.img \
             --elf hub/build/aio-feeder-hub.elf \
-            --screens dashboard,node_detail,sched_editor,history,alerts --out screens --timeout 220
+            --screens dashboard,node_detail,sched_editor,history,alerts,pairing,pairing_code,pairing_form,pairing_done --out screens --timeout 320
       - name: Boot smoke assertions
         run: |
           tail -60 serial.log
@@ -63,6 +63,10 @@ jobs:
           test -f screens/sched_editor.png
           test -f screens/history.png
           test -f screens/alerts.png
+          test -f screens/pairing.png
+          test -f screens/pairing_code.png
+          test -f screens/pairing_form.png
+          test -f screens/pairing_done.png
       - name: Upload UI screenshots
         uses: actions/upload-artifact@v4
         with:
