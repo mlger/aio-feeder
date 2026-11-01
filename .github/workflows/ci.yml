@@ -49,11 +49,8 @@ jobs:
           for f in firmware partitions bootloader boot_app0; do
             cp -f "$BD/$f.bin" collect/ 2>/dev/null || true
           done
-          # espressif8266 keeps no bootloader in the build dir — eboot is in
-          # the framework package and flashes at 0x0.
-          if [ ! -f collect/bootloader.bin ] && [ "${{ matrix.env }}" = "node_esp8266" ]; then
-            cp -f "$HOME/.platformio/packages/framework-arduinoespressif8266/bootloaders/eboot/eboot.bin" collect/bootloader.bin
-          fi
+          # espressif8266: firmware.bin is one image with eboot embedded,
+          # flashed at 0x0 — no bootloader part exists or is needed.
           # Arduino OTA data partition image, if PIO didn't copy it into the build dir
           if [ ! -f collect/boot_app0.bin ] && [ "${{ matrix.env }}" != "node_esp8266" ]; then
             cp -f "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" collect/boot_app0.bin

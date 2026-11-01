@@ -8,11 +8,12 @@ Usage: make_manifests.py --build-dir BUILD_DIR --version V [--web DIR] [--out DI
 
 BUILD_DIR layout (what the CI pages job assembles from artifacts):
     BUILD_DIR/hub_esp32s3/{bootloader,partitions,boot_app0,firmware}.bin
-    BUILD_DIR/node_esp8266/{bootloader,firmware}.bin
+    BUILD_DIR/node_esp8266/firmware.bin
     BUILD_DIR/node_esp32c3/{bootloader,partitions,boot_app0,firmware}.bin
 
 boot_app0.bin is optional (absent on non-Arduino builds). Flash offsets follow
-esptool defaults per chip family.
+esptool defaults per chip family; the ESP8266 firmware.bin embeds eboot and
+flashes as one image at 0x0.
 """
 from __future__ import annotations
 
@@ -22,8 +23,12 @@ import shutil
 import sys
 from pathlib import Path
 
-# env -> (site dir, ESP Web Tools chipFamily, [(bin name, flash offset)])
-TARGETS: dict[str, tuple[str, str, list[tuple[str, int]]]] = {
+# env -> (site dir, chipFamily, [(bin name, flash offset)], required bin names)
+#
+# ESP32-S3/C3: bootloader + partitions + OTA data + app (esptool defaults).
+# ESP8266: PIO's firmware.bin is ONE image that already embeds eboot — flash
+# the whole thing at 0x0, no separate bootloader part.
+TARGETS: dict[str, tuple[str, str, list[tuple[str, int]], tuple[str, ...]]] = {
     "hub_esp32s3": (
         "hub",
         "ESP32-S3",
@@ -33,6 +38,7 @@ TARGETS: dict[str, tuple[str, str, list[tuple[str, int]]]] = {
             ("boot_app0.bin", 0xE000),
             ("firmware.bin", 0x10000),
         ],
+        ("firmware.bin", "bootloader.bin", "partitions.bin"),
     ),
     "node_esp32c3": (
         "node-esp32c3",
@@ -43,18 +49,17 @@ TARGETS: dict[str, tuple[str, str, list[tuple[str, int]]]] = {
             ("boot_app0.bin", 0xE000),
             ("firmware.bin", 0x10000),
         ],
+        ("firmware.bin", "bootloader.bin", "partitions.bin"),
     ),
     "node_esp8266": (
         "node-esp8266",
         "ESP8266",
         [
-            ("bootloader.bin", 0x0),
-            ("firmware.bin", 0x10000),
+            ("firmware.bin", 0x0),
         ],
+        ("firmware.bin",),
     ),
 }
-
-REQUIRED = "firmware.bin", "bootloader.bin"
 TITLES = {
     "hub_esp32s3": "AIO Feeder Hub (ESP32-S3)",
     "node_esp32c3": "AIO Feeder Node (ESP32-C3)",
@@ -98,12 +103,9 @@ def main() -> int:
     shutil.copytree(args.web, args.out, dirs_exist_ok=True)
     (args.out / ".nojekyll").write_text("")
 
-    for env, (site_dir, _family, parts) in TARGETS.items():
+    for env, (site_dir, _family, parts, required) in TARGETS.items():
         env_dir = args.build_dir / env
-        bin_names = {name for name, _ in parts}
-        missing_required = [
-            n for n in REQUIRED if not (env_dir / n).is_file() and n in bin_names
-        ]
+        missing_required = [n for n in required if not (env_dir / n).is_file()]
         if missing_required:
             print(f"error: {env}: missing {', '.join(missing_required)} in {env_dir}",
                   file=sys.stderr)
