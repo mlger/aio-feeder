@@ -199,6 +199,28 @@ static void th_config(const node_profile_t &p, uint8_t) {
   g_nodes[N].eng.send_config_ack(0x1234, 1, g_virt_ms);
 }
 
+/* --- pairing candidate ------------------------------------------------------------ */
+
+/* A fourth live engine in the node role that never pairs: it beacons a
+ * genuine PAIR_REQ (zero-key discovery frame, §6.4) every 1 s of virtual
+ * time so the pairing screen has a candidate to show during its slot. The
+ * hub's PAIR_ACCEPT (unicast) is dropped by the hub-side transport — the
+ * candidate ignores it, exactly like a node whose user hasn't confirmed. */
+static LinkEngine g_pair_eng;
+static PairSideTransport g_pair_tr;
+
+static void pair_tick(uint32_t vms) {
+  static uint32_t next_vms = 200;
+  if ((int32_t)(vms - next_vms) < 0) return;
+  next_vms = vms + 1000;
+  pair_req_payload_t pr{};
+  pr.fw_ver = 0x0103;
+  pr.caps = 0x01;
+  const uint8_t nonce[8] = {0xA1, 0x55, 0x00, 0x0B, 0x5E, 0xED, 0x01, 0x42};
+  memcpy(pr.node_nonce, nonce, 8);
+  g_pair_eng.send_pair_req(pr, vms);
+}
+
 static void begin_nodes() {
   for (int i = 0; i < SIM_NODES; i++) {
     LinkHandlers h{};
@@ -310,28 +332,6 @@ static void seed(HubRegistry &reg, EventLog &evlog, aio::ui::AlertsAck &ack) {
 
   printf("sim: clock pinned to %lld, registry seeded (3 nodes, 2 live)\n",
          (long long)unix);
-}
-
-/* --- pairing candidate ------------------------------------------------------------ */
-
-/* A fourth live engine in the node role that never pairs: it beacons a
- * genuine PAIR_REQ (zero-key discovery frame, §6.4) every 1 s of virtual
- * time so the pairing screen has a candidate to show during its slot. The
- * hub's PAIR_ACCEPT (unicast) is dropped by the hub-side transport — the
- * candidate ignores it, exactly like a node whose user hasn't confirmed. */
-static LinkEngine g_pair_eng;
-static PairSideTransport g_pair_tr;
-
-static void pair_tick(uint32_t vms) {
-  static uint32_t next_vms = 200;
-  if ((int32_t)(vms - next_vms) < 0) return;
-  next_vms = vms + 1000;
-  pair_req_payload_t pr{};
-  pr.fw_ver = 0x0103;
-  pr.caps = 0x01;
-  const uint8_t nonce[8] = {0xA1, 0x55, 0x00, 0x0B, 0x5E, 0xED, 0x01, 0x42};
-  memcpy(pr.node_nonce, nonce, 8);
-  g_pair_eng.send_pair_req(pr, vms);
 }
 
 /* --- per-iteration drive (called under the state mutex) -------------------------- */
