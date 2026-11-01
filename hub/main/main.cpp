@@ -902,7 +902,10 @@ extern "C" void app_main(void) {
            (unsigned long)reg.data().feed_id_seq);
   }
 
-  xTaskCreate(aio_loop_task, "aio-loop", 6144, nullptr, 5, nullptr);
+  /* 8 KB: the pairing commit path (session commit → PAIR_ACCEPT send →
+   * registry NVS save) digs deep into spi_flash; 6 KB overflowed in the
+   * QEMU shot build (docs/bench-m4b.md). The REPL skip below pays for it. */
+  xTaskCreate(aio_loop_task, "aio-loop", 8192, nullptr, 5, nullptr);
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
   aio::ui::start(); /* LVGL dashboard + AIO_SHOT markers (QEMU shot build) */
