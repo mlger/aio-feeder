@@ -177,10 +177,9 @@ static lv_obj_t *s_alr_footer_lbl = nullptr;
 static lv_obj_t *s_pair_scr = nullptr;
 static lv_obj_t *s_pair_head_lbl = nullptr; /* step title */
 static lv_obj_t *s_pair_left_lbl = nullptr; /* window countdown */
-static lv_obj_t *s_pair_rows[PAIR_MAX_CANDIDATES];
+static lv_obj_t *s_pair_cand_lbl = nullptr; /* discovery list, multi-line */
 static lv_obj_t *s_pair_code_lbl = nullptr; /* big digits (CODE step) */
-static lv_obj_t *s_pair_body_lbl = nullptr; /* multi-line body (FORM/DONE/IDLE) */
-static lv_obj_t *s_pair_hint_lbl = nullptr; /* footer hint */
+static lv_obj_t *s_pair_body_lbl = nullptr; /* multi-line body (all steps) */
 
 struct Card {
   lv_obj_t *root = nullptr;
@@ -1137,35 +1136,22 @@ static void build_pairing_screen() {
   lv_obj_set_flex_grow(spacer, 1);
   s_pair_left_lbl = new_label(header, "", &lv_font_montserrat_14, C_MUTED);
 
-  /* discovery rows (DISCOVER step) */
-  for (int i = 0; i < PAIR_MAX_CANDIDATES; i++) {
-    lv_obj_t *row = lv_obj_create(s_pair_scr);
-    lv_obj_set_size(row, UI_W - 20, 17);
-    lv_obj_set_pos(row, 10, (int32_t)(38 + i * 19));
-    lv_obj_set_style_bg_color(row, lv_color_hex(C_CARD), 0);
-    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
-    lv_obj_set_style_border_width(row, 0, 0);
-    lv_obj_set_style_pad_all(row, 0, 0);
-    lv_obj_set_style_pad_left(row, 6, 0);
-    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_TEXT);
-    (void)l;
-    s_pair_rows[i] = row;
-    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-  }
+  /* discovery list (DISCOVER step) — one multi-line label instead of one
+   * widget per row: the QEMU build counts LVGL heap bytes (the first cut
+   * with per-row objects exhausted the internal heap during render). */
+  s_pair_cand_lbl = new_label(s_pair_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_obj_set_pos(s_pair_cand_lbl, 10, 38);
 
   /* confirmation code (CODE step) */
   s_pair_code_lbl = new_label(s_pair_scr, "- - - -", &lv_font_montserrat_20, C_TEXT);
   lv_obj_set_pos(s_pair_code_lbl, 10, 96);
   lv_obj_add_flag(s_pair_code_lbl, LV_OBJ_FLAG_HIDDEN);
 
-  /* body (FORM / DONE / IDLE) */
+  /* body (all steps; the per-step hint is folded into the text) */
   s_pair_body_lbl = new_label(s_pair_scr, "", &lv_font_montserrat_12, C_TEXT);
   lv_label_set_long_mode(s_pair_body_lbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(s_pair_body_lbl, UI_W - 20);
   lv_obj_set_pos(s_pair_body_lbl, 10, 40);
-
-  s_pair_hint_lbl = new_label(s_pair_scr, "", &lv_font_montserrat_12, C_MUTED);
-  lv_obj_set_pos(s_pair_hint_lbl, 10, UI_H - 18);
 }
 
 static void update_pairing(const PairingView &v) {
@@ -1184,26 +1170,24 @@ static void update_pairing(const PairingView &v) {
     }
   }
 
-  /* discovery rows */
-  const bool rows_active = (v.step == PAIR_DISCOVER);
-  for (int i = 0; i < PAIR_MAX_CANDIDATES; i++) {
-    lv_obj_t *row = s_pair_rows[i];
-    if (!row) continue;
-    if (!rows_active || i >= v.cand_count) {
-      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
-      continue;
+  /* discovery list (one label, one line per candidate) */
+  if (s_pair_cand_lbl) {
+    buf[0] = '\0';
+    if (v.step == PAIR_DISCOVER) {
+      size_t off = 0;
+      for (int i = 0; i < v.cand_count && off + 40 < sizeof(buf); i++) {
+        const PairCandidateRow &c = v.cand[i];
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off,
+                                "%02X:%02X:%02X:%02X:%02X:%02X fw %u.%u %d dBm%s\n",
+                                c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4],
+                                c.mac[5], (unsigned)(c.fw_ver >> 8),
+                                (unsigned)(c.fw_ver & 0xFF), (int)c.rssi,
+                                c.selected ? "  <" : "");
+      }
+      if (!v.cand_count)
+        snprintf(buf, sizeof(buf), "Listening...\n");
     }
-    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
-    lv_obj_t *l = lv_obj_get_child(row, 0);
-    if (!l) continue;
-    const PairCandidateRow &c = v.cand[i];
-    snprintf(buf, sizeof(buf), "%02X:%02X:%02X:%02X:%02X:%02X  fw %u.%u  %d dBm%s",
-             c.mac[0], c.mac[1], c.mac[2], c.mac[3], c.mac[4], c.mac[5],
-             (unsigned)(c.fw_ver >> 8), (unsigned)(c.fw_ver & 0xFF), (int)c.rssi,
-             c.selected ? "  <" : "");
-    lv_label_set_text((lv_obj_t *)l, buf);
-    lv_obj_set_style_text_color(
-        (lv_obj_t *)l, lv_color_hex(c.selected ? C_TEXT : C_MUTED), 0);
+    lv_label_set_text(s_pair_cand_lbl, buf);
   }
 
   /* code step */
@@ -1224,14 +1208,15 @@ static void update_pairing(const PairingView &v) {
     switch (v.step) {
       case PAIR_IDLE:
         snprintf(buf, sizeof(buf),
-                 "No pairing window open.\n\n\"Add node\" listens for unpaired\nfeeders for 60 s.");
+                 "No pairing window open.\n\n\"Add node\" listens for\nunpaired feeders for 60 s.");
         break;
       case PAIR_DISCOVER:
-        if (!v.cand_count)
-          snprintf(buf, sizeof(buf), "Listening... hold the node's button\nat boot to announce it.");
+        snprintf(buf, sizeof(buf),
+                 "Hold the node's button at boot\nto announce it.");
         break;
       case PAIR_CODE:
-        snprintf(buf, sizeof(buf), "The feeder shows this code (serial/LED).\n\nDoes it match? Confirm there");
+        snprintf(buf, sizeof(buf),
+                 "The feeder shows this code\n(serial/LED). Does it match?\n\nConfirm there to continue.");
         break;
       case PAIR_FORM:
         snprintf(buf, sizeof(buf),
@@ -1243,7 +1228,7 @@ static void update_pairing(const PairingView &v) {
         break;
       case PAIR_DONE:
         snprintf(buf, sizeof(buf),
-                 "Feeder #%u added.\n\nThe key was sent wrapped with the\nconfirmed code - it never crossed\nthe air in the clear.",
+                 "Feeder #%u added.\n\nThe key was sent wrapped with\nthe confirmed code - it never\ncrossed the air in the clear.",
                  (unsigned)v.new_node_id);
         break;
     }
@@ -1252,13 +1237,6 @@ static void update_pairing(const PairingView &v) {
     lv_obj_set_style_text_color(s_pair_body_lbl,
                                 lv_color_hex(v.step == PAIR_FORM && v.amber ? C_ALERT : C_TEXT),
                                 0);
-  }
-
-  if (s_pair_hint_lbl) {
-    static const char *HINTS[] = {
-        "", "Tap a feeder to compare codes", "Matching code? Confirm on the feeder",
-        "Review, then confirm on the feeder", "Done - back to the dashboard"};
-    lv_label_set_text(s_pair_hint_lbl, HINTS[v.step]);
   }
 }
 
