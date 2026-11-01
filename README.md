@@ -141,7 +141,16 @@ in-firmware sim nodes (two real LinkEngine instances over loopback + one
 silent node) and a seeded week of history driving them under QEMU;
 `tools/qemu/capture.py` dumps the framebuffer per `AIO_SHOT` marker in the
 CI `qemu-hub` job (screenshots uploaded as artifacts). All five M4a screens
-pass the QEMU screenshot run. Next: M4b pairing.
+pass the QEMU screenshot run.
+
+M4b is underway: the **pairing flow** (§6.3/§8.5, D29) runs on the hub —
+60 s "Add node" window, discovery list fed by real `PAIR_REQ`s, 4-digit
+confirmation code, name/mech/capacity form with §9.7 validation, per-node
+key generated and wrapped under the confirmed code, zero-key `PAIR_ACCEPT`,
+registry + link peer + NVS persistence; `pair` bench CLI drives it from
+serial and the LVGL pairing screen (all four steps) is captured in the QEMU
+screenshot run (see `docs/bench-m4b.md`). Next: node-side `PAIR_REQ` +
+unwrap, then settings/wizard screens.
 
 Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**, **v0.4.0** (M4a hub UI). Cut the next one the same way —
 `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the firmware zips
