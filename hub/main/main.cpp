@@ -80,6 +80,7 @@ static aio::LinkEngine eng;
 static aio::NvsHubStore nvs;
 static aio::HubRegistry reg;
 static aio::EventLog evlog;
+static aio::ui::AlertsAck g_alerts_ack; /* §8.7 ack keys, RAM-only (resets on reboot) */
 static aio::HubCore core;
 static aio::Pcf85063 rtc;
 static aio::PcfI2cIdf rtc_bus;
@@ -677,6 +678,8 @@ static void aio_loop_task(void *) {
         aio::ui::publish_sched_editor(
             aio::ui::build_sched_editor(reg, dn, hub_unix_now()));
         aio::ui::publish_history(aio::ui::build_history(reg, evlog, hub_unix_now()));
+        aio::ui::publish_alerts(
+            aio::ui::build_alerts(reg, evlog, hub_unix_now(), now, fr, fn, g_alerts_ack));
       }
 #endif
 
@@ -720,7 +723,7 @@ extern "C" void app_main(void) {
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
   /* pin the wall clock + seed the demo registry before the boot scan (M4a
    * QEMU screenshot build — see tools/qemu/README.md) */
-  sim::seed(reg, evlog);
+  sim::seed(reg, evlog, g_alerts_ack);
 #endif
 
   time_begin(); /* PCF85063 → system clock; SNTP starts with the radio */

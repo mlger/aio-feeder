@@ -19,7 +19,6 @@ LVGL dashboard, in-firmware sim nodes (`hub/main/sim_nodes.h`) and a pinned
 wall clock; `tools/qemu/capture.py` boots the same flash image with a monitor
 socket, waits for `AIO_SHOT <screen>` markers on serial and dumps the LVGL
 framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, converting each frame to
-`screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). Captured
-today: `dashboard`, `node_detail`, `sched_editor`, `history` (the firmware
-rotates screens on a fixed 25 s schedule; more screens join the `--screens`
-list as they land).
+`screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). Captured:
+`dashboard`, `node_detail`, `sched_editor`, `history`, `alerts` — all five
+M4a screens (the firmware rotates screens on a fixed 25 s schedule).

@@ -29,6 +29,7 @@
 #include "../../hub/src/event_log.h"
 #include "../../hub/src/hub_registry.h"
 #include "../../hub/src/hub_time.h"
+#include "../../hub/src/ui_model.h"
 #include "../../link_core/link.h"
 
 namespace aio {
@@ -200,7 +201,7 @@ static void begin_nodes() {
 
 /* Pin the wall clock and seed registry + history so the dashboard shows a
  * deterministic, realistic scene. Called before core.begin() (boot scan). */
-static void seed(HubRegistry &reg, EventLog &evlog) {
+static void seed(HubRegistry &reg, EventLog &evlog, aio::ui::AlertsAck &ack) {
   /* Sunday 2026-11-01 07:20:00 Asia/Manila (next feed: 07:30, 10 min out) */
   const int64_t unix =
       aio::days_from_civil(2026, 11, 1) * 86400 + (7 * 3600 + 20 * 60) - 8 * 3600;
@@ -267,6 +268,16 @@ static void seed(HubRegistry &reg, EventLog &evlog) {
       evlog.push((uint32_t)(unix - d * 86400 - 1200), 2, EV_FEED_OK, FEED_OK,
                  (uint32_t)(1200 + d), 25, 0);
   }
+
+  /* alerts (§8.7): #1 not confirmed 26 h ago (no link — acked, exercises the
+   * acked section), #2 feed failed 3 h ago (aborted mid-run), #3's 06:50
+   * feed was missed this morning (skip-policy alert). Oldest first so ring
+   * order == time order among the alert rows. */
+  evlog.push((uint32_t)(unix - 26 * 3600), 1, EV_FEED_UNKNOWN, EVENT_RESULT_NO_LINK, 1004,
+             25, 0);
+  evlog.push((uint32_t)(unix - 3 * 3600), 2, EV_FEED_FAIL, FEED_ABORTED, 1005, 40, 0);
+  evlog.push((uint32_t)(unix - 1800), 3, EV_SKIPPED_MISSED, 0, 0, 30, 1);
+  ack.ack((uint32_t)(unix - 26 * 3600), 1, EV_FEED_UNKNOWN);
 
   printf("sim: clock pinned to %lld, registry seeded (3 nodes, 2 live)\n",
          (long long)unix);

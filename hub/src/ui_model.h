@@ -85,6 +85,12 @@ static inline NodeState state_of(uint32_t now_ms, uint32_t last_rx_ms) {
   return NODE_OFFLINE; /* ~4.5 min silent: treat as gone */
 }
 
+/* Kinds the dashboard alert strip and the alerts screen (§8.7) both surface. */
+static inline bool is_alert_kind(uint8_t kind) {
+  return kind == EV_FEED_FAIL || kind == EV_FEED_REJ ||
+         kind == EV_FEED_UNKNOWN || kind == EV_SKIPPED_MISSED;
+}
+
 /* Next future occurrence of a node's schedule, searched across the next
  * 7 days of the days_mask (display approximation of §9.6: exact for the
  * current day, day-granular beyond it). */
@@ -188,8 +194,7 @@ static inline Dashboard build_dashboard(const HubRegistry &reg, const EventLog &
     /* newest alert-worthy event, any node (newest → oldest, first hit wins) */
     for (uint16_t k = log.count(); k > 0 && !d.has_alert; k--) {
       const HubEvent *e = log.at((uint16_t)(k - 1));
-      if (e->kind == EV_FEED_FAIL || e->kind == EV_FEED_REJ ||
-          e->kind == EV_FEED_UNKNOWN || e->kind == EV_SKIPPED_MISSED) {
+      if (is_alert_kind(e->kind)) {
         d.has_alert = true;
         d.alert_node = e->node;
         d.alert_kind = e->kind;
@@ -648,6 +653,143 @@ static inline HistoryView build_history(const HubRegistry &reg, const EventLog &
     h.nodes[j + 1] = key;
   }
   return h;
+}
+
+/* --- alerts (§8.7) ------------------------------------------------------------------ */
+
+constexpr uint8_t UI_ALERTS_MAX_ACTIVE = 6;
+constexpr uint8_t UI_ALERTS_MAX_ACKED = 3;
+constexpr uint8_t UI_ALERTS_ACK_CAP = 16; /* ack key ring size */
+
+/* One row on the alerts screen. Two sources:
+ *  - condition rows (cond=true): a node is STALE/OFFLINE right now; the row
+ *    clears itself when the node is heard again, so it cannot be acked;
+ *  - event rows (cond=false): newest alert-worthy events from the log;
+ *    acknowledging moves them to the acked list. */
+struct AlertRow {
+  uint8_t node = 0;
+  bool cond = false;
+  NodeState state = NODE_OFFLINE; /* cond rows */
+  bool never_heard = false;       /* cond rows: no valid frame this boot */
+  uint8_t kind = 0;               /* event rows */
+  uint8_t result = 0;
+  uint16_t amount = 0;
+  uint32_t age_s = 0; /* cond: seconds silent; event: event age */
+};
+
+struct AlertsView {
+  bool time_ok = false;
+  char clock[24] = "--:--";
+  uint8_t total = 0;
+  uint8_t online = 0;
+  uint8_t active_count = 0;
+  AlertRow active[UI_ALERTS_MAX_ACTIVE]; /* conditions first, then newest events */
+  uint8_t acked_count = 0;
+  AlertRow acked[UI_ALERTS_MAX_ACKED]; /* newest acked first */
+};
+
+/* Acknowledged-alert keys: a small RAM ring of (unix, node, kind) triples.
+ * The engine owns one instance; build_alerts only reads it. RAM-only until
+ * the SD-backed history lands (§7.5) — ack state resets on reboot, matching
+ * the event ring's lifetime. */
+class AlertsAck {
+ public:
+  void ack(uint32_t unix, uint8_t node, uint8_t kind) {
+    if (is_acked(unix, node, kind)) return;
+    AlertKey &k = keys_[head_];
+    k.unix = unix;
+    k.node = node;
+    k.kind = kind;
+    head_ = (uint8_t)((head_ + 1) % UI_ALERTS_ACK_CAP);
+    if (count_ < UI_ALERTS_ACK_CAP) count_++;
+  }
+
+  bool is_acked(uint32_t unix, uint8_t node, uint8_t kind) const {
+    for (uint8_t i = 0; i < count_; i++) {
+      const AlertKey &k = keys_[i];
+      if (k.unix == unix && k.node == node && k.kind == kind) return true;
+    }
+    return false;
+  }
+
+  uint8_t count() const { return count_; }
+
+ private:
+  struct AlertKey {
+    uint32_t unix = 0;
+    uint8_t node = 0;
+    uint8_t kind = 0;
+  };
+  AlertKey keys_[UI_ALERTS_ACK_CAP];
+  uint8_t head_ = 0;
+  uint8_t count_ = 0;
+};
+
+/* Alerts snapshot (§8.7 "active and acknowledged"): condition rows for nodes
+ * that are not ONLINE, then alert-worthy events newest-first, with acked
+ * events moved to the acked list. Pure; host-tested. */
+static inline AlertsView build_alerts(const HubRegistry &reg, const EventLog &log,
+                                      int64_t unix_now, uint32_t now_ms,
+                                      const PeerFresh *fresh, uint8_t fresh_count,
+                                      const AlertsAck &ack) {
+  AlertsView v;
+  if (unix_now < 1600000000) return v;
+  v.time_ok = true;
+  {
+    static const char *WD[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *MO[13] = {"",   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const LocalTime t = local_from_unix(unix_now, reg.data().tz_rule);
+    int64_t y;
+    unsigned m, day;
+    civil_from_days(t.day_start / 86400, &y, &m, &day);
+    snprintf(v.clock, sizeof(v.clock), "%02u:%02u %s %02u %s",
+             (unsigned)(t.min_of_day / 60), (unsigned)(t.min_of_day % 60), WD[t.wday % 7],
+             day, MO[m]);
+  }
+
+  /* condition rows + online tally (registry order, same as the dashboard) */
+  for (int i = 0; i < HUB_MAX_NODES; i++) {
+    const HubNode *n = reg.node(i);
+    if (!n || !n->id) continue;
+    v.total++;
+    NodeState st = NODE_OFFLINE;
+    bool heard = false;
+    uint32_t last_rx = 0;
+    for (int f = 0; f < fresh_count; f++) {
+      if (fresh[f].node_id == n->id) {
+        st = state_of(now_ms, fresh[f].last_rx_ms);
+        heard = fresh[f].last_rx_ms != 0;
+        last_rx = fresh[f].last_rx_ms;
+      }
+    }
+    if (st == NODE_ONLINE) v.online++;
+    if (st != NODE_ONLINE && v.active_count < UI_ALERTS_MAX_ACTIVE) {
+      AlertRow &r = v.active[v.active_count++];
+      r.node = n->id;
+      r.cond = true;
+      r.state = st;
+      r.never_heard = !heard;
+      r.age_s = heard ? (now_ms - last_rx) / 1000 : 0;
+    }
+  }
+
+  /* event rows, newest → oldest */
+  for (uint16_t k = log.count(); k > 0; k--) {
+    const HubEvent *e = log.at((uint16_t)(k - 1));
+    if (!is_alert_kind(e->kind)) continue;
+    const bool was_acked = ack.is_acked(e->unix, e->node, e->kind);
+    if (was_acked && v.acked_count >= UI_ALERTS_MAX_ACKED) continue;
+    if (!was_acked && v.active_count >= UI_ALERTS_MAX_ACTIVE) continue;
+    AlertRow &r = was_acked ? v.acked[v.acked_count++] : v.active[v.active_count++];
+    r.node = e->node;
+    r.cond = false;
+    r.kind = e->kind;
+    r.result = e->result;
+    r.amount = e->amount;
+    r.age_s = (unix_now > (int64_t)e->unix) ? (uint32_t)(unix_now - (int64_t)e->unix) : 0;
+  }
+  return v;
 }
 
 }  // namespace ui

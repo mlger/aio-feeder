@@ -60,14 +60,17 @@ static Dashboard s_snap[2];
 static NodeDetail s_det_snap[2];
 static SchedEditor s_edit_snap[2];
 static HistoryView s_hist_snap[2];
+static AlertsView s_alr_snap[2];
 static volatile uint32_t s_seq = 0;
 static volatile uint32_t s_det_seq = 0;
 static volatile uint32_t s_edit_seq = 0;
 static volatile uint32_t s_hist_seq = 0;
+static volatile uint32_t s_alr_seq = 0;
 static uint32_t s_seen = 0;
 static uint32_t s_det_seen = 0;
 static uint32_t s_edit_seen = 0;
 static uint32_t s_hist_seen = 0;
+static uint32_t s_alr_seen = 0;
 static volatile uint8_t s_detail_id = 1; /* which node the detail screen shows */
 
 void publish(const Dashboard &d) {
@@ -92,6 +95,12 @@ void publish_history(const HistoryView &h) {
   const uint32_t s = s_hist_seq;
   s_hist_snap[s & 1] = h;
   s_hist_seq = s + 1;
+}
+
+void publish_alerts(const AlertsView &v) {
+  const uint32_t s = s_alr_seq;
+  s_alr_snap[s & 1] = v;
+  s_alr_seq = s + 1;
 }
 
 uint8_t detail_node() { return s_detail_id; }
@@ -140,6 +149,15 @@ static lv_obj_t *s_hi_day_lbls[UI_HISTORY_DAYS];
 static lv_obj_t *s_hi_nodes_lbl = nullptr;
 static lv_obj_t *s_hi_ev_rows[UI_HISTORY_ROWS];
 static lv_obj_t *s_hi_footer_lbl = nullptr;
+
+/* alerts screen (§8.7) */
+static lv_obj_t *s_alr_scr = nullptr;
+static lv_obj_t *s_alr_clock_lbl = nullptr;
+static lv_obj_t *s_alr_summary_lbl = nullptr;
+static lv_obj_t *s_alr_rows[UI_ALERTS_MAX_ACTIVE];
+static lv_obj_t *s_alr_acked_hdr_lbl = nullptr;
+static lv_obj_t *s_alr_acked_rows[UI_ALERTS_MAX_ACKED];
+static lv_obj_t *s_alr_footer_lbl = nullptr;
 
 struct Card {
   lv_obj_t *root = nullptr;
@@ -908,6 +926,160 @@ static void update_history(const HistoryView &h) {
   }
 }
 
+/* --- alerts screen (§8.7) ----------------------------------------------------------- */
+
+static void alr_row_text(const AlertRow &r, char *buf, size_t n) {
+  if (r.cond) {
+    if (r.never_heard)
+      snprintf(buf, n, "F%u  offline - no data this boot", (unsigned)r.node);
+    else {
+      char age[24];
+      fmt_age(age, sizeof(age), r.age_s);
+      snprintf(buf, n, "F%u  %s - last seen %s", (unsigned)r.node,
+               r.state == NODE_OFFLINE ? "offline" : "stale", age);
+    }
+    return;
+  }
+  char age[24];
+  fmt_age(age, sizeof(age), r.age_s);
+  if (r.amount)
+    snprintf(buf, n, "F%u  %s - %u g - %s", (unsigned)r.node, alert_text(r.kind),
+             (unsigned)r.amount, age);
+  else
+    snprintf(buf, n, "F%u  %s - %s", (unsigned)r.node, alert_text(r.kind), age);
+}
+
+static uint32_t alr_row_color(const AlertRow &r, bool acked) {
+  if (acked) return C_MUTED;
+  if (r.cond) return r.state == NODE_OFFLINE ? C_ALERT : C_TEXT;
+  return C_ALERT; /* FAIL / REJ / UNKNOWN / missed feed */
+}
+
+static void build_alerts_screen() {
+  s_alr_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_alr_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_alr_scr, 0, 0);
+
+  /* header */
+  lv_obj_t *header = new_panel(s_alr_scr, UI_W, 30, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_right(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  lv_obj_t *title = new_label(header, "Alerts", &lv_font_montserrat_16, C_TEXT);
+  (void)title;
+  lv_obj_t *spacer = lv_obj_create(header);
+  lv_obj_set_size(spacer, 1, 1);
+  lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(spacer, 0, 0);
+  lv_obj_set_flex_grow(spacer, 1);
+  s_alr_clock_lbl = new_label(header, "--:--", &lv_font_montserrat_14, C_MUTED);
+
+  s_alr_summary_lbl = new_label(s_alr_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_obj_set_pos(s_alr_summary_lbl, 10, 34);
+
+  for (int i = 0; i < UI_ALERTS_MAX_ACTIVE; i++) {
+    lv_obj_t *row = lv_obj_create(s_alr_scr);
+    lv_obj_set_size(row, UI_W - 20, 15);
+    lv_obj_set_pos(row, 10, (int32_t)(52 + i * 17));
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_ALERT);
+    (void)l;
+    s_alr_rows[i] = row;
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  s_alr_acked_hdr_lbl = new_label(s_alr_scr, "", &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_pos(s_alr_acked_hdr_lbl, 10, 156);
+  lv_obj_add_flag(s_alr_acked_hdr_lbl, LV_OBJ_FLAG_HIDDEN);
+
+  for (int i = 0; i < UI_ALERTS_MAX_ACKED; i++) {
+    lv_obj_t *row = lv_obj_create(s_alr_scr);
+    lv_obj_set_size(row, UI_W - 20, 15);
+    lv_obj_set_pos(row, 10, (int32_t)(172 + i * 15));
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_MUTED);
+    (void)l;
+    s_alr_acked_rows[i] = row;
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  s_alr_footer_lbl = new_label(s_alr_scr, "", &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_pos(s_alr_footer_lbl, 10, UI_H - 18);
+}
+
+static void update_alerts(const AlertsView &v) {
+  char buf[80];
+  if (s_alr_clock_lbl) lv_label_set_text(s_alr_clock_lbl, v.clock);
+
+  if (s_alr_summary_lbl) {
+    if (!v.time_ok)
+      snprintf(buf, sizeof(buf), "waiting for time sync...");
+    else
+      snprintf(buf, sizeof(buf), "%u of %u feeders online - %u active alert%s",
+               (unsigned)v.online, (unsigned)v.total, (unsigned)v.active_count,
+               v.active_count == 1 ? "" : "s");
+    lv_label_set_text(s_alr_summary_lbl, buf);
+  }
+
+  for (int i = 0; i < UI_ALERTS_MAX_ACTIVE; i++) {
+    lv_obj_t *row = s_alr_rows[i];
+    if (!row) continue;
+    if (i >= v.active_count) {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+    const AlertRow &r = v.active[i];
+    alr_row_text(r, buf, sizeof(buf));
+    lv_obj_t *l = lv_obj_get_child(row, 0);
+    if (l) {
+      lv_label_set_text((lv_obj_t *)l, buf);
+      lv_obj_set_style_text_color((lv_obj_t *)l, lv_color_hex(alr_row_color(r, false)), 0);
+    }
+  }
+
+  if (s_alr_acked_hdr_lbl) {
+    if (v.acked_count) {
+      snprintf(buf, sizeof(buf), "Acknowledged (%u)", (unsigned)v.acked_count);
+      lv_label_set_text(s_alr_acked_hdr_lbl, buf);
+      lv_obj_remove_flag(s_alr_acked_hdr_lbl, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(s_alr_acked_hdr_lbl, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+  for (int i = 0; i < UI_ALERTS_MAX_ACKED; i++) {
+    lv_obj_t *row = s_alr_acked_rows[i];
+    if (!row) continue;
+    if (i >= v.acked_count) {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+    const AlertRow &r = v.acked[i];
+    alr_row_text(r, buf, sizeof(buf));
+    lv_obj_t *l = lv_obj_get_child(row, 0);
+    if (l) {
+      lv_label_set_text((lv_obj_t *)l, buf);
+      lv_obj_set_style_text_color((lv_obj_t *)l, lv_color_hex(alr_row_color(r, true)), 0);
+    }
+  }
+
+  if (s_alr_footer_lbl) {
+    snprintf(buf, sizeof(buf), "ack resets on reboot - SD history lands M4");
+    lv_label_set_text(s_alr_footer_lbl, buf);
+  }
+}
+
 /* --- LVGL plumbing ----------------------------------------------------------------- */
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -929,6 +1101,7 @@ static void ui_task(void *) {
   build_detail_screen();
   build_edit_screen();
   build_history_screen();
+  build_alerts_screen();
   lv_screen_load(s_scr);
 
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -939,7 +1112,14 @@ static void ui_task(void *) {
   /* deterministic rotation for the QEMU screenshot run: each screen gets a
    * 25 s window, then the cycle repeats (the runner grabs one shot per
    * screen name). On hardware this is replaced by touch navigation (M4b). */
-  enum ShotScreen { SH_DASH = 0, SH_DETAIL = 1, SH_EDIT = 2, SH_HIST = 3, SH_COUNT };
+  enum ShotScreen {
+    SH_DASH = 0,
+    SH_DETAIL = 1,
+    SH_EDIT = 2,
+    SH_HIST = 3,
+    SH_ALERTS = 4,
+    SH_COUNT
+  };
   constexpr uint32_t SHOT_WINDOW_MS = 25000;
   ShotScreen shot = SH_DASH;
   ShotScreen loaded = SH_DASH;
@@ -951,10 +1131,11 @@ static void ui_task(void *) {
 
     shot = (ShotScreen)((now - boot_ms) / SHOT_WINDOW_MS % SH_COUNT);
     if (shot != loaded) {
-      lv_screen_load(shot == SH_DASH    ? s_scr
+      lv_screen_load(shot == SH_DASH      ? s_scr
                      : shot == SH_DETAIL  ? s_det_scr
                      : shot == SH_EDIT    ? s_ed_scr
-                                          : s_hi_scr);
+                     : shot == SH_HIST    ? s_hi_scr
+                                          : s_alr_scr);
       loaded = shot;
       s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
     }
@@ -979,6 +1160,11 @@ static void ui_task(void *) {
       update_history(s_hist_snap[(hs - 1) & 1]);
       s_hist_seen = hs;
     }
+    const uint32_t as = s_alr_seq;
+    if (as != s_alr_seen) {
+      update_alerts(s_alr_snap[(as - 1) & 1]);
+      s_alr_seen = as;
+    }
 
     lv_timer_handler();
 
@@ -986,10 +1172,11 @@ static void ui_task(void *) {
      * g_shot_fb after each marker; repeats every 5 s for reliability) */
     if (now - boot_ms > 6000 && s_last_flush_ms > 0 &&
         now - s_last_flush_ms > 400 && now - s_last_marker_ms > 5000) {
-      printf("\nAIO_SHOT %s\n", loaded == SH_DASH   ? "dashboard"
-                                : loaded == SH_DETAIL ? "node_detail"
-                                : loaded == SH_EDIT   ? "sched_editor"
-                                                      : "history");
+      printf("\nAIO_SHOT %s\n", loaded == SH_DASH      ? "dashboard"
+                                : loaded == SH_DETAIL  ? "node_detail"
+                                : loaded == SH_EDIT    ? "sched_editor"
+                                : loaded == SH_HIST    ? "history"
+                                                       : "alerts");
       fflush(stdout);
       s_last_marker_ms = now;
     }
@@ -1009,6 +1196,7 @@ void publish(const Dashboard &) {}
 void publish_detail(const NodeDetail &) {}
 void publish_sched_editor(const SchedEditor &) {}
 void publish_history(const HistoryView &) {}
+void publish_alerts(const AlertsView &) {}
 uint8_t detail_node() { return 1; }
 void set_detail_node(uint8_t) {}
 

@@ -461,6 +461,129 @@ static void test_history_event_list_capped(void) {
   TEST_ASSERT_EQUAL_UINT32(10, h.total_feeds); /* chart counts all */
 }
 
+/* --- alerts (§8.7) -------------------------------------------------------------------- */
+
+static void test_alerts_time_invalid_empty(void) {
+  add_node(0xA5, 450, 40);
+  log_.push((uint32_t)(g_unix - 60), 1, EV_FEED_FAIL, FEED_ABORTED, 5001, 40, 0);
+  aio::ui::AlertsAck ack;
+  const aio::ui::AlertsView v =
+      aio::ui::build_alerts(reg, log_, 0, g_now_ms, nullptr, 0, ack);
+  TEST_ASSERT_FALSE(v.time_ok);
+  TEST_ASSERT_EQUAL_STRING("--:--", v.clock);
+  TEST_ASSERT_EQUAL_UINT8(0, v.active_count);
+  TEST_ASSERT_EQUAL_UINT8(0, v.acked_count);
+  TEST_ASSERT_EQUAL_UINT8(0, v.total);
+}
+
+static void test_alerts_condition_rows_offline_and_stale(void) {
+  add_node(0xA5, 450, 40); /* id 1 */
+  add_node(0x5A, 455, 25); /* id 2 */
+  add_node(0x66, 410, 30); /* id 3, silent */
+  uint8_t fc;
+  const PeerFresh *f = fresh_table(&fc); /* #1 fresh, #2 stale (120 s), #3 none */
+  aio::ui::AlertsAck ack;
+  const aio::ui::AlertsView v =
+      aio::ui::build_alerts(reg, log_, g_unix, g_now_ms, f, fc, ack);
+
+  TEST_ASSERT_TRUE(v.time_ok);
+  TEST_ASSERT_EQUAL_UINT8(3, v.total);
+  TEST_ASSERT_EQUAL_UINT8(1, v.online);
+  TEST_ASSERT_EQUAL_UINT8(2, v.active_count); /* two condition rows */
+  TEST_ASSERT_EQUAL_UINT8(0, v.acked_count);
+
+  TEST_ASSERT_EQUAL_UINT8(2, v.active[0].node); /* registry order */
+  TEST_ASSERT_TRUE(v.active[0].cond);
+  TEST_ASSERT_EQUAL_INT(aio::ui::NODE_STALE, v.active[0].state);
+  TEST_ASSERT_FALSE(v.active[0].never_heard);
+  TEST_ASSERT_EQUAL_UINT32(120, v.active[0].age_s); /* seconds silent */
+
+  TEST_ASSERT_EQUAL_UINT8(3, v.active[1].node);
+  TEST_ASSERT_TRUE(v.active[1].cond);
+  TEST_ASSERT_EQUAL_INT(aio::ui::NODE_OFFLINE, v.active[1].state);
+  TEST_ASSERT_TRUE(v.active[1].never_heard);
+}
+
+static void test_alerts_event_rows_newest_first_kinds(void) {
+  add_node(0xA5, 450, 40); /* id 1, fresh (no condition row) */
+  PeerFresh f[1];
+  f[0] = PeerFresh{1, g_now_ms - 5000, 12000, 0};
+  /* push oldest first; OK and CATCHUP are never alert rows */
+  log_.push((uint32_t)(g_unix - 7200), 1, EV_FEED_OK, FEED_OK, 6001, 40, 0);
+  log_.push((uint32_t)(g_unix - 3600), 1, EV_FEED_UNKNOWN, EVENT_RESULT_NO_LINK, 6002, 25, 0);
+  log_.push((uint32_t)(g_unix - 600), 1, EV_FEED_REJ, FEED_REJ_FAULT, 6003, 40, 0);
+  log_.push((uint32_t)(g_unix - 60), 1, EV_FEED_FAIL, FEED_ABORTED, 6004, 40, 0);
+  log_.push((uint32_t)(g_unix - 30), 1, EV_CATCHUP, FEED_OK, 6005, 40, 0);
+
+  aio::ui::AlertsAck ack;
+  const aio::ui::AlertsView v =
+      aio::ui::build_alerts(reg, log_, g_unix, g_now_ms, f, 1, ack);
+
+  TEST_ASSERT_EQUAL_UINT8(3, v.active_count); /* FAIL, REJ, UNKNOWN */
+  TEST_ASSERT_FALSE(v.active[0].cond);
+  TEST_ASSERT_EQUAL_UINT8(EV_FEED_FAIL, v.active[0].kind);
+  TEST_ASSERT_EQUAL_UINT8(FEED_ABORTED, v.active[0].result);
+  TEST_ASSERT_EQUAL_UINT16(40, v.active[0].amount);
+  TEST_ASSERT_EQUAL_UINT32(60, v.active[0].age_s);
+  TEST_ASSERT_EQUAL_UINT8(EV_FEED_REJ, v.active[1].kind);
+  TEST_ASSERT_EQUAL_UINT32(600, v.active[1].age_s);
+  TEST_ASSERT_EQUAL_UINT8(EV_FEED_UNKNOWN, v.active[2].kind);
+  TEST_ASSERT_EQUAL_UINT8(0, v.acked_count); /* nothing acked yet */
+}
+
+static void test_alerts_ack_moves_row_and_dedups(void) {
+  add_node(0xA5, 450, 40);
+  PeerFresh f[1];
+  f[0] = PeerFresh{1, g_now_ms - 5000, 12000, 0};
+  const uint32_t t_old = (uint32_t)(g_unix - 3600);
+  const uint32_t t_new = (uint32_t)(g_unix - 60);
+  log_.push(t_old, 1, EV_FEED_UNKNOWN, EVENT_RESULT_NO_LINK, 7001, 25, 0);
+  log_.push(t_new, 1, EV_FEED_FAIL, FEED_ABORTED, 7002, 40, 0);
+
+  aio::ui::AlertsAck ack;
+  ack.ack(t_old, 1, EV_FEED_UNKNOWN);
+  ack.ack(t_old, 1, EV_FEED_UNKNOWN); /* duplicate is a no-op */
+  TEST_ASSERT_EQUAL_UINT8(1, ack.count());
+
+  const aio::ui::AlertsView v =
+      aio::ui::build_alerts(reg, log_, g_unix, g_now_ms, f, 1, ack);
+  TEST_ASSERT_EQUAL_UINT8(1, v.active_count); /* only the FAIL stays active */
+  TEST_ASSERT_EQUAL_UINT8(EV_FEED_FAIL, v.active[0].kind);
+  TEST_ASSERT_EQUAL_UINT8(1, v.acked_count);
+  TEST_ASSERT_EQUAL_UINT8(EV_FEED_UNKNOWN, v.acked[0].kind);
+  TEST_ASSERT_EQUAL_UINT32(3600, v.acked[0].age_s);
+  TEST_ASSERT_FALSE(v.acked[0].cond);
+
+  /* ack key mismatch (different kind) does not hide the FAIL */
+  aio::ui::AlertsAck ack2;
+  ack2.ack(t_new, 1, EV_FEED_REJ);
+  const aio::ui::AlertsView v2 =
+      aio::ui::build_alerts(reg, log_, g_unix, g_now_ms, f, 1, ack2);
+  TEST_ASSERT_EQUAL_UINT8(2, v2.active_count);
+  TEST_ASSERT_EQUAL_UINT8(0, v2.acked_count);
+}
+
+static void test_alerts_caps_newest_kept(void) {
+  add_node(0xA5, 450, 40);
+  PeerFresh f[1];
+  f[0] = PeerFresh{1, g_now_ms - 5000, 12000, 0};
+  /* 8 FAILs, oldest first; then ack the 4 oldest → 3 fit the acked list */
+  for (int i = 8; i >= 1; i--)
+    log_.push((uint32_t)(g_unix - i * 60), 1, EV_FEED_FAIL, FEED_ABORTED,
+              8000 + i, 40, 0);
+  aio::ui::AlertsAck ack;
+  for (int i = 5; i <= 8; i++)
+    ack.ack((uint32_t)(g_unix - i * 60), 1, EV_FEED_FAIL);
+
+  const aio::ui::AlertsView v =
+      aio::ui::build_alerts(reg, log_, g_unix, g_now_ms, f, 1, ack);
+  TEST_ASSERT_EQUAL_UINT8(aio::ui::UI_ALERTS_MAX_ACKED, v.acked_count);
+  TEST_ASSERT_EQUAL_UINT32(300, v.acked[0].age_s); /* newest acked first (i=5) */
+  TEST_ASSERT_EQUAL_UINT8(4, v.active_count);      /* unacked i=1..4 */
+  TEST_ASSERT_EQUAL_UINT32(60, v.active[0].age_s); /* newest first */
+  TEST_ASSERT_EQUAL_UINT32(240, v.active[3].age_s);
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_empty_registry_renders_safe_defaults);
@@ -487,5 +610,10 @@ int main(void) {
   RUN_TEST(test_history_day_buckets_and_totals);
   RUN_TEST(test_history_node_totals_sorted_desc);
   RUN_TEST(test_history_event_list_capped);
+  RUN_TEST(test_alerts_time_invalid_empty);
+  RUN_TEST(test_alerts_condition_rows_offline_and_stale);
+  RUN_TEST(test_alerts_event_rows_newest_first_kinds);
+  RUN_TEST(test_alerts_ack_moves_row_and_dedups);
+  RUN_TEST(test_alerts_caps_newest_kept);
   return UNITY_END();
 }
