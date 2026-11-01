@@ -16,6 +16,7 @@ extern "C" {
 #endif
 
 #define PROTO_VER 1
+#define AIO_FW_VER 1  /* firmware version reported in HELLO / PAIR_REQ */
 
 /* ESP-NOW max payload is 250 bytes; header 8 + HMAC 8 = 16 (PLAN.md §6.5). */
 #define FRAME_HEADER_SIZE 8

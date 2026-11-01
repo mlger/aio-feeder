@@ -96,11 +96,12 @@ Notes:
 | Criterion | Status |
 |---|---|
 | Repo + plan + prototype checked in | ✅ |
-| PlatformIO envs (hub_esp32s3, node_esp8266, node_esp32c3) | ✅ (hub stub; node = M1 bench firmware) |
-| Shared proto lib | ✅ `lib/proto/proto.h` |
-| Host unit tests in CI | ✅ `test/` (Unity, native): proto + node_core safety |
+| PlatformIO envs (hub_esp32s3, node_esp8266, node_esp32c3) | ✅ (hub = M2 bench link host; node = M2 link firmware) |
+| Shared proto lib | ✅ `lib/proto/proto.h` + messages/sha256/pairing |
+| Host unit tests in CI | ✅ `test/` (Unity, native): proto + node_core safety + link_core (39 tests) |
 | CI builds all targets | ✅ `.github/workflows/ci.yml` |
 | Web flasher deployed to GitHub Pages | ✅ live: https://mlger.github.io/aio-feeder/ |
 | QEMU job boots hub + C3 images in CI | ⏳ deferred — needs ESP-IDF hub build (D6) |
 | LVGL docs MCP config | ✅ `.mcp.json` (LVGL + context7 + 4 Espressif servers incl. esp-pilot) |
 | M1 bench node firmware (hard timer, serial CLI, HAL v1) | ✅ code; hardware verification per `docs/bench-m1.md` |
+| M2 link (ESP-NOW, HMAC frames, retries, channel scan, skip/hold) | ✅ code, all 3 targets build; hardware verification per `docs/bench-m2.md` |

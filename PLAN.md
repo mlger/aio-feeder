@@ -836,6 +836,8 @@ or `claude mcp add --transport http lvgl https://lvgl.mcp.kapa.ai/`.
 | D26 | LVGL docs MCP server (`lvgl.mcp.kapa.ai`) is part of the dev setup, checked into `.claude/.mcp.json` | Proposed |
 | D27 | The hub prototype calibrates a gate node by open time (g/s) with a 10 s max on-time; the pulse-count metering-chamber design stays preferred pending D7 | Proposed — **[VERIFY]** |
 | D28 | Storage capacity is user-entered (size and amount now) at pairing, in the wizard and on the node page, not fixed by template | Proposed |
+| D29 | M2 pairing is serial-provisioned: node `pair <hub_mac>` generates a random 256-bit key, the operator pastes it into the hub CLI. OTA PAIR_REQ/PAIR_ACCEPT with confirmation code + wrapped key (D14) lands in M3 with the hub UI; wire formats and crypto are already in `lib/proto/pairing.h` and host-tested | Proposed |
+| D30 | On an otherwise quiet link the hub acks every non-reply HEARTBEAT with STATUS_REQ; the node answers with a heartbeat whose frame-flags bit0 is set, which the hub does not re-ack. Keeps the node's §6.2 freshness window fed without a ping-pong | Proposed |
 
 ---
 

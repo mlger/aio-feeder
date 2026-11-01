@@ -65,6 +65,7 @@ struct Hal {
 
   void feed_wdt() { feedLoopWDT(); }
   void stall_for_wdt_test() { for (;;) {} } /* loop WDT resets */
+  uint32_t random32() { return esp_random(); }
 
   void led(bool on) { digitalWrite(HAL_LED_PIN, on ? LOW : HIGH); } /* active-low */
 

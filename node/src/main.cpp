@@ -1,12 +1,15 @@
 /*
- * AIO Feeder — node firmware, M1 bench (PLAN.md §7.3, §12 M1).
+ * AIO Feeder — node firmware, M2 link (PLAN.md §7.3, §12 M2).
  *
- * Cooperative loop: CLI → actuator tick → command drain (HAL side effects)
- * → persistence → periodic sampling. One actuation at a time; the relay-off
- * hardware timer is the SR2 guarantee, the loop is only the fast path.
+ * Cooperative loop: CLI → ESP-NOW drain → actuator tick → link tick
+ * → command drain (HAL side effects) → persistence → periodic sampling.
+ * One actuation at a time; the relay-off hardware timer is the SR2
+ * guarantee, the loop is only the fast path.
  *
- * Radio/ESP-NOW arrives in M2; the FSM emits ReportResult commands that M2
- * will turn into FEED_RESULT frames over the same seam.
+ * Radio: the FSM's ReportResult commands become FEED_RESULT frames over the
+ * same seam the CLI prints on; FEED frames enter the same request_feed() the
+ * CLI uses, so a radio feed and a bench feed are indistinguishable to the
+ * safety core (SR2–SR9 all apply; bench modes are RAM-only, docs/bench-m2.md).
  */
 #include <Arduino.h>
 
@@ -15,15 +18,19 @@
 
 #if defined(AIO_NODE_8266)
 #include "hal_esp8266.h"
+#include "now_esp8266.h"
 #elif defined(AIO_NODE_C3)
 #include "hal_esp32c3.h"
+#include "now_esp32.h"
 #else
 #error "Define AIO_NODE_8266 or AIO_NODE_C3 (see platformio.ini)"
 #endif
 
+#include "../../link_core/link.h"
 #include "../../node_core/actuator.h"
 #include "../../node_core/feed_journal.h"
 #include "../../node_core/node_limits.h"
+#include "../../node_core/schedule.h"
 #include "../../node_core/time_validity.h"
 #include "cli.h"
 
@@ -38,6 +45,7 @@ static aio::Limits limits;
 static aio::FeedJournal journal;
 static aio::TimeValidity tv;
 static aio::Actuator act;
+static aio::LinkEngine eng;
 static CliCtx cli_ctx;
 static bool time_ok = false;
 static uint16_t vin_mv = 0;
@@ -46,7 +54,16 @@ static uint32_t last_persist_ms = 0;
 static bool persist_pending = false;
 static uint32_t last_rtc_poll = 0;
 static uint32_t last_vin_poll = 0;
+static uint32_t boot_ms = 0;
+static uint8_t bench_mode = BENCH_OFF;
+static uint32_t last_feed_id = 0;
 static uint8_t region[kStorageRegion];
+
+#if defined(AIO_NODE_8266)
+static NowTransport8266 nowt;
+#else
+static NowTransportEsp32 nowt;
+#endif
 
 /* --- persistence ------------------------------------------------------------ */
 
@@ -55,7 +72,8 @@ static void persist_now() {
   memcpy(cfg.journal, (const void *)journal.entries(), sizeof(cfg.journal));
   cfg.counters = limits.counters();
   cfg.sync_unix = tv.sync_unix();
-  cfg.limits_confirmed = limits.limits_confirmed;
+  cfg.limits_confirmed = limits.limits_confirmed ? 1 : 0;
+  cfg.tx_seq = eng.current_tx_seq();
   cfg.write_seq++;
   config_fill_slot(region, cfg);
   uint8_t *dst = region + (cfg.write_seq & 1 ? CONFIG_SLOT_SIZE : 0);
@@ -111,6 +129,167 @@ static void refresh_time(uint32_t now_ms) {
   }
 }
 
+/* --- link handlers ------------------------------------------------------------- */
+
+static int64_t unix_now_guess() {
+  bool osf;
+  int64_t u = 0;
+  if (hal.rtc_healthy(&u, &osf)) return u;
+  return time_ok ? tv.sync_unix() + (int64_t)((millis() - tv.sync_ms()) / 1000) : 0;
+}
+
+static void hb_fill(heartbeat_payload_t *hb) {
+  hb->uptime_ms = millis() - boot_ms;
+  hb->rssi = 0; /* not exposed by these SDK callbacks */
+  hb->vin_mv = vin_mv;
+  hb->hopper_low = 0; /* no hopper sensor on the bench rig yet */
+  hb->last_feed_id = last_feed_id;
+  hb->day_units = (uint16_t)limits.counters().day_units;
+  uint8_t flags = 0;
+  if (cfg.manual_stop) flags |= HB_FLAG_MANUAL_STOP;
+  if (!time_ok) flags |= HB_FLAG_TIME_INVALID;
+  if (!limits.limits_confirmed) flags |= HB_FLAG_LIMITS_UNCONFIRMED;
+  bool osf;
+  int64_t u = 0;
+  if (hal.rtc_healthy(&u, &osf)) {
+    flags |= HB_FLAG_RTC_OK;
+    if (osf) flags |= HB_FLAG_RTC_LOST;
+  }
+  hb->flags = flags;
+  hb->rtc_drift_ms = cfg.rtc_drift_ms;
+}
+
+static void handle_feed(const uint8_t mac[6], const feed_payload_t &f) {
+  uint32_t now = millis();
+
+  /* Bench radio mode: pure protocol loopback, relay never energised. */
+  if (bench_mode == BENCH_RADIO) {
+    eng.send_feed_ack(f.feed_id, 1, FEED_OK, now);
+    eng.send_feed_result(f.feed_id, FEED_OK, 0, 0, 0xFF, (uint32_t)unix_now_guess(), now);
+    return;
+  }
+
+  /* SR6: duplicates answer from the journal, never actuate again. */
+  const aio::JournalEntry *e = journal.find(f.feed_id);
+  if (e) {
+    if (e->in_progress) {
+      eng.send_feed_ack(f.feed_id, 1, FEED_OK, now); /* retry lost its ACK; still running */
+    } else {
+      eng.send_feed_result(f.feed_id, e->status, e->actual_on_ms, 0, 0xFF,
+                           (uint32_t)unix_now_guess(), now);
+    }
+    Serial.printf("RX feed id=%u -> journal dup (%s)\n", f.feed_id,
+                  e->in_progress ? "in progress" : result_name(e->status));
+    return;
+  }
+
+  aio::FeedRequest req{};
+  req.feed_id = f.feed_id;
+  req.amount = f.amount;
+  /* Radio feeds are the "scheduled" class (SR7/SR8); bench live mode downgrades
+   * to manual-class so the loopback can run without time/confirmation. */
+  req.scheduled = bench_mode != BENCH_LIVE;
+  req.time_ok = time_ok;
+  req.manual_stop = cfg.manual_stop;
+  req.vin_ok = !vin_present || vin_mv >= VIN_ABSENT_MV;
+  bool acc;
+  uint8_t res;
+  act.request_feed(req, now, &acc, &res);
+  eng.send_feed_ack(f.feed_id, acc ? 1 : 0, res, now);
+  Serial.printf("RX feed id=%u amount=%u -> %s\n", f.feed_id, f.amount,
+                acc ? "accepted" : result_name(res));
+}
+
+static void report_result(const aio::ActuatorCmd &c) {
+  last_feed_id = c.feed_id;
+  Serial.printf("RESULT id=%u status=%s actual_on_ms=%u pulses=%u\n", c.feed_id,
+                result_name(c.result), c.actual_on_ms, c.pulses);
+  eng.send_feed_result(c.feed_id, c.result, c.actual_on_ms, c.pulses, 0xFF,
+                       (uint32_t)unix_now_guess(), millis());
+}
+
+static void handle_time_sync(const time_sync_payload_t &t) {
+  bool osf;
+  int64_t rtc_before = 0;
+  hal.rtc_healthy(&rtc_before, &osf);
+  if (hal.rtc_write_unix((int64_t)t.unix_time)) {
+    cfg.rtc_drift_ms =
+        rtc_before ? (int32_t)((rtc_before - (int64_t)t.unix_time) * 1000) : 0;
+    tv.on_sync((int64_t)t.unix_time, millis());
+    Serial.printf("RX time_sync unix=%u drift_ms=%d\n", (unsigned)t.unix_time,
+                  cfg.rtc_drift_ms);
+    persist_now();
+  } else {
+    Serial.println(F("RX time_sync: rtc write FAILED"));
+  }
+}
+
+static void handle_schedule_set(const schedule_hdr_t &hdr, const sched_entry_t *entries) {
+  if (hdr.entry_count > SCHEDULE_STORE_MAX) {
+    Serial.println(F("RX schedule: too many entries, refused"));
+    eng.send_schedule_ack(hdr.version, 0, millis());
+    return;
+  }
+  cfg.sched_version = hdr.version;
+  cfg.sched_count = hdr.entry_count;
+  cfg.skip_until = hdr.skip_until;
+  cfg.hold_until = hdr.hold_until;
+  memset(cfg.sched_entries, 0, sizeof(cfg.sched_entries));
+  memcpy(cfg.sched_entries, entries, (size_t)hdr.entry_count * sizeof(sched_entry_t));
+  int64_t u = unix_now_guess();
+  cfg.sched_pushed_unix = u > 0 ? (uint32_t)u : 0;
+  Serial.printf("RX schedule v%u entries=%u skip=%u hold=%u\n", hdr.version, hdr.entry_count,
+                hdr.skip_until, hdr.hold_until);
+  persist_now();
+  eng.send_schedule_ack(hdr.version, 1, millis());
+}
+
+static void handle_config(const node_profile_t &p, uint8_t limits_confirmed) {
+  if (!profile_valid(&p)) {
+    Serial.println(F("RX config: bad profile CRC, refused"));
+    eng.send_config_ack(p.crc16, 0, millis());
+    return;
+  }
+  cfg.profile = p;
+  act.configure(p);
+  limits.configure(p.max_units_per_hour, p.max_units_per_day, p.cooldown_ms);
+  limits.limits_confirmed = limits_confirmed != 0;
+  cfg.limits_confirmed = limits.limits_confirmed ? 1 : 0;
+  Serial.printf("RX config: profile applied (confirmed=%d)\n", limits.limits_confirmed);
+  persist_now();
+  eng.send_config_ack(p.crc16, 1, millis());
+}
+
+static aio::LinkHandlers make_handlers() {
+  aio::LinkHandlers h{};
+  h.on_feed = handle_feed;
+  h.on_time_sync = handle_time_sync;
+  h.on_schedule_set = handle_schedule_set;
+  h.on_config = handle_config;
+  h.on_status_req = []() {
+    /* HB ack from the hub: reply at once, flagged so the hub does not
+     * re-ack it (keeps the freshness window alive without a ping-pong). */
+    heartbeat_payload_t hb{};
+    hb_fill(&hb);
+    eng.send_heartbeat(hb, millis(), 1);
+  };
+  h.on_abort = [](const abort_payload_t &a) {
+    Serial.printf("RX abort feed_id=%u\n", a.feed_id);
+    if (act.abort(millis())) Serial.println(F("aborted (radio)"));
+  };
+  h.hb_fill = hb_fill;
+  h.on_channel_locked = [](uint8_t ch) {
+    if (cfg.chan != ch) {
+      cfg.chan = ch;
+      Serial.printf("channel locked: %u (persisted)\n", ch);
+      persist_now();
+    }
+  };
+  h.on_link_up = []() { Serial.println(F("link up")); };
+  h.on_link_lost = []() { Serial.println(F("link lost → channel scan")); };
+  return h;
+}
+
 /* --- command application ------------------------------------------------------ */
 
 static aio::ActuatorCmd cmds[8];
@@ -149,8 +328,7 @@ static void apply_commands() {
         persist_now();
         break;
       case aio::ActuatorCmd::ReportResult:
-        Serial.printf("RESULT id=%u status=%s actual_on_ms=%u pulses=%u\n", c.feed_id,
-                      result_name(c.result), c.actual_on_ms, c.pulses);
+        report_result(c);
         break;
     }
   }
@@ -164,7 +342,7 @@ void setup() {
   Serial.begin(115200);
   delay(300);
   Serial.println();
-  Serial.println(AIO_FIRMWARE_NAME " boot (M1 bench)");
+  Serial.println(AIO_FIRMWARE_NAME " boot (M2 link)");
 
   if (hal.storage_read(region, kStorageRegion) && config_load_slot(region, &cfg)) {
     Serial.printf("config loaded (seq=%u)\n", cfg.write_seq);
@@ -184,6 +362,7 @@ void setup() {
     Serial.println("profile CRC bad → defaults restored");
     persist_now();
   }
+  if (cfg.sched_count > SCHEDULE_STORE_MAX) cfg.sched_count = 0;
 
   /* SR6: anything still IN_PROGRESS was attempted before the reset */
   memcpy((void *)journal.entries(), cfg.journal, sizeof(cfg.journal));
@@ -203,6 +382,21 @@ void setup() {
   act.configure(cfg.profile);
   act.attach(&limits, &journal);
 
+  /* ESP-NOW + link engine */
+  eng.begin(aio::LinkEngine::Role::Node, &nowt, make_handlers(), millis());
+  eng.set_self(cfg.node_id, cfg.paired ? 1 : 0);
+  if (cfg.paired && cfg.hub_key_len) {
+    eng.add_peer(cfg.hub_mac, aio::LINK_HUB_ID, cfg.hub_key, cfg.hub_key_len);
+    eng.restore_tx_seq((uint16_t)(cfg.tx_seq + 32)); /* replay-window skip */
+    if (!nowt.begin(cfg.chan ? cfg.chan : 1)) Serial.println(F("ESP-NOW init FAILED"));
+    else Serial.printf("ESP-NOW up: chan=%u hub=%02X:%02X:%02X:%02X:%02X:%02X\n",
+                       cfg.chan ? cfg.chan : 1, cfg.hub_mac[0], cfg.hub_mac[1],
+                       cfg.hub_mac[2], cfg.hub_mac[3], cfg.hub_mac[4], cfg.hub_mac[5]);
+  } else {
+    if (!nowt.begin(cfg.chan ? cfg.chan : 1)) Serial.println(F("ESP-NOW init FAILED"));
+    else Serial.println(F("ESP-NOW up: unpaired (beaconing HELLO every 5 s)"));
+  }
+
   cli_ctx = CliCtx{};
   cli_ctx.hal = &hal;
   cli_ctx.act = &act;
@@ -210,10 +404,14 @@ void setup() {
   cli_ctx.journal = &journal;
   cli_ctx.tv = &tv;
   cli_ctx.cfg = &cfg;
+  cli_ctx.eng = &eng;
+  cli_ctx.nowt = &nowt;
+  cli_ctx.bench_mode = &bench_mode;
   cli_ctx.time_ok = &time_ok;
   cli_ctx.persist_fn = persist_now;
   cli_ctx.erase_fn = erase_config;
 
+  boot_ms = millis();
   refresh_time(0);
   Serial.printf("ready: time_ok=%d limits_confirmed=%d fault=%d\n", time_ok,
                 limits.limits_confirmed, act.in_fault());
@@ -231,8 +429,12 @@ void loop() {
 
   cli_poll(cli_ctx); /* config mutations persist via persist_fn/erase_fn */
 
+  nowt.pump(eng, now); /* ESP-NOW rx → engine (journal dedups feeds, SR6) */
+
   act.tick(now);
   apply_commands();
+
+  eng.tick(now); /* retries, RESULT repeats, heartbeat, channel scan */
 
   refresh_time(now);
 
@@ -249,5 +451,5 @@ void loop() {
   cli_ctx.vin_present = vin_present;
   *cli_ctx.time_ok = time_ok;
 
-  persist_maybe();
+  persist_maybe(); /* also lands cfg.tx_seq for the replay window */
 }

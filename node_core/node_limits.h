@@ -50,8 +50,14 @@ class Limits {
     }
   }
 
-  bool would_exceed_hour(uint32_t units) const { return counters_.hour_units + units > max_hour_; }
-  bool would_exceed_day(uint32_t units) const { return counters_.day_units + units > max_day_; }
+  bool would_exceed_hour(uint32_t units) const {
+    if (bench_bypass) return false;
+    return counters_.hour_units + units > max_hour_;
+  }
+  bool would_exceed_day(uint32_t units) const {
+    if (bench_bypass) return false;
+    return counters_.day_units + units > max_day_;
+  }
   void add(uint32_t units) {
     counters_.hour_units += units;
     counters_.day_units += units;
@@ -59,6 +65,7 @@ class Limits {
 
   /* SR4: minimum cooldown between actuations. last_actuation_ms is millis(). */
   bool cooldown_ok(uint32_t now_ms) const {
+    if (bench_bypass) return true;
     return last_actuation_ms_ == 0 || (now_ms - last_actuation_ms_) >= cooldown_ms_;
   }
   void mark_actuated(uint32_t now_ms) { last_actuation_ms_ = now_ms; }
@@ -69,6 +76,12 @@ class Limits {
 
   /* SR8: scheduled feeds refused until the hub confirms profile + counters. */
   bool limits_confirmed = false;
+
+  /* Bench-only, RAM-only, never persisted: bypasses SR3/SR4 so the 1000-feed
+   * loopback (§12 M2) can run against the bench rig. SR2 (hard max on-time)
+   * and the FAULT latch are NOT bypassed — they live in the Actuator. */
+  bool bench_bypass = false;
+  void set_bench_bypass(bool on) { bench_bypass = on; }
 
  private:
   uint32_t max_hour_ = 0;

@@ -1,5 +1,6 @@
 # PlatformIO
 .pio/
+.pio-test/
 .pioenvs/
 .piolibdeps/
 .vscode/.browse.c_cpp.db*

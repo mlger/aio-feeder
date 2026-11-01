@@ -61,6 +61,7 @@ struct Hal {
 
   void feed_wdt() { ESP.wdtFeed(); }
   void stall_for_wdt_test() { ESP.wdtDisable(); for (;;) {} } /* HW WDT resets */
+  uint32_t random32() { return ESP.random(); }
 
   void led(bool on) { digitalWrite(HAL_LED_PIN, on ? LOW : HIGH); } /* active-low */
 

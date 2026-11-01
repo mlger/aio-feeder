@@ -33,14 +33,19 @@ class FeedJournal {
  public:
   /* Dedup lookup: true if feed_id was seen; *result gets the stored outcome. */
   bool known(uint32_t feed_id, uint8_t *result_status) const {
-    for (uint32_t i = 0; i < AIO_JOURNAL_SIZE; i++) {
-      const JournalEntry &e = entries_[i];
-      if (e.feed_id == feed_id && e.feed_id != 0) {
-        if (result_status) *result_status = e.in_progress ? (uint8_t)FEED_ABORTED : e.status;
-        return true;
-      }
-    }
-    return false;
+    const JournalEntry *e = find(feed_id);
+    if (!e) return false;
+    if (result_status) *result_status = e->in_progress ? (uint8_t)FEED_ABORTED : e->status;
+    return true;
+  }
+
+  /* Full entry lookup (runtime uses in_progress to re-answer a retried
+   * FEED with FEED_ACK instead of a finished result, §6.6). */
+  const JournalEntry *find(uint32_t feed_id) const {
+    if (feed_id == 0) return nullptr;
+    for (uint32_t i = 0; i < AIO_JOURNAL_SIZE; i++)
+      if (entries_[i].feed_id == feed_id) return &entries_[i];
+    return nullptr;
   }
 
   /* Write-before-actuate: mark IN_PROGRESS (caller persists the blob NOW). */

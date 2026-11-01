@@ -71,7 +71,13 @@ a clear error until this is on), or `gh api -X POST repos/mlger/aio-feeder/pages
 
 ## Status
 
-M1 — Bench node (PLAN.md §12). HAL v1 on both node MCUs, hard relay-off
-timer, watchdog, DS3231, A/B config slots, feed journal, actuator FSM and the
-serial CLI are in (host-tested); hub firmware is still a boot stub. Bench
-checklist: `docs/bench-m1.md`. Next: M2 link (ESP-NOW).
+M2 — Link (PLAN.md §12). On top of the M1 bench node (HAL v1 on both node
+MCUs, hard relay-off timer, watchdog, DS3231, A/B config slots, feed journal,
+actuator FSM, serial CLI — host-tested), the ESP-NOW link now exists on hub
+and both node MCUs: the frame MAC (truncated HMAC-SHA256), per-peer seq with
+replay window, FEED/ACK/RESULT with the §6.6 retry policy, heartbeat +
+STATUS_REQ ack, channel scan (§6.2), schedule push with `skip_until` /
+`hold_until`, and a bench hub CLI (`feed`, `feedloop`, `peer`, `chan`, …).
+Host-tested in CI (39 tests incl. RFC 4231 vectors); all three firmware
+targets build. Hardware verification: `docs/bench-m1.md` (node) and
+`docs/bench-m2.md` (radio + 1000-feed loopback). Next: M3 hub core.
