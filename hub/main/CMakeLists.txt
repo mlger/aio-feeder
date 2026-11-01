@@ -2,7 +2,7 @@
 # ../src so the host test suites keep compiling it unchanged; lib/proto and
 # link_core are shared with the nodes.
 idf_component_register(
-    SRCS "main.cpp"
+    SRCS "main.cpp" "ui/ui.cpp"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash

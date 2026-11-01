@@ -28,6 +28,10 @@
  *
  * QEMU boot markers: "%s <version> (ESP-IDF)" then "core ready" — both
  * print before the radio starts (the Wi-Fi peripheral is not emulated).
+ *
+ * QEMU screenshot build (CONFIG_AIO_UI_SHOT, M4a): radio off + in-firmware
+ * sim nodes (sim_nodes.h) + LVGL dashboard (ui/) rendering into a static
+ * framebuffer; tools/qemu/capture.py dumps it per "AIO_SHOT" marker.
  */
 #include <esp_app_desc.h>
 #include <esp_console.h>
@@ -51,6 +55,11 @@
 #include "nvs_store.h"
 #include "pcf85063.h"
 #include "pcf85063_idf.h"
+#include "ui/ui.h"
+
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+#include "sim_nodes.h"  /* single-include header (defines the sim objects) */
+#endif
 
 #include "../../lib/proto/messages.h"
 #include "../../lib/proto/profile.h"
@@ -638,8 +647,32 @@ static void aio_loop_task(void *) {
       StateLock lock;
       const uint32_t now = ms_now();
       nowt.pump(eng, now);
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+      sim::pump_to_hub(eng, now); /* node → hub sim frames (QEMU shot build) */
+#endif
       eng.tick(now);
       core.tick(now, hub_unix_now());
+
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+      sim::tick_nodes(now); /* node engines + hub → node sim frames */
+
+      /* dashboard snapshot → UI task every 400 ms */
+      static uint32_t ui_ms = 0;
+      if (now - ui_ms >= 400) {
+        ui_ms = now;
+        aio::ui::PeerFresh fr[aio::HUB_MAX_NODES];
+        uint8_t fn = 0;
+        for (int i = 0; i < aio::HUB_MAX_NODES && fn < aio::HUB_MAX_NODES; i++) {
+          const aio::HubNode *n = reg.node(i);
+          if (!n || !n->id) continue;
+          const aio::LinkPeer *p = eng.peer_by_node(n->id);
+          fr[fn++] = aio::ui::PeerFresh{n->id, p ? p->last_rx_ms : 0,
+                                        p ? p->last_hb.vin_mv : (uint16_t)0,
+                                        p ? p->last_hb.flags : (uint8_t)0};
+        }
+        aio::ui::publish(aio::ui::build_dashboard(reg, evlog, hub_unix_now(), now, fr, fn));
+      }
+#endif
 
       /* feedloop driver: one feed in flight at a time (§9.5) — M2 bench path,
        * deliberately bypassing feed_manager so the radio loopback measures the
@@ -678,6 +711,12 @@ extern "C" void app_main(void) {
     reg.reset();
   }
 
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+  /* pin the wall clock + seed the demo registry before the boot scan (M4a
+   * QEMU screenshot build — see tools/qemu/README.md) */
+  sim::seed(reg, evlog);
+#endif
+
   time_begin(); /* PCF85063 → system clock; SNTP starts with the radio */
   core.begin(&reg, &link_adapter, &nvs, &evlog, hub_unix_now());
 
@@ -686,9 +725,16 @@ extern "C" void app_main(void) {
 
 #if defined(CONFIG_AIO_NO_RADIO) && CONFIG_AIO_NO_RADIO
   printf("radio disabled (QEMU smoke build) — core+console only\n");
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+  eng.begin(aio::LinkEngine::Role::Hub, sim::hub_transport(), make_handlers(), ms_now());
+#else
   eng.begin(aio::LinkEngine::Role::Hub, nullptr, make_handlers(), ms_now());
+#endif
   eng.set_self(aio::LINK_HUB_ID, 0);
   eng.set_channel(HUB_CHAN_DEFAULT);
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+  sim::begin_nodes();
+#endif
 #else
   if (!nowt.begin(HUB_CHAN_DEFAULT)) printf("ESP-NOW init FAILED\n");
   eng.begin(aio::LinkEngine::Role::Hub, &nowt, make_handlers(), ms_now());
@@ -711,6 +757,10 @@ extern "C" void app_main(void) {
   }
 
   xTaskCreate(aio_loop_task, "aio-loop", 6144, nullptr, 5, nullptr);
+
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+  aio::ui::start(); /* LVGL dashboard + AIO_SHOT markers (QEMU shot build) */
+#endif
 
   /* bench REPL on UART0 */
   esp_console_repl_config_t repl_cfg = ESP_CONSOLE_REPL_CONFIG_DEFAULT();

@@ -17,6 +17,15 @@ __pycache__/
 tools/qemu/flash_image.bin
 tools/qemu/efuse.bin
 tools/qemu/screenshot-*.png
+serial.log
+screens/
+
+# ESP-IDF build artifacts (hub)
+hub/build/
+hub/sdkconfig
+hub/sdkconfig.old
+hub/managed_components/
+hub/dependencies.lock
 
 # OS / editor
 .DS_Store

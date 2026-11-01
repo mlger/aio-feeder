@@ -146,6 +146,9 @@ class HubRegistry {
   HubNode *node(int index) {
     return (index >= 0 && index < HUB_MAX_NODES) ? &d_.nodes[index] : nullptr;
   }
+  const HubNode *node(int index) const {
+    return (index >= 0 && index < HUB_MAX_NODES) ? &d_.nodes[index] : nullptr;
+  }
   uint8_t count() const { return d_.count; }
 
   RegistryData &data() { return d_; }

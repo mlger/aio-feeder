@@ -9,7 +9,16 @@ Needs ESP-IDF >= 5.3.1. Install: `idf_tools.py install qemu-xtensa qemu-riscv32`
 
 CI: `ci.yml` job **qemu-hub** builds the hub with `SDKCONFIG_DEFAULTS=
 "sdkconfig.defaults;sdkconfig.qemu.defaults"` (no octal PSRAM, radio off —
-neither is emulated), merges a 16 MB flash image with esptool, and boots it in
-`qemu-system-xtensa -M esp32s3` from the pinned espressif/qemu release,
-grepping the serial log for the boot markers (`aio-feeder-hub`, `core ready`)
-and failing on `Guru Meditation`. D6 is decided (pure ESP-IDF, v0.3).
+neither is emulated), merges a 16 MB flash image with esptool, boots it in
+`qemu-system-xtensa -M esp32s3` from the pinned espressif/qemu release, greps
+the serial log for the boot markers (`aio-feeder-hub`, `core ready`) and fails
+on `Guru Meditation`. D6 is decided (pure ESP-IDF, v0.3).
+
+M4a screenshot run (`CONFIG_AIO_UI_SHOT`): the QEMU build also enables the
+LVGL dashboard, in-firmware sim nodes (`hub/main/sim_nodes.h`) and a pinned
+wall clock; `tools/qemu/capture.py` boots the same flash image with a monitor
+socket, waits for `AIO_SHOT <screen>` markers on serial and dumps the LVGL
+framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, converting each frame to
+`screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). The
+dashboard is the first captured screen; more screens join the `--screens`
+list as they land (node detail, schedule editor, history).

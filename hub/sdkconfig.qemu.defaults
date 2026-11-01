@@ -1,5 +1,9 @@
-# QEMU (ci.yml qemu-hub boot smoke): the esp32s3 machine model has no octal
+# QEMU (ci.yml qemu-hub): the esp32s3 machine model has no octal
 # PSRAM (failed init aborts the boot) and no Wi-Fi peripheral (esp_wifi init
 # may hang or panic) — so this overlay tests the app, not the silicon.
 # CONFIG_SPIRAM is not set
 CONFIG_AIO_NO_RADIO=y
+
+# M4a screenshot run: sim nodes + offscreen LVGL dashboard + AIO_SHOT
+# markers (tools/qemu/capture.py dumps the framebuffer per marker).
+CONFIG_AIO_UI_SHOT=y

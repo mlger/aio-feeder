@@ -1,0 +1,6 @@
+## IDF component manager manifest for the hub main component.
+## LVGL 9 powers the M4a hub UI (PLAN.md §7.1, §8); pulled from the registry
+## in every build (hardware + QEMU screenshot build).
+dependencies:
+  idf: ">=5.3"
+  lvgl/lvgl: "~9.2"

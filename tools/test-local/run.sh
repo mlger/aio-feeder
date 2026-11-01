@@ -15,7 +15,7 @@ CXXFLAGS="-std=c++17 -fpermissive -Wall -Wextra -Wno-unused-parameter -O1 -g"
 
 suites=("$@")
 if [ ${#suites[@]} -eq 0 ]; then
-  suites=(test_proto test_link_core test_node_core test_hub_core test_e2e_sim)
+  suites=(test_proto test_link_core test_node_core test_hub_core test_e2e_sim test_ui_model)
 fi
 
 rc=0
