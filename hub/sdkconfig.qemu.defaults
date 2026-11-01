@@ -7,3 +7,10 @@ CONFIG_AIO_NO_RADIO=y
 # M4a screenshot run: sim nodes + offscreen LVGL dashboard + AIO_SHOT
 # markers (tools/qemu/capture.py dumps the framebuffer per marker).
 CONFIG_AIO_UI_SHOT=y
+
+# The 64 KB default lv_malloc pool fit six screens; the seventh (calibration
+# wizard, M4b) tipped the first dashboard render into lv_memset(NULL)
+# (StoreProhibited, lv_draw_sw_fill). The expand pool is the same static DRAM
+# cost wherever it is declared — +16 KB lets all seven screens' objects plus
+# per-render draw allocations fit. Revisit with the hardware 800×480 path.
+CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES=16
