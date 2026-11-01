@@ -255,10 +255,18 @@ static void seed(HubRegistry &reg, EventLog &evlog) {
     if (n) n->sched.skip_until = (uint32_t)(unix + 2 * 3600);
   }
 
-  /* history: #1 fed OK 40 min ago + 5 h ago, #2 fed OK 26 h ago */
+  /* history: #1 fed OK 40 min ago + 5 h ago, #2 fed OK 26 h ago, plus a
+   * week of daily OK feeds for a non-empty 7-day chart */
   evlog.push((uint32_t)(unix - 2400), 1, EV_FEED_OK, FEED_OK, 1001, 40, 0);
   evlog.push((uint32_t)(unix - 5 * 3600), 1, EV_FEED_OK, FEED_OK, 1003, 25, 0);
   evlog.push((uint32_t)(unix - 26 * 3600), 2, EV_FEED_OK, FEED_OK, 1002, 25, 0);
+  for (int d = 1; d <= 6; d++) {
+    evlog.push((uint32_t)(unix - d * 86400 - 600), 1, EV_FEED_OK, FEED_OK,
+               (uint32_t)(1100 + d), (uint16_t)(40 + d), 0);
+    if (d <= 4)
+      evlog.push((uint32_t)(unix - d * 86400 - 1200), 2, EV_FEED_OK, FEED_OK,
+                 (uint32_t)(1200 + d), 25, 0);
+  }
 
   printf("sim: clock pinned to %lld, registry seeded (3 nodes, 2 live)\n",
          (long long)unix);

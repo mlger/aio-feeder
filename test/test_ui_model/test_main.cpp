@@ -381,6 +381,86 @@ static void test_editor_add_remove_and_full_list(void) {
   TEST_ASSERT_EQUAL_INT8(-1, e.selected);
 }
 
+/* --- history ------------------------------------------------------------------------ */
+
+static void test_history_empty_and_invalid_time(void) {
+  const aio::ui::HistoryView h0 = aio::ui::build_history(reg, log_, 0);
+  TEST_ASSERT_FALSE(h0.time_ok);
+  TEST_ASSERT_EQUAL_STRING("--:--", h0.clock);
+  TEST_ASSERT_EQUAL_UINT32(0, h0.total_feeds);
+  TEST_ASSERT_EQUAL_UINT8(0, h0.node_count);
+
+  add_node(0xA5, 450, 40);
+  const aio::ui::HistoryView h = aio::ui::build_history(reg, log_, g_unix);
+  TEST_ASSERT_TRUE(h.time_ok);
+  TEST_ASSERT_EQUAL_STRING("07:21 Sun 01 Nov", h.clock);
+  TEST_ASSERT_EQUAL_STRING("Su", h.day_labels[0]);
+  TEST_ASSERT_EQUAL_STRING("Sa", h.day_labels[1]); /* Sunday back one day */
+  TEST_ASSERT_EQUAL_UINT8(1, h.node_count);        /* registry-seeded, 0 g */
+  TEST_ASSERT_EQUAL_UINT32(0, h.nodes[0].grams);
+}
+
+static void test_history_day_buckets_and_totals(void) {
+  add_node(0xA5, 450, 40);
+  add_node(0x5A, 455, 25);
+  /* today (07:21 local): one OK feed 40 g; yesterday: 25 g; 8 days ago: outside */
+  log_.push((uint32_t)(g_unix - 2400), 1, EV_FEED_OK, FEED_OK, 3001, 40, 0);
+  log_.push((uint32_t)(g_unix - 86400 - 3600), 2, EV_FEED_OK, FEED_OK, 3002, 25, 0);
+  log_.push((uint32_t)(g_unix - 8 * 86400), 1, EV_FEED_OK, FEED_OK, 3003, 90, 0);
+
+  const aio::ui::HistoryView h = aio::ui::build_history(reg, log_, g_unix);
+  TEST_ASSERT_EQUAL_UINT16(1, h.days[0].feeds);
+  TEST_ASSERT_EQUAL_UINT32(40, h.days[0].grams);
+  TEST_ASSERT_EQUAL_UINT16(1, h.days[1].feeds);
+  TEST_ASSERT_EQUAL_UINT32(25, h.days[1].grams);
+  TEST_ASSERT_EQUAL_UINT16(0, h.days[2].feeds);
+  TEST_ASSERT_EQUAL_UINT32(0, h.days[6].grams); /* 8-day-old event excluded */
+
+  TEST_ASSERT_EQUAL_UINT32(2, h.total_feeds);
+  TEST_ASSERT_EQUAL_UINT32(65, h.total_grams);
+}
+
+static void test_history_node_totals_sorted_desc(void) {
+  add_node(0xA5, 450, 40); /* id 1 */
+  add_node(0x5A, 455, 25); /* id 2 */
+  add_node(0x66, 410, 30); /* id 3, silent */
+  /* node 2: 25 + 40 = 65 g; node 1: 40 g; node 3: none. Push oldest first so
+   * ring order == time order. */
+  log_.push((uint32_t)(g_unix - 3600), 2, EV_FEED_OK, FEED_OK, 3002, 40, 0);
+  log_.push((uint32_t)(g_unix - 2400), 2, EV_FEED_OK, FEED_OK, 3001, 25, 0);
+  log_.push((uint32_t)(g_unix - 1800), 1, EV_FEED_OK, FEED_OK, 3003, 40, 0);
+  /* a FAIL counts in the event list but not in grams */
+  log_.push((uint32_t)(g_unix - 60), 1, EV_FEED_FAIL, FEED_ABORTED, 3004, 0, 0);
+
+  const aio::ui::HistoryView h = aio::ui::build_history(reg, log_, g_unix);
+  TEST_ASSERT_EQUAL_UINT8(3, h.node_count);
+  TEST_ASSERT_EQUAL_UINT8(2, h.nodes[0].id); /* 65 g first */
+  TEST_ASSERT_EQUAL_UINT32(65, h.nodes[0].grams);
+  TEST_ASSERT_EQUAL_UINT16(2, h.nodes[0].feeds);
+  TEST_ASSERT_EQUAL_UINT8(1, h.nodes[1].id); /* 40 g */
+  TEST_ASSERT_EQUAL_UINT32(40, h.nodes[1].grams);
+  TEST_ASSERT_EQUAL_UINT8(3, h.nodes[2].id); /* silent node still listed */
+  TEST_ASSERT_EQUAL_UINT32(0, h.nodes[2].grams);
+
+  TEST_ASSERT_EQUAL_UINT8(4, h.event_count); /* newest first incl. the FAIL */
+  TEST_ASSERT_EQUAL_UINT8(EV_FEED_FAIL, h.events[0].kind);
+  TEST_ASSERT_EQUAL_UINT32(60, h.events[0].age_s);
+  TEST_ASSERT_EQUAL_UINT32(1800, h.events[1].age_s);
+  TEST_ASSERT_EQUAL_UINT32(2400, h.events[2].age_s);
+}
+
+static void test_history_event_list_capped(void) {
+  add_node(0xA5, 450, 40);
+  /* push oldest first so ring order == time order; 10 events, list keeps 8 */
+  for (int i = 10; i >= 1; i--)
+    log_.push((uint32_t)(g_unix - i * 60), 1, EV_FEED_OK, FEED_OK, 4000 + i, 5, 0);
+  const aio::ui::HistoryView h = aio::ui::build_history(reg, log_, g_unix);
+  TEST_ASSERT_EQUAL_UINT8(aio::ui::UI_HISTORY_ROWS, h.event_count);
+  TEST_ASSERT_EQUAL_UINT32(60, h.events[0].age_s); /* newest first */
+  TEST_ASSERT_EQUAL_UINT32(60 * 8, h.events[7].age_s);
+  TEST_ASSERT_EQUAL_UINT32(10, h.total_feeds); /* chart counts all */
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_empty_registry_renders_safe_defaults);
@@ -403,5 +483,9 @@ int main(void) {
   RUN_TEST(test_editor_toggle_day_never_empty);
   RUN_TEST(test_editor_apply_updates_selected_and_resorts);
   RUN_TEST(test_editor_add_remove_and_full_list);
+  RUN_TEST(test_history_empty_and_invalid_time);
+  RUN_TEST(test_history_day_buckets_and_totals);
+  RUN_TEST(test_history_node_totals_sorted_desc);
+  RUN_TEST(test_history_event_list_capped);
   return UNITY_END();
 }

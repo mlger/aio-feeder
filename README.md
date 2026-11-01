@@ -125,19 +125,21 @@ DST-correct local time (UTC/Manila/EU/US rules), feed_manager as the single
 FEED originator (§7.2 FSM, §6.6 WAL intent → FEED_UNKNOWN on hub death
 mid-feed, §9.5 stagger), CRC'd NVS persistence, PCF85063 RTC fallback + SNTP,
 TIME_SYNC push on drift, and the bench CLI as an `esp_console` REPL.
-Host-tested in CI (82 tests incl. a UDP e2e sim: hub core ↔ fake node over
+Host-tested in CI (92 tests incl. a UDP e2e sim: hub core ↔ fake node over
 real loopback sockets, retry/repeat policy exercised); QEMU boot smoke in CI.
 Hardware verification: `docs/bench-m1.md` (node), `docs/bench-m2.md` (radio),
 `docs/bench-m3.md` (scheduler + reboots), `docs/bench-sim.md` (fake node).
-M4a hub UI in progress (LVGL 9 on ESP-IDF, warm dark theme, offscreen RGB565
+M4a hub UI screens (LVGL 9 on ESP-IDF, warm dark theme, offscreen RGB565
 framebuffer, host-tested `ui_model` presenters §7.2/§8): **dashboard** (node
-cards, clock, alert footer) and **node detail** (state/vin/last-seen, next
-feed, skip/hold gate banner, sorted schedule, recent feeds) are in, with
+cards, clock, alert footer), **node detail** (state/vin/last-seen, next feed,
+skip/hold gate banner, sorted schedule, recent feeds), **schedule editor**
+(entry list + weekday chips + time/amount draft, pure edit model) and
+**history** (7-day bars, per-node totals, recent events) are in, with
 in-firmware sim nodes (two real LinkEngine instances over loopback + one
-silent node) driving them under QEMU; `tools/qemu/capture.py` dumps the
-framebuffer per `AIO_SHOT` marker in the CI `qemu-hub` job (screenshots
-uploaded as artifacts). Next: schedule editor / history screens, then M4b
-pairing.
+silent node) and a seeded week of history driving them under QEMU;
+`tools/qemu/capture.py` dumps the framebuffer per `AIO_SHOT` marker in the
+CI `qemu-hub` job (screenshots uploaded as artifacts). Next: alerts strip
+polish + M4b pairing.
 
 Releases: **v0.1.0**, **v0.2.0**. Cut the next one the same way —
 `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the firmware zips

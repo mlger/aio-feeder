@@ -676,6 +676,7 @@ static void aio_loop_task(void *) {
             aio::ui::build_node_detail(reg, evlog, dn, hub_unix_now(), now, fr, fn));
         aio::ui::publish_sched_editor(
             aio::ui::build_sched_editor(reg, dn, hub_unix_now()));
+        aio::ui::publish_history(aio::ui::build_history(reg, evlog, hub_unix_now()));
       }
 #endif
 

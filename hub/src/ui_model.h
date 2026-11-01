@@ -515,6 +515,141 @@ static inline bool editor_remove_selected(SchedEditor &e) {
   return true;
 }
 
+/* --- history (§8.6) --------------------------------------------------------------- */
+
+constexpr uint8_t UI_HISTORY_DAYS = 7;
+constexpr uint8_t UI_HISTORY_ROWS = 8;
+
+struct HistoryDay {
+  uint16_t feeds = 0;
+  uint32_t grams = 0;
+};
+
+struct HistoryNodeRow {
+  uint8_t id = 0;
+  uint16_t feeds = 0;
+  uint32_t grams = 0;
+};
+
+struct HistoryEventRow {
+  uint8_t node = 0;
+  uint8_t kind = 0;
+  uint8_t result = 0;
+  uint16_t amount = 0;
+  uint32_t age_s = 0;
+};
+
+struct HistoryView {
+  bool time_ok = false;
+  char clock[24] = "--:--";
+  HistoryDay days[UI_HISTORY_DAYS]; /* [0] = today … [6] = 6 days ago */
+  char day_labels[UI_HISTORY_DAYS][4]; /* "Su", "Mo", … (chart x-axis) */
+  uint8_t node_count = 0;
+  HistoryNodeRow nodes[HUB_MAX_NODES]; /* OK totals, grams desc */
+  uint8_t event_count = 0;
+  HistoryEventRow events[UI_HISTORY_ROWS]; /* newest first, any node */
+  uint32_t total_feeds = 0; /* 7-day OK totals */
+  uint32_t total_grams = 0;
+};
+
+/* History snapshot: 7-day OK buckets in local time, per-node OK totals and
+ * the newest terminal events. Pure; host-tested. The RAM ring covers at most
+ * CAP events — the SD-backed deep history (§7.5) replaces the source later
+ * without changing this model. */
+static inline HistoryView build_history(const HubRegistry &reg, const EventLog &log,
+                                        int64_t unix_now) {
+  HistoryView h;
+  if (unix_now < 1600000000) return h;
+  const LocalTime now_t = local_from_unix(unix_now, reg.data().tz_rule);
+  h.time_ok = true;
+  {
+    static const char *WD[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *MO[13] = {"",   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    int64_t y;
+    unsigned m, day;
+    civil_from_days(now_t.day_start / 86400, &y, &m, &day);
+    snprintf(h.clock, sizeof(h.clock), "%02u:%02u %s %02u %s",
+             (unsigned)(now_t.min_of_day / 60), (unsigned)(now_t.min_of_day % 60),
+             WD[now_t.wday % 7], day, MO[m]);
+  }
+  static const char *D2[7] = {"Su", "Mo", "Tu", "We", "Th", "Fr", "Sa"};
+  for (int i = 0; i < UI_HISTORY_DAYS; i++)
+    snprintf(h.day_labels[i], sizeof(h.day_labels[i]), "%s",
+             D2[(now_t.wday - i + 14) % 7]);
+
+  /* accumulators seeded from the registry so silent nodes still show (0 g) */
+  uint16_t node_feeds[HUB_MAX_NODES] = {0};
+  uint32_t node_grams[HUB_MAX_NODES] = {0};
+  uint8_t node_ids[HUB_MAX_NODES] = {0};
+  uint8_t node_n = 0;
+  for (int i = 0; i < HUB_MAX_NODES; i++) {
+    const HubNode *n = reg.node(i);
+    if (!n || !n->id) continue;
+    node_ids[node_n] = n->id;
+    node_n++;
+  }
+
+  for (uint16_t k = log.count(); k > 0; k--) {
+    const HubEvent *e = log.at((uint16_t)(k - 1));
+    /* index of the node's accumulator (registry order) */
+    uint8_t acc = HUB_MAX_NODES;
+    for (uint8_t i = 0; i < node_n; i++) {
+      if (node_ids[i] == e->node) {
+        acc = i;
+        break;
+      }
+    }
+    if (acc == HUB_MAX_NODES) continue; /* event for an unpaired id */
+
+    if (e->kind == EV_FEED_OK) {
+      const LocalTime et = local_from_unix((int64_t)e->unix, reg.data().tz_rule);
+      const int64_t day_diff = (et.day_start - now_t.day_start) / 86400;
+      if (day_diff <= 0 && -day_diff < UI_HISTORY_DAYS) {
+        const uint8_t idx = (uint8_t)(-day_diff); /* [0]=today … [6]=6 d ago */
+        h.days[idx].feeds++;
+        h.days[idx].grams += e->amount;
+        h.total_feeds++;
+        h.total_grams += e->amount;
+      }
+      node_feeds[acc]++;
+      node_grams[acc] += e->amount;
+    }
+
+    /* newest-first list (ring order), any terminal kind */
+    if (e->kind == EV_FEED_OK || e->kind == EV_FEED_FAIL || e->kind == EV_FEED_REJ ||
+        e->kind == EV_FEED_UNKNOWN) {
+      if (h.event_count < UI_HISTORY_ROWS) {
+        HistoryEventRow &r = h.events[h.event_count++];
+        r.node = e->node;
+        r.kind = e->kind;
+        r.result = e->result;
+        r.amount = e->amount;
+        r.age_s = (unix_now > (int64_t)e->unix) ? (uint32_t)(unix_now - (int64_t)e->unix) : 0;
+      }
+    }
+  }
+
+  for (uint8_t i = 0; i < node_n; i++) {
+    /* include paired nodes even with zero OK feeds (shows silent nodes) */
+    h.nodes[h.node_count].id = node_ids[i];
+    h.nodes[h.node_count].feeds = node_feeds[i];
+    h.nodes[h.node_count].grams = node_grams[i];
+    h.node_count++;
+  }
+  /* grams desc, stable for equal totals (registry order) */
+  for (uint8_t i = 1; i < h.node_count; i++) {
+    const HistoryNodeRow key = h.nodes[i];
+    int8_t j = (int8_t)(i - 1);
+    while (j >= 0 && h.nodes[j].grams < key.grams) {
+      h.nodes[j + 1] = h.nodes[j];
+      j--;
+    }
+    h.nodes[j + 1] = key;
+  }
+  return h;
+}
+
 }  // namespace ui
 }  // namespace aio
 

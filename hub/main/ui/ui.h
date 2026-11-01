@@ -27,6 +27,9 @@ void publish_detail(const NodeDetail &d);
 /* Publish the schedule-editor base snapshot for the same node. */
 void publish_sched_editor(const SchedEditor &e);
 
+/* Publish the history snapshot (7-day chart + per-node totals + events). */
+void publish_history(const HistoryView &h);
+
 /* Which node the detail screen shows (dashboard tap target later; the QEMU
  * shot build pins it). */
 uint8_t detail_node();

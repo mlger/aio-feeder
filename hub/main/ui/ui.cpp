@@ -59,12 +59,15 @@ static const uint32_t C_ALERT = 0xE0A458;
 static Dashboard s_snap[2];
 static NodeDetail s_det_snap[2];
 static SchedEditor s_edit_snap[2];
+static HistoryView s_hist_snap[2];
 static volatile uint32_t s_seq = 0;
 static volatile uint32_t s_det_seq = 0;
 static volatile uint32_t s_edit_seq = 0;
+static volatile uint32_t s_hist_seq = 0;
 static uint32_t s_seen = 0;
 static uint32_t s_det_seen = 0;
 static uint32_t s_edit_seen = 0;
+static uint32_t s_hist_seen = 0;
 static volatile uint8_t s_detail_id = 1; /* which node the detail screen shows */
 
 void publish(const Dashboard &d) {
@@ -83,6 +86,12 @@ void publish_sched_editor(const SchedEditor &e) {
   const uint32_t s = s_edit_seq;
   s_edit_snap[s & 1] = e;
   s_edit_seq = s + 1;
+}
+
+void publish_history(const HistoryView &h) {
+  const uint32_t s = s_hist_seq;
+  s_hist_snap[s & 1] = h;
+  s_hist_seq = s + 1;
 }
 
 uint8_t detail_node() { return s_detail_id; }
@@ -121,6 +130,16 @@ static lv_obj_t *s_ed_amt_lbl = nullptr;               /* draft amount */
 static lv_obj_t *s_ed_day_btns[7];                     /* weekday chips */
 static lv_obj_t *s_ed_gate_lbl = nullptr;              /* gate/skip footer */
 static const uint32_t C_SEL = 0x35383F;                /* selected row bg */
+static const uint32_t C_BAR = 0x6FBF73;                /* chart bars (online green) */
+
+/* history screen (§8.6) */
+static lv_obj_t *s_hi_scr = nullptr;
+static lv_obj_t *s_hi_clock_lbl = nullptr;
+static lv_obj_t *s_hi_bars[UI_HISTORY_DAYS];
+static lv_obj_t *s_hi_day_lbls[UI_HISTORY_DAYS];
+static lv_obj_t *s_hi_nodes_lbl = nullptr;
+static lv_obj_t *s_hi_ev_rows[UI_HISTORY_ROWS];
+static lv_obj_t *s_hi_footer_lbl = nullptr;
 
 struct Card {
   lv_obj_t *root = nullptr;
@@ -750,6 +769,145 @@ static void update_edit(const SchedEditor &e) {
   }
 }
 
+/* --- history screen (§8.6) ----------------------------------------------------------- */
+
+#define HI_CHART_H 64 /* bar area height inside the chart panel */
+
+static void build_history_screen() {
+  s_hi_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_hi_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_hi_scr, 0, 0);
+
+  /* header */
+  lv_obj_t *header = new_panel(s_hi_scr, UI_W, 30, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_right(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  lv_obj_t *title = new_label(header, "History", &lv_font_montserrat_16, C_TEXT);
+  (void)title;
+  lv_obj_t *spacer = lv_obj_create(header);
+  lv_obj_set_size(spacer, 1, 1);
+  lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(spacer, 0, 0);
+  lv_obj_set_flex_grow(spacer, 1);
+  s_hi_clock_lbl = new_label(header, "--:--", &lv_font_montserrat_14, C_MUTED);
+
+  /* chart panel: 7 bottom-aligned bars + day labels */
+  lv_obj_t *chart = new_panel(s_hi_scr, UI_W - 20, HI_CHART_H + 22, C_PANEL);
+  lv_obj_set_pos(chart, 10, 32);
+  lv_obj_set_style_pad_all(chart, 4, 0);
+  for (int i = 0; i < UI_HISTORY_DAYS; i++) {
+    lv_obj_t *col = lv_obj_create(chart);
+    lv_obj_set_size(col, 44, HI_CHART_H + 14);
+    lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(col, 0, 0);
+    lv_obj_set_style_pad_all(col, 0, 0);
+    lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+    lv_obj_set_flex_align(col, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
+                          LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_style_pad_row(col, 0, 0);
+    lv_obj_set_x(col, (int32_t)(6 + i * 50));
+    lv_obj_set_y(col, 2);
+    lv_obj_t *bar = lv_obj_create(col);
+    lv_obj_set_size(bar, 30, 4);
+    lv_obj_set_style_bg_color(bar, lv_color_hex(C_BAR), 0);
+    lv_obj_set_style_bg_opa(bar, LV_OPA_COVER, 0);
+    lv_obj_set_style_radius(bar, 3, 0);
+    lv_obj_set_style_border_width(bar, 0, 0);
+    s_hi_bars[i] = bar;
+    lv_obj_t *lbl = new_label(col, "--", &lv_font_montserrat_12, C_MUTED);
+    s_hi_day_lbls[i] = lbl;
+  }
+
+  /* per-node totals strip */
+  s_hi_nodes_lbl = new_label(s_hi_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_obj_set_pos(s_hi_nodes_lbl, 10, 32 + HI_CHART_H + 26);
+
+  /* event list rows */
+  for (int i = 0; i < UI_HISTORY_ROWS; i++) {
+    lv_obj_t *row = lv_obj_create(s_hi_scr);
+    lv_obj_set_size(row, UI_W - 20, 15);
+    lv_obj_set_pos(row, 10, (int32_t)(32 + HI_CHART_H + 42 + i * 15));
+    lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(row, 0, 0);
+    lv_obj_set_style_pad_all(row, 0, 0);
+    lv_obj_t *l = new_label(row, "", &lv_font_montserrat_12, C_TEXT);
+    (void)l;
+    s_hi_ev_rows[i] = row;
+    lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+  }
+
+  /* footer */
+  s_hi_footer_lbl = new_label(s_hi_scr, "", &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_pos(s_hi_footer_lbl, 10, UI_H - 18);
+}
+
+static void update_history(const HistoryView &h) {
+  char buf[72];
+  if (s_hi_clock_lbl) lv_label_set_text(s_hi_clock_lbl, h.clock);
+
+  uint32_t max_g = 1;
+  for (int i = 0; i < UI_HISTORY_DAYS; i++)
+    if (h.days[i].grams > max_g) max_g = h.days[i].grams;
+  for (int i = 0; i < UI_HISTORY_DAYS; i++) {
+    const uint32_t g = h.days[i].grams;
+    lv_obj_t *bar = s_hi_bars[i];
+    if (bar) {
+      const int32_t hpx = (int32_t)(g ? 4 + (HI_CHART_H - 8) * g / max_g : 4);
+      lv_obj_set_height(bar, hpx);
+    }
+    if (s_hi_day_lbls[i]) {
+      snprintf(buf, sizeof(buf), "%s", h.day_labels[i]);
+      lv_label_set_text((lv_obj_t *)s_hi_day_lbls[i], buf);
+    }
+  }
+
+  if (s_hi_nodes_lbl) {
+    size_t off = 0;
+    buf[0] = 0;
+    for (int i = 0; i < h.node_count && off < sizeof(buf) - 12; i++) {
+      off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%sF%u %lu g",
+                              i ? "  " : "", (unsigned)h.nodes[i].id,
+                              (unsigned long)h.nodes[i].grams);
+    }
+    if (!h.node_count) snprintf(buf, sizeof(buf), "no feeders yet");
+    lv_label_set_text(s_hi_nodes_lbl, buf);
+  }
+
+  for (int i = 0; i < UI_HISTORY_ROWS; i++) {
+    lv_obj_t *row = s_hi_ev_rows[i];
+    if (!row) continue;
+    if (i >= h.event_count) {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+    const HistoryEventRow &ev = h.events[i];
+    char age[24];
+    fmt_age(age, sizeof(age), ev.age_s);
+    snprintf(buf, sizeof(buf), "F%u  %s  %u g  %s", (unsigned)ev.node,
+             kind_short(ev.kind), (unsigned)ev.amount, age);
+    lv_obj_t *l = lv_obj_get_child(row, 0);
+    if (l) {
+      lv_label_set_text((lv_obj_t *)l, buf);
+      lv_obj_set_style_text_color(
+          (lv_obj_t *)l, lv_color_hex(ev.kind == EV_FEED_OK ? C_TEXT : C_ALERT), 0);
+    }
+  }
+
+  if (s_hi_footer_lbl) {
+    snprintf(buf, sizeof(buf), "7-day: %lu feeds, %lu g - RAM ring 128 (SD deep history M4)",
+             (unsigned long)h.total_feeds, (unsigned long)h.total_grams);
+    lv_label_set_text(s_hi_footer_lbl, buf);
+  }
+}
+
 /* --- LVGL plumbing ----------------------------------------------------------------- */
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -770,6 +928,7 @@ static void ui_task(void *) {
   build_screen();
   build_detail_screen();
   build_edit_screen();
+  build_history_screen();
   lv_screen_load(s_scr);
 
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -780,7 +939,7 @@ static void ui_task(void *) {
   /* deterministic rotation for the QEMU screenshot run: each screen gets a
    * 25 s window, then the cycle repeats (the runner grabs one shot per
    * screen name). On hardware this is replaced by touch navigation (M4b). */
-  enum ShotScreen { SH_DASH = 0, SH_DETAIL = 1, SH_EDIT = 2, SH_COUNT };
+  enum ShotScreen { SH_DASH = 0, SH_DETAIL = 1, SH_EDIT = 2, SH_HIST = 3, SH_COUNT };
   constexpr uint32_t SHOT_WINDOW_MS = 25000;
   ShotScreen shot = SH_DASH;
   ShotScreen loaded = SH_DASH;
@@ -792,9 +951,10 @@ static void ui_task(void *) {
 
     shot = (ShotScreen)((now - boot_ms) / SHOT_WINDOW_MS % SH_COUNT);
     if (shot != loaded) {
-      lv_screen_load(shot == SH_DASH   ? s_scr
-                     : shot == SH_DETAIL ? s_det_scr
-                                         : s_ed_scr);
+      lv_screen_load(shot == SH_DASH    ? s_scr
+                     : shot == SH_DETAIL  ? s_det_scr
+                     : shot == SH_EDIT    ? s_ed_scr
+                                          : s_hi_scr);
       loaded = shot;
       s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
     }
@@ -814,6 +974,11 @@ static void ui_task(void *) {
       update_edit(s_edit_snap[(es - 1) & 1]);
       s_edit_seen = es;
     }
+    const uint32_t hs = s_hist_seq;
+    if (hs != s_hist_seen) {
+      update_history(s_hist_snap[(hs - 1) & 1]);
+      s_hist_seen = hs;
+    }
 
     lv_timer_handler();
 
@@ -823,7 +988,8 @@ static void ui_task(void *) {
         now - s_last_flush_ms > 400 && now - s_last_marker_ms > 5000) {
       printf("\nAIO_SHOT %s\n", loaded == SH_DASH   ? "dashboard"
                                 : loaded == SH_DETAIL ? "node_detail"
-                                                      : "sched_editor");
+                                : loaded == SH_EDIT   ? "sched_editor"
+                                                      : "history");
       fflush(stdout);
       s_last_marker_ms = now;
     }
@@ -842,6 +1008,7 @@ void start() {}
 void publish(const Dashboard &) {}
 void publish_detail(const NodeDetail &) {}
 void publish_sched_editor(const SchedEditor &) {}
+void publish_history(const HistoryView &) {}
 uint8_t detail_node() { return 1; }
 void set_detail_node(uint8_t) {}
 

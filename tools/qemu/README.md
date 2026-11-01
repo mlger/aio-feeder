@@ -20,6 +20,6 @@ wall clock; `tools/qemu/capture.py` boots the same flash image with a monitor
 socket, waits for `AIO_SHOT <screen>` markers on serial and dumps the LVGL
 framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, converting each frame to
 `screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). Captured
-today: `dashboard`, `node_detail` (the firmware rotates screens on a fixed
-schedule; more screens join the `--screens` list as they land — schedule
-editor, history).
+today: `dashboard`, `node_detail`, `sched_editor`, `history` (the firmware
+rotates screens on a fixed 25 s schedule; more screens join the `--screens`
+list as they land).
