@@ -58,7 +58,7 @@ jobs:
       - name: Symbolize panic backtrace (diagnosis)
         if: failure()
         run: |
-          ADDR2LINE=$(find /opt/esp/tools -name '*addr2line' | head -1)
+          ADDR2LINE=$(find /opt/esp/tools -name 'xtensa-esp-elf-addr2line' | head -1)
           echo "addr2line: $ADDR2LINE"
           BT=$(grep -o 'Backtrace:.*' serial.log | head -1 | python3 -c "import sys,re; print(' '.join(re.findall(r'0x([0-9a-f]+):', sys.stdin.read())))")
           echo "frames: $BT"
