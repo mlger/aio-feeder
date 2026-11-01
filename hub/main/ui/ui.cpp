@@ -1592,7 +1592,7 @@ static lv_obj_t *s_pin_scr = nullptr;
 static lv_obj_t *s_pin_dots_lbl = nullptr;
 static lv_obj_t *s_pin_note_lbl = nullptr;
 static lv_obj_t *s_pin_scope_lbl = nullptr;
-static lv_obj_t *s_pin_kb = nullptr; /* single btnmatrix keypad */
+static lv_obj_t *s_pin_kb = nullptr; /* keypad lane (label for now) */
 
 static void build_pin_screen() {
   s_pin_scr = lv_obj_create(nullptr);
@@ -1621,23 +1621,18 @@ static void build_pin_screen() {
   s_pin_note_lbl = new_label(s_pin_scr, "", &lv_font_montserrat_12, C_ALERT);
   lv_obj_set_pos(s_pin_note_lbl, 10, 88);
 
-  /* 4×3 keypad on the right half — ONE lv_btnmatrix widget: the QEMU build
-   * counts both LVGL-pool and static-DRAM bytes, and 12 separate buttons
-   * cost ~1.5 KB of pool for pixels the shot never touches. The M5 touch
-   * backend wires the events; the shot build only renders it. */
-  static const char *KEYS[17] = {"1", "2", "3", "\n", "4", "5", "6", "\n",
-                                 "7", "8", "9", "\n", "C", "0", "OK", nullptr};
-  static_assert(sizeof(KEYS) / sizeof(KEYS[0]) == 17, "map must end with nullptr");
-  lv_obj_t *kb = lv_btnmatrix_create(s_pin_scr);
-  lv_btnmatrix_set_map(kb, KEYS);
-  lv_obj_set_size(kb, 164, 148);
+  /* 4×3 keypad on the right half — a styled multi-line LABEL, the same
+   * pool discipline as the pairing/calib lanes: the 64 KiB LVGL pool is
+   * the hard budget (the component ignores pool-size requests and a
+   * btnmatrix drew 12 rounded cells whose mask allocations exhausted it
+   * mid-draw). The M5 touch backend replaces this with real buttons. */
+  lv_obj_t *kb = new_label(s_pin_scr,
+                           "[ 1 ]  [ 2 ]  [ 3 ]\n\n"
+                           "[ 4 ]  [ 5 ]  [ 6 ]\n\n"
+                           "[ 7 ]  [ 8 ]  [ 9 ]\n\n"
+                           "[ C ]  [ 0 ]  [ OK ]",
+                           &lv_font_montserrat_14, C_TEXT);
   lv_obj_set_pos(kb, 178, 38);
-  lv_obj_set_style_bg_opa(kb, LV_OPA_TRANSP, 0);
-  lv_obj_set_style_border_width(kb, 0, 0);
-  lv_obj_set_style_pad_all(kb, 2, 0);
-  lv_obj_set_style_bg_color(kb, lv_color_hex(C_CARD), LV_PART_ITEMS);
-  lv_obj_set_style_text_color(kb, lv_color_hex(C_TEXT), LV_PART_ITEMS);
-  lv_obj_set_style_radius(kb, 6, LV_PART_ITEMS);
   s_pin_kb = kb;
 
   lv_obj_t *hint = new_label(s_pin_scr, "Unlocks for 60 s.\nSchedules never lock.",
