@@ -22,6 +22,7 @@
 #include "event_log.h"
 #include "hub_registry.h"
 #include "hub_time.h"
+#include "settings_store.h"
 
 namespace aio {
 namespace ui {
@@ -921,6 +922,163 @@ static inline uint32_t cal_g_per_s_x10(uint16_t rate_x100) {
 static inline const char *cal_unit_label(uint8_t mech_sel) {
   return mech_sel == 2 ? "ml" : "g";
 }
+
+/* --- setup wizard view (§8.9, §9.13; M4b) -------------------------------------------- */
+
+/* Wizard steps; WIZ_CAP is skipped for a just-paired node (§9.13) — the
+ * session jumps NODE → SCHED and view().step_no collapses accordingly. */
+enum WizStep : uint8_t {
+  WIZ_IDLE = 0,
+  WIZ_TZ,
+  WIZ_WIFI,
+  WIZ_NODE,
+  WIZ_CAP,
+  WIZ_SCHED,
+  WIZ_DONE,
+};
+
+struct WizardView {
+  WizStep step = WIZ_IDLE;
+  uint8_t step_no = 0; /* 1..6 for the header counter (0 = idle) */
+  bool skip_cap = false;
+  bool pair_new = false;
+
+  uint8_t tz_rule = TZ_MANILA;
+  bool ntp_on = true;
+
+  char wifi_ssid[33] = "";
+  int8_t wifi_state = -1; /* -1 untested, 0 failed/skipped, 1 ok */
+  char wifi_note[32] = "";
+
+  uint8_t node_count = 0;
+  uint8_t node_ids[HUB_MAX_NODES] = {0};
+  char node_names[HUB_MAX_NODES][13] = {};
+  int8_t node_sel = -1; /* -1 none, -2 = pair new, else node id */
+
+  uint32_t cap_total = 1500;
+  uint32_t cap_now = 0;
+  uint8_t pct_full = 0;
+  uint32_t to_fill = 0;
+  bool amber = false;
+  char summary[48] = "";
+
+  uint16_t s_min = 480;
+  uint8_t s_days = 0x7F;
+  uint16_t s_amount = 0;
+  uint32_t feed_cap = 0; /* node per-feed cap (SR2 / rate) */
+  bool unit_ml = false;  /* pump profiles dispense ml */
+
+  char done_node_name[13] = "";
+  char note[48] = "";
+};
+
+/* --- settings view (§8.8; M4b) -------------------------------------------------------- */
+
+constexpr uint8_t UI_SET_SECTION_COUNT = 10;
+/* §8.8 jump bar: Restart, Display, Time, Network, Remote, Security, Storage,
+ * Backup, Wizard, Danger (Backup and Wizard are the §8.8 sub-entries). */
+enum SetSection : uint8_t {
+  SET_SEC_RESTART = 0,
+  SET_SEC_DISPLAY,
+  SET_SEC_TIME,
+  SET_SEC_NETWORK,
+  SET_SEC_REMOTE,
+  SET_SEC_SECURITY,
+  SET_SEC_STORAGE,
+  SET_SEC_BACKUP,
+  SET_SEC_WIZARD,
+  SET_SEC_DANGER,
+};
+
+struct SettingsView {
+  bool time_ok = false;
+  char clock[24] = "--:--";
+  uint8_t section = 0; /* SetSection pane shown on the right */
+
+  /* display */
+  uint8_t brightness = SET_BRIGHTNESS_DEF;
+  uint16_t screen_off_s = SET_SCREEN_OFF_DEF;
+
+  /* time */
+  uint8_t tz_rule = TZ_UTC;
+  bool ntp_on = true;
+  char time_src[16] = "none";
+
+  /* network */
+  bool wifi_set = false;
+  char wifi_ssid[33] = "";
+  uint8_t chan = 1;
+
+  /* security */
+  bool pin_enabled = false;
+  uint8_t pin_scope = PIN_SCOPE_SETTINGS;
+  bool locked_now = false;
+  uint16_t unlock_left_s = 0;
+
+  /* storage / backup */
+  uint8_t retention_days = SET_RETENTION_DEF;
+  char sd_status[24] = "no card";
+  uint8_t backup_count = 0;
+  char backup_last[32] = ""; /* newest aio-backup-*.json (BACKUP_NAME_LEN) */
+
+  /* danger */
+  uint8_t node_count = 0;
+};
+
+/* Settings snapshot: pure data pass-through of registry + settings + the
+ * environment the firmware injects (SD status, backup file count). */
+static inline SettingsView build_settings(const HubRegistry &reg,
+                                          const HubSettings &set, int64_t unix_now,
+                                          const char *sd_status, uint8_t backup_count,
+                                          const char *backup_last, bool locked_now,
+                                          uint16_t unlock_left_s) {
+  SettingsView v;
+  v.section = 0;
+  v.brightness = set.brightness;
+  v.screen_off_s = set.screen_off_s;
+  v.tz_rule = reg.data().tz_rule;
+  v.ntp_on = set.ntp_on != 0;
+  if (unix_now >= 1600000000) {
+    v.time_ok = true;
+    static const char *WD[7] = {"Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"};
+    static const char *MO[13] = {"",   "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"};
+    const LocalTime t = local_from_unix(unix_now, reg.data().tz_rule);
+    int64_t y;
+    unsigned m, day;
+    civil_from_days(t.day_start / 86400, &y, &m, &day);
+    snprintf(v.clock, sizeof(v.clock), "%02u:%02u %s %02u %s",
+             (unsigned)(t.min_of_day / 60), (unsigned)(t.min_of_day % 60),
+             WD[t.wday % 7], day, MO[m]);
+    snprintf(v.time_src, sizeof(v.time_src), "ntp-or-rtc");
+  } else {
+    snprintf(v.time_src, sizeof(v.time_src), "none");
+  }
+  v.wifi_set = set.wifi_ssid[0] != '\0';
+  snprintf(v.wifi_ssid, sizeof(v.wifi_ssid), "%s", set.wifi_ssid);
+  v.chan = 1; /* ESP-NOW channel: LinkEngine advertises it; settings pane is
+               * informational here (the `chan` CLI owns changes) */
+  v.pin_enabled = set.pin_enabled != 0;
+  v.pin_scope = set.pin_scope;
+  v.locked_now = locked_now;
+  v.unlock_left_s = unlock_left_s;
+  v.retention_days = set.history_days;
+  snprintf(v.sd_status, sizeof(v.sd_status), "%s", sd_status ? sd_status : "no card");
+  v.backup_count = backup_count;
+  snprintf(v.backup_last, sizeof(v.backup_last), "%s", backup_last ? backup_last : "");
+  v.node_count = reg.count();
+  return v;
+}
+
+/* Day-mask → preset name for the wizard's schedule step (same vocabulary as
+ * days_text, kept label-only for the model). */
+static inline const char *wiz_days_preset(uint8_t mask) {
+  if (mask == 0x7F) return "every day";
+  if (mask == 0x1F) return "weekdays";
+  if (mask == 0x60) return "weekends";
+  return "custom";
+}
+
 
 }  // namespace ui
 }  // namespace aio

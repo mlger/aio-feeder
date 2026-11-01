@@ -109,7 +109,8 @@ class FeedManager {
     Slot *s = find_inflight(node, r.feed_id);
     if (!s) {
       /* late/reconciled result for a feed this hub no longer tracks */
-      log_->push(unix_now, node, EV_FEED_FAIL, r.status, r.feed_id, 0, r.pulses);
+      log_->push(unix_now, node, EV_FEED_FAIL, r.status, r.feed_id, 0, r.pulses,
+                 EV_SRC_SCHED);
       return;
     }
     finish(*s, r.status == RESULT_OK ? EV_FEED_OK : EV_FEED_FAIL, r.status,
@@ -130,7 +131,7 @@ class FeedManager {
       return false;
     store_->del(pend_key_for(node_id));
     log_->push(unix_now, node_id, EV_FEED_UNKNOWN, RESULT_TIMEOUT_UNKNOWN,
-               p.feed_id, p.amount);
+               p.feed_id, p.amount, 0, p.kind);
     return true;
   }
 
@@ -187,7 +188,7 @@ class FeedManager {
   void finish(Slot &s, uint8_t kind, uint8_t result, uint32_t unix_now,
               int16_t aux) {
     log_->push(unix_now, s.job.node, kind, result, s.job.feed_id, s.job.amount,
-               aux);
+               aux, s.job.kind);
     store_->del(pend_key_for(s.job.node));
     memset(&s, 0, sizeof(s));
     inflight_--;

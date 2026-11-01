@@ -194,7 +194,7 @@ class HubCore {
         if (older) report_older(n, e, older, unix_now);
         fire(n, e, latest, (uint8_t)FeedKind::CatchUp, unix_now);
         log_->push((uint32_t)unix_now, n.id, EV_CATCHUP, 0, 0, en.amount,
-                   (int16_t)(age_s / 60));
+                   (int16_t)(age_s / 60), EV_SRC_CATCHUP);
       } else {
         /* default policy skip (and catch-up used or outside window): one
          * event covers the latest + all older occurrences */

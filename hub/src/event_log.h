@@ -41,16 +41,34 @@ struct HubEvent {
   uint8_t node;
   uint8_t kind;
   uint8_t result;
+  uint8_t src;     /* EV_SRC_* (RAM ring only — never persisted) */
 };
 
 constexpr uint8_t EVENT_RESULT_NO_LINK = 0xFF;
+
+/* What asked for the feed (§9.12 CSV "source" column). Values mirror
+ * FeedKind (Scheduled 0 / CatchUp 1 / Manual 2) so feed_manager can pass
+ * s.job.kind straight through; skip/missed rows are hub-side scheduled
+ * decisions and keep EV_SRC_SCHED. */
+constexpr uint8_t EV_SRC_SCHED = 0;
+constexpr uint8_t EV_SRC_CATCHUP = 1;
+constexpr uint8_t EV_SRC_MANUAL = 2;
+
+static inline const char *ev_src_name(uint8_t src) {
+  switch (src) {
+    case EV_SRC_CATCHUP: return "catchup";
+    case EV_SRC_MANUAL: return "manual";
+    default: return "scheduled";
+  }
+}
 
 class EventLog {
  public:
   static constexpr uint16_t CAP = 128;
 
   void push(uint32_t unix, uint8_t node, uint8_t kind, uint8_t result,
-            uint32_t feed_id, uint16_t amount, int16_t aux = 0) {
+            uint32_t feed_id, uint16_t amount, int16_t aux = 0,
+            uint8_t src = EV_SRC_SCHED) {
     HubEvent &e = ring_[head_];
     e.unix = unix;
     e.node = node;
@@ -59,8 +77,29 @@ class EventLog {
     e.feed_id = feed_id;
     e.amount = amount;
     e.aux = aux;
+    e.src = src;
     head_ = (uint16_t)((head_ + 1) % CAP);
     if (count_ < CAP) count_++;
+  }
+
+  /* §7.5 retention: drop entries older than `days` (settings screen,
+   * 7/30/90). Feeding never depends on this; the RAM ring self-evicts at
+   * CAP anyway. Returns the number of dropped entries. */
+  uint16_t prune_older_than(uint32_t unix_now, uint8_t days) {
+    if (!days || unix_now < 86400u * days) return 0;
+    const uint32_t cutoff = unix_now - 86400u * days;
+    const uint16_t start = (uint16_t)((head_ + CAP - count_) % CAP);
+    uint16_t w = 0; /* logical write index — compaction keeps ring order */
+    for (uint16_t r = 0; r < count_; r++) {
+      const HubEvent e = ring_[(start + r) % CAP]; /* copy first: may alias */
+      if (e.unix < cutoff) continue;
+      if (w != r) ring_[(start + w) % CAP] = e;
+      w++;
+    }
+    const uint16_t dropped = (uint16_t)(count_ - w);
+    count_ = w;
+    head_ = (uint16_t)((start + w) % CAP);
+    return dropped;
   }
 
   /* 0 = oldest … count-1 = newest. */
@@ -91,6 +130,8 @@ class EventLog {
   }
 
  private:
+  uint16_t start_index() const { return (uint16_t)((head_ + CAP - count_) % CAP); }
+
   HubEvent ring_[CAP]{};
   uint16_t head_ = 0;
   uint16_t count_ = 0;
