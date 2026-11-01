@@ -71,6 +71,9 @@ static volatile uint32_t s_det_seq = 0;
 static volatile uint32_t s_edit_seq = 0;
 static volatile uint32_t s_hist_seq = 0;
 static volatile uint32_t s_alr_seq = 0;
+static PairingView s_pair_snap[2];
+static volatile uint32_t s_pair_seq = 0;
+static uint32_t s_pair_seen = 0;
 static uint32_t s_seen = 0;
 static uint32_t s_det_seen = 0;
 static uint32_t s_edit_seen = 0;
@@ -171,9 +174,6 @@ static lv_obj_t *s_alr_acked_rows[UI_ALERTS_MAX_ACKED];
 static lv_obj_t *s_alr_footer_lbl = nullptr;
 
 /* pairing screen (§8.5, M4b) */
-static PairingView s_pair_snap[2];
-static volatile uint32_t s_pair_seq = 0;
-static uint32_t s_pair_seen = 0;
 static lv_obj_t *s_pair_scr = nullptr;
 static lv_obj_t *s_pair_head_lbl = nullptr; /* step title */
 static lv_obj_t *s_pair_left_lbl = nullptr; /* window countdown */
