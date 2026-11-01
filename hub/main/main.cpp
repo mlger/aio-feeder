@@ -123,7 +123,11 @@ static uint32_t loop_dup_errors = 0;
 static uint32_t loop_last_feed_id = 0;
 static uint32_t loop_next_ms = 0;
 static uint8_t loop_node = 0;
+/* feedloop dedup table — 4 KB of static DRAM the QEMU shot build spends on
+ * the LVGL pool instead (the REPL / cmd_feedloop does not exist there) */
+#if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
 static uint32_t seen_results[1024];
+#endif
 static uint32_t last_full_hb_push_ms = 0;
 
 /* --- time ---------------------------------------------------------------------- */
@@ -168,6 +172,7 @@ static void cb_feed_ack(uint8_t node_id, const feed_ack_payload_t &a) {
 }
 
 static void cb_feed_result(uint8_t node_id, const feed_result_payload_t &r) {
+#if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
   /* duplicate detection for the 1000-feed loopback (§12 M2 exit criterion) */
   if (r.feed_id == loop_last_feed_id && loop_target) return; /* engine dedups; belt+braces */
   if (loop_target && r.feed_id > loop_last_feed_id) {
@@ -176,6 +181,7 @@ static void cb_feed_result(uint8_t node_id, const feed_result_payload_t &r) {
     loop_last_feed_id = r.feed_id;
     loop_ok++;
   }
+#endif
   printf("FEED_RESULT node=%u id=%u status=%u on_ms=%u pulses=%u t=%u\n", node_id,
          (unsigned)r.feed_id, r.status, r.actual_on_ms, r.pulses, (unsigned)r.t_unix);
   g_calib.on_result(r.feed_id, r.status, r.actual_on_ms); /* §9.3 wizard routing */

@@ -11,7 +11,9 @@ CONFIG_AIO_UI_SHOT=y
 # The default 64 KB lv_malloc pool fit six screens; the seventh (calibration
 # wizard, M4b) tipped the first dashboard render into lv_memset(NULL)
 # (StoreProhibited in lv_draw_sw_fill — the rounded-corner mask_buf
-# allocation came back NULL). CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES is a
-# no-op in 9.2.2 (it only feeds TLSF_MAX_POOL_SIZE), so raise the pool
-# itself. Hardware (PSRAM) is untouched; revisit with the 800×480 path.
-CONFIG_LV_MEM_SIZE_KILOBYTES=80
+# allocation came back NULL). Static DRAM is the binding constraint here:
+# the link overflowed by 11,136 B when the pool went +16 KB, so the feedloop
+# dedup table (4 KB, REPL-only) is freed in this build and the pool rises to
+# 72 KB. CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES is a no-op in 9.2.2 (it
+# only feeds TLSF_MAX_POOL_SIZE). Hardware (PSRAM) is untouched.
+CONFIG_LV_MEM_SIZE_KILOBYTES=72
