@@ -1442,9 +1442,10 @@ static void aio_loop_task(void *) {
         }
         const uint32_t m = now % 25000;
         if (wiz_stage == 0 && m >= 5000) {
+          g_wiz.next(); /* TZ → Wi-Fi (set_tz already ran at cycle start) */
           g_wiz.set_wifi("home-net", "pw");
           g_wiz.wifi_test_result(false, "no radio (QEMU)");
-          g_wiz.next(); /* → node */
+          g_wiz.next(); /* Wi-Fi → node */
           g_wiz.choose_existing(1);
           wiz_stage = 1;
         }
