@@ -741,9 +741,9 @@ static void aio_loop_task(void *) {
       /* pairing flow driver (M4b shot): the session advances on the same
        * 25 s grid the UI rotation uses; slot 5 of 6 is the pairing screen.
        * Keep 25000 and the slot index in sync with ui.cpp SHOT_WINDOW_MS
-       * and the SH_PAIR rotation entry. Phase bounds (8.5/14.5/20.5 s) sit
-       * between the runner's 5 s marker cadence so each captured frame is
-       * unambiguous. */
+       * and the SH_PAIR rotation entry. Stage bounds (8.5/12/16 s) sit
+       * between the runner's 5 s marker cadence so each step gets its own
+       * capture: discover [0,8.5) code [8.5,12) form [12,16) done [16,25). */
       static uint32_t pair_cycle = UINT32_MAX;
       static uint8_t pair_stage = 0;
       const uint32_t cyc = now / 25000;
@@ -762,11 +762,14 @@ static void aio_loop_task(void *) {
         }
         const uint32_t m = now % 25000;
         if (pair_stage == 0 && m >= 8500) {
-          g_pair.select(0);
-          g_pair.confirm_code();
+          g_pair.select(0); /* → CODE step: the big 4-digit display */
           pair_stage = 1;
         }
-        if (pair_stage == 1 && m >= 14500) {
+        if (pair_stage == 1 && m >= 12000) {
+          g_pair.confirm_code(); /* → FORM step */
+          pair_stage = 2;
+        }
+        if (pair_stage == 2 && m >= 16000) {
           g_pair.set_form("kitA", 0, 1500, 400);
           pair_accept_payload_t acc{};
           uint8_t nid = 0;
@@ -774,7 +777,7 @@ static void aio_loop_task(void *) {
             pairing_send_accept(aio::sim::SIM_PAIR_MAC, acc, now);
             printf("pairing: committed node %u (PAIR_ACCEPT sent, key wrapped)\n", nid);
           }
-          pair_stage = 2;
+          pair_stage = 3;
         }
       }
 
