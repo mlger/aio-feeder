@@ -152,8 +152,14 @@ serial and the LVGL pairing screen (all four steps) is captured in the QEMU
 screenshot run. The **node side** ships too: unpaired nodes beacon
 `PAIR_REQ` (stable persisted nonce), verify the derived code on
 `PAIR_ACCEPT`, and unwrap + store the key on `pairok` — end-to-end OTA
-pairing with the key never in the clear (see `docs/bench-m4b.md`). Next:
-settings/wizard screens, calibration wizard, PIN, backup/export.
+pairing with the key never in the clear (see `docs/bench-m4b.md`). The
+**calibration wizard** (§8.4/§9.3, D27) is in as well: `CalibSession`
+(host-tested) runs timed test dispenses capped by the node's max on-time,
+takes the weighed result (≥ 5 g, §9.3.3), sanity-ranges the derived rate,
+keeps the median of up to 5 runs and writes it into the profile + pushes
+CONFIG; the `cal` bench CLI and the LVGL calibration screen drive the same
+session, and the QEMU shot run captures `calib` / `calib_weigh` /
+`calib_done`. Next: settings/wizard screens, PIN, backup/export.
 
 Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**, **v0.4.0** (M4a hub UI), **v0.5.0**
 (M4b pairing, hub + node). Cut the next one the same way —

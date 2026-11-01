@@ -97,3 +97,51 @@ aio-feeder> peers                # new peer listed, heartbeats flowing
 `pair close` cancels; the window also self-expires after 60 s. With the
 node beacons + `pairok` above this is the full end-to-end OTA pairing path
 (§6.3) — the key crosses the air only XOR-masked under the confirmed code.
+
+## Calibration wizard (§8.4, §9.3, D27)
+
+`hub/src/calib_session.h` — pure logic, host-tested (`test/test_calib`,
+22 cases). It calibrates a node **by open time** (g/s or ml/s, D27): the
+hub sends the commanded test `FEED` (bypasses feed_manager like the M2
+feedloop — the node still enforces every profile limit, §9.3.2), the node
+answers `FEED_RESULT` with `actual_on_ms`, the operator weighs what came
+out and enters it. Guards per §9.3:
+
+- test run is **2 s by default for a gate** (5 s for auger/pump), never
+  above the node's max on-time (SR2; gate capped at 10 s, D27);
+- weighed amounts **under 5 g (or ml) are refused** (§9.3.3) — run longer;
+- the derived ms-per-unit rate is sanity-ranged to what
+  `cal_ms_per_unit_x100` (uint16) can store — 10 ms/unit … 655.35 ms/unit
+  (§9.3.4); outside that band it's a scale or food problem;
+- repeat runs become samples (up to 5); **the median is stored** (§9.3.5),
+  written into the profile with a fresh CRC, persisted to NVS and pushed to
+  the node as CONFIG.
+
+## Calibration wizard — bench procedure (hub, serial CLI)
+
+```
+aio-feeder> cal start 1        # wizard open (2 s test, gate default)
+aio-feeder> cal secs 3         # optional: longer run (≤ max on-time)
+aio-feeder> cal run            # test FEED sent — bowl under the gate
+aio-feeder> cal weigh 8.2      # enter what the scale said (min 5 g)
+aio-feeder> cal run            # repeat; the median is what gets stored
+aio-feeder> cal weigh 8.0
+aio-feeder> cal run
+aio-feeder> cal weigh 8.1
+aio-feeder> cal save           # median → profile (CRC'd), NVS, CONFIG push
+aio-feeder> cal status         # step=done node=1 test=2s runs=3 median=...
+```
+
+The LVGL calibration screen drives the same session from the touchscreen
+(§8.4: choose run length → dispense → weigh → review median → save) and the
+QEMU shot build auto-plays the flow in rotation slot 6 of 7 — sim node 1
+answers the test feeds, the driver weighs 8.0 / 7.5 / 8.2 g, and the runner
+captures `calib.png` (setup + runs list), `calib_weigh.png` (weigh prompt)
+and `calib_done.png` (median saved + pushed) into the `hub-ui-screens`
+artifact. The brief DISPENSE state is machine-paced and shares the `calib`
+marker; the serial log shows every `FEED`/`FEED_RESULT` of the flow.
+
+Residual notes: the dispensed test food is consumed (day/hour caps count
+it, §9.3); the profile has no calibration-timestamp field yet — the §9.3.6
+"calibration age" notice lands with the export/backup work.
+
