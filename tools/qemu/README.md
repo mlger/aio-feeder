@@ -20,8 +20,11 @@ wall clock; `tools/qemu/capture.py` boots the same flash image with a monitor
 socket, waits for `AIO_SHOT <screen>` markers on serial and dumps the LVGL
 framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, converting each frame to
 `screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). Captured:
-`dashboard`, `node_detail`, `sched_editor`, `history`, `alerts` — all five
-M4a screens (the firmware rotates screens on a fixed 25 s schedule).
+`dashboard`, `node_detail`, `sched_editor`, `history`, `alerts` — the five
+M4a screens — plus the four M4b pairing steps `pairing`, `pairing_code`,
+`pairing_form`, `pairing_done` (the firmware rotates screens on a fixed
+25 s schedule; the pairing flow auto-plays inside its slot, driven by the
+sim candidate's `PAIR_REQ` beacons — see `docs/bench-m4b.md`).
 
 RAM budget: the esp32s3 QEMU machine has no PSRAM, so the 176 KB LVGL
 framebuffer (384×240×2 — 400-wide overflowed `dram0_0_seg` by ~14 KB when
