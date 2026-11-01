@@ -58,10 +58,12 @@ struct SimFrame {
 };
 
 struct SimRing {
-  /* 4 slots: frames are drained every 1 ms loop iteration; the ring only
+  /* 3 slots: frames are drained every 1 ms loop iteration; the ring only
    * bridges tick-to-tick bursts. Kept small — the QEMU build has no PSRAM
-   * and the static rings share internal DRAM with the LVGL framebuffer. */
-  static constexpr uint8_t CAP = 4;
+   * and the static rings share internal DRAM with the LVGL framebuffer
+   * (4 slots overflowed dram0_0_seg when the pairing screen landed; the
+   * pair beacon below is phase-shifted so bursts stay ≤ 2 frames). */
+  static constexpr uint8_t CAP = 3;
   SimFrame f[CAP];
   uint8_t head = 0, tail = 0;
   bool push(const uint8_t src[6], const uint8_t *data, size_t len) {
@@ -98,17 +100,6 @@ class NodeSideTransport : public ILinkTransport {
 
  private:
   int idx_;
-};
-
-/* pairing-candidate transport: stamps the candidate MAC on every frame */
-class PairSideTransport : public ILinkTransport {
- public:
-  bool send(const uint8_t mac[6], const uint8_t *data, size_t len) override {
-    (void)mac;
-    return g_to_hub.push(SIM_PAIR_MAC, data, len);
-  }
-  void set_channel(uint8_t channel) override { (void)channel; }
-  uint8_t channel() const override { return 1; }
 };
 
 /* hub-role transport: route by destination mac (broadcast → all nodes) */
@@ -201,16 +192,16 @@ static void th_config(const node_profile_t &p, uint8_t) {
 
 /* --- pairing candidate ------------------------------------------------------------ */
 
-/* A fourth live engine in the node role that never pairs: it beacons a
- * genuine PAIR_REQ (zero-key discovery frame, §6.4) every 1 s of virtual
- * time so the pairing screen has a candidate to show during its slot. The
- * hub's PAIR_ACCEPT (unicast) is dropped by the hub-side transport — the
- * candidate ignores it, exactly like a node whose user hasn't confirmed. */
-static LinkEngine g_pair_eng;
-static PairSideTransport g_pair_tr;
-
+/* An unpaired node that never pairs: instead of a third LinkEngine (~770 B
+ * of static DRAM the QEMU build does not have), it hand-builds a genuine
+ * PAIR_REQ every 1 s of virtual time — real frame layout, zero-key HMAC via
+ * frame_compute_mac — and pushes it straight into the hub ring. The hub's
+ * PAIR_ACCEPT (unicast) is dropped by the hub-side transport, exactly like
+ * a node whose user never confirmed. Beacon phase 350 ms so it never lands
+ * in the same 1 ms iteration as the two live nodes' heartbeats (which burst
+ * together every 3 s virtual): ring bursts stay ≤ 2 frames. */
 static void pair_tick(uint32_t vms) {
-  static uint32_t next_vms = 200;
+  static uint32_t next_vms = 350;
   if ((int32_t)(vms - next_vms) < 0) return;
   next_vms = vms + 1000;
   pair_req_payload_t pr{};
@@ -218,7 +209,19 @@ static void pair_tick(uint32_t vms) {
   pr.caps = 0x01;
   const uint8_t nonce[8] = {0xA1, 0x55, 0x00, 0x0B, 0x5E, 0xED, 0x01, 0x42};
   memcpy(pr.node_nonce, nonce, 8);
-  g_pair_eng.send_pair_req(pr, vms);
+  uint8_t buf[FRAME_HEADER_SIZE + sizeof(pr) + FRAME_MAC_SIZE];
+  buf[0] = PROTO_VER;
+  buf[1] = MSG_PAIR_REQ;
+  buf[2] = 0; /* node_id 0: unassigned */
+  buf[3] = 0;
+  buf[4] = (uint8_t)(vms & 0xFF);
+  buf[5] = (uint8_t)(vms >> 8);
+  buf[6] = (uint8_t)sizeof(pr);
+  buf[7] = 0;
+  memcpy(buf + FRAME_HEADER_SIZE, &pr, sizeof(pr));
+  frame_compute_mac(AIO_ZERO_KEY, buf, FRAME_HEADER_SIZE + sizeof(pr),
+                    buf + FRAME_HEADER_SIZE + sizeof(pr));
+  g_to_hub.push(SIM_PAIR_MAC, buf, sizeof(buf));
 }
 
 static void begin_nodes() {
@@ -234,8 +237,6 @@ static void begin_nodes() {
     g_nodes[i].eng.add_peer(SIM_HUB_MAC, LINK_HUB_ID, g_keys[i], 32);
   }
   printf("sim: %d live node(s) started (accel x%u)\n", SIM_NODES, (unsigned)ACCEL);
-  g_pair_eng.begin(LinkEngine::Role::Node, &g_pair_tr, LinkHandlers{}, 0);
-  g_pair_eng.set_self(0, 0); /* node_id 0 + beacon_state 0 = unpaired */
   printf("sim: pairing candidate %02X:%02X:%02X:%02X:%02X:%02X beacons PAIR_REQ\n",
          SIM_PAIR_MAC[0], SIM_PAIR_MAC[1], SIM_PAIR_MAC[2], SIM_PAIR_MAC[3],
          SIM_PAIR_MAC[4], SIM_PAIR_MAC[5]);
