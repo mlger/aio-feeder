@@ -1,5 +1,9 @@
 # AIO Feeder
 
+[![CI](https://github.com/mlger/aio-feeder/actions/workflows/ci.yml/badge.svg)](https://github.com/mlger/aio-feeder/actions/workflows/ci.yml)
+[![Release](https://github.com/mlger/aio-feeder/actions/workflows/release.yml/badge.svg)](https://github.com/mlger/aio-feeder/actions/workflows/release.yml)
+[![Web flasher](https://img.shields.io/badge/web--flasher-mlger.github.io%2Faio--feeder-2dd4bf)](https://mlger.github.io/aio-feeder/)
+
 All-in-One (AIO) Feeder — a multi-node automated feeding system. One
 touchscreen hub (Waveshare ESP32-S3-Touch-LCD-4.3B) owns schedules,
 calibration, logging and alerts; cheap identical feeder nodes (ESP8266 or
@@ -19,18 +23,20 @@ survive hub loss with their own fallback schedule.
 aio-feeder/
 ├─ PLAN.md              # engineering plan (v0.7)
 ├─ AGENTS.md            # ponytail rules + project notes for AI agents
-├─ .mcp.json            # MCP servers: context7 + LVGL docs
+├─ .mcp.json            # MCP servers: context7, LVGL docs, 4 Espressif servers
 ├─ .claude/skills/      # ponytail skills (vendored)
-├─ docs/                # setup guide, prototype, third-party notices
+├─ .github/workflows/   # CI, releases (semver tags), PR automation
 ├─ lib/proto/           # shared frame/profile/status definitions (C, host-testable)
+├─ link_core/           # portable ESP-NOW link: HMAC frames, seq/replay, retries (host-tested)
 ├─ hub/                 # hub firmware — env hub_esp32s3
 ├─ node/                # node firmware — envs node_esp8266, node_esp32c3
-│  ├─ hal_esp8266/  hal_esp32c3/
 ├─ node_core/           # portable node logic: actuator FSM, limits, journal (host-tested)
 ├─ test/                # host unit tests (Unity, native)
-├─ tools/               # flasher manifest builder, QEMU scripts, simulators
+├─ tools/flasher/       # ESP Web Tools manifest builder used by CI
+├─ tools/qemu/          # QEMU scripts (placeholder, pending decision D6)
 ├─ hardware/            # schematics, BOM, enclosure CAD
-└─ web/                 # GitHub Pages site (web flasher, ESP Web Tools)
+├─ web/                 # GitHub Pages site (web flasher, ESP Web Tools)
+└─ docs/                # setup guide, M1/M2 bench logs, prototype, third-party notices
 ```
 
 ## Quick start
@@ -46,18 +52,40 @@ pio test -d test                # host unit tests
 Full environment setup (ESP-IDF, QEMU emulation, MCP servers, agent tooling):
 [`docs/SETUP.md`](docs/SETUP.md).
 
-## Deployment (GitHub Pages)
+## Automation
 
-`.github/workflows/ci.yml` on `main`:
+| Workflow | Trigger | What it does |
+|---|---|---|
+| [`ci.yml`](.github/workflows/ci.yml) | push to `main`, every PR, manual | Host unit tests + all three firmware builds (shared [`build.yml`](.github/workflows/build.yml)); on `main` it also deploys the web flasher to GitHub Pages |
+| [`release.yml`](.github/workflows/release.yml) | push of a `v*.*.*` tag | Runs the same tests/build, then attaches one firmware zip per target to a GitHub Release with auto-generated notes |
+| [`pr.yml`](.github/workflows/pr.yml) | PR opened/edited | Conventional-commit title check; auto-labels the PR by changed paths (`.github/labeler.yml`) |
 
-1. runs the host unit tests,
-2. builds all three firmware targets,
-3. assembles the web flasher site with the built binaries
-   (`tools/flasher/make_manifests.py` writes one ESP Web Tools manifest per
-   target) and deploys it to GitHub Pages.
+Pull requests use the [`.github/PULL_REQUEST_TEMPLATE.md`](.github/PULL_REQUEST_TEMPLATE.md)
+checklist and get the CI suite automatically.
 
-Enable once: repo **Settings → Pages → Source: GitHub Actions** (CI fails with
-a clear error until this is on), or `gh api -X POST repos/mlger/aio-feeder/pages -f build_type=workflow`.
+### Semantic versioning
+
+Commits follow [Conventional Commits](https://www.conventionalcommits.org/):
+`fix:` implies a **patch** bump, `feat:` a **minor** bump, and `feat!:` (or a
+`BREAKING CHANGE:` footer) a **major** bump. Releases are cut by tagging — CI
+does the rest:
+
+```bash
+git tag v0.1.0              # pick the bump the commits since the last tag imply
+git push origin v0.1.0
+```
+
+The release workflow then:
+
+1. runs the host tests and builds hub + both node firmwares,
+2. zips the flashable binaries as `aio-feeder-<version>-<target>.zip`
+   (identical content to what the [web flasher](https://mlger.github.io/aio-feeder/)
+   serves),
+3. creates a GitHub Release named after the tag, with notes generated from the
+   commits/PRs since the previous tag.
+
+The web flasher page shows the exact firmware version (`git describe`) it was
+built from, so a tagged build displays its own release number.
 
 ## Working with AI agents
 
@@ -66,8 +94,11 @@ a clear error until this is on), or `gh api -X POST repos/mlger/aio-feeder/pages
   `.claude/skills/` for Claude Code. Prefer the plugin install if you use
   Claude Code: `/plugin marketplace add DietrichGebert/ponytail` then
   `/plugin install ponytail@ponytail`.
-- `.mcp.json` gives agents **context7** (up-to-date library docs) and the
-  **LVGL docs** server the plan mandates (PLAN.md §7.1, D26).
+- `.mcp.json` gives agents **context7** (up-to-date library docs), the
+  **LVGL docs** server (PLAN.md §7.1, D26) and four **Espressif** servers
+  (documentation search, component registry, troubleshooting workflows,
+  esp-pilot). Per-server notes and `claude mcp add` commands:
+  [`docs/SETUP.md`](docs/SETUP.md).
 
 ## Status
 
@@ -81,3 +112,6 @@ STATUS_REQ ack, channel scan (§6.2), schedule push with `skip_until` /
 Host-tested in CI (39 tests incl. RFC 4231 vectors); all three firmware
 targets build. Hardware verification: `docs/bench-m1.md` (node) and
 `docs/bench-m2.md` (radio + 1000-feed loopback). Next: M3 hub core.
+
+Releases: none tagged yet — cut the first one with `git tag v0.1.0 && git
+push origin v0.1.0`.
