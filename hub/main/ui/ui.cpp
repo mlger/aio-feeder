@@ -1589,7 +1589,7 @@ static lv_obj_t *s_pin_scr = nullptr;
 static lv_obj_t *s_pin_dots_lbl = nullptr;
 static lv_obj_t *s_pin_note_lbl = nullptr;
 static lv_obj_t *s_pin_scope_lbl = nullptr;
-static lv_obj_t *s_pin_keys[12];
+static lv_obj_t *s_pin_kb = nullptr; /* single btnmatrix keypad */
 
 static void build_pin_screen() {
   s_pin_scr = lv_obj_create(nullptr);
@@ -1618,20 +1618,23 @@ static void build_pin_screen() {
   s_pin_note_lbl = new_label(s_pin_scr, "", &lv_font_montserrat_12, C_ALERT);
   lv_obj_set_pos(s_pin_note_lbl, 10, 88);
 
-  /* 4×3 keypad on the right half — real buttons: the M5 touch backend wires
-   * the callbacks; the shot build only renders them */
-  static const char *KEYS[12] = {"1", "2", "3", "4", "5", "6",
-                                 "7", "8", "9", "C", "0", "OK"};
-  for (int i = 0; i < 12; i++) {
-    lv_obj_t *b = lv_btn_create(s_pin_scr);
-    lv_obj_set_size(b, 52, 26);
-    lv_obj_set_pos(b, 200 + (i % 3) * 60, 40 + (i / 3) * 32);
-    lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD), 0);
-    lv_obj_set_style_radius(b, 6, 0);
-    lv_obj_t *l = new_label(b, KEYS[i], &lv_font_montserrat_14, C_TEXT);
-    lv_obj_center(l);
-    s_pin_keys[i] = b;
-  }
+  /* 4×3 keypad on the right half — ONE lv_btnmatrix widget: the QEMU build
+   * counts both LVGL-pool and static-DRAM bytes, and 12 separate buttons
+   * cost ~1.5 KB of pool for pixels the shot never touches. The M5 touch
+   * backend wires the events; the shot build only renders it. */
+  static const char *KEYS[13] = {"1", "2", "3", "4", "5", "6",
+                                 "7", "8", "9", "C", "0", "OK", nullptr};
+  lv_obj_t *kb = lv_btnmatrix_create(s_pin_scr);
+  lv_btnmatrix_set_map(kb, KEYS);
+  lv_obj_set_size(kb, 168, 148);
+  lv_obj_set_pos(kb, 202, 38);
+  lv_obj_set_style_bg_opa(kb, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(kb, 0, 0);
+  lv_obj_set_style_pad_all(kb, 2, 0);
+  lv_obj_set_style_bg_color(kb, lv_color_hex(C_CARD), LV_PART_ITEMS);
+  lv_obj_set_style_text_color(kb, lv_color_hex(C_TEXT), LV_PART_ITEMS);
+  lv_obj_set_style_radius(kb, 6, LV_PART_ITEMS);
+  s_pin_kb = kb;
 
   lv_obj_t *hint = new_label(s_pin_scr, "Unlocks for 60 s.\nSchedules never lock.",
                              &lv_font_montserrat_12, C_MUTED);
@@ -1644,7 +1647,7 @@ static void update_pin_screen() {
     if (s_pin_len == 0)
       snprintf(buf, sizeof(buf), "-  -  -  -");
     else {
-      buf[0] = '\\0';
+      buf[0] = '\0';
       size_t off = 0;
       for (int i = 0; i < 4 && off + 4 < sizeof(buf); i++) {
         off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s%c",
@@ -1742,7 +1745,7 @@ static void wiz_list_text(const WizardView &v, char *buf, size_t n) {
       snprintf(buf, n, "Feeder: %s\nFirst feed set.", v.done_node_name);
       break;
     default:
-      buf[0] = '\\0';
+      buf[0] = '\0';
       break;
   }
 }
@@ -1783,7 +1786,7 @@ static void update_wizard(const WizardView &v) {
       snprintf(buf, sizeof(buf), "Step %u of 6%s", (unsigned)v.step_no,
                v.skip_cap ? " (hopper asked at pairing)" : "");
     else
-      buf[0] = '\\0';
+      buf[0] = '\0';
     lv_label_set_text(s_wiz_step_lbl, buf);
   }
   if (s_wiz_head_lbl) {
