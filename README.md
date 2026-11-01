@@ -143,6 +143,6 @@ silent node) and a seeded week of history driving them under QEMU;
 CI `qemu-hub` job (screenshots uploaded as artifacts). All five M4a screens
 pass the QEMU screenshot run. Next: M4b pairing.
 
-Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**. Cut the next one the same way —
+Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**, **v0.4.0** (M4a hub UI). Cut the next one the same way —
 `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the firmware zips
 to a GitHub Release automatically.
