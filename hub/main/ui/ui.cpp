@@ -1268,22 +1268,25 @@ static void cal_rate_text(uint16_t rate_x100, uint8_t mech_sel, char *buf, size_
 }
 
 static void cal_list_text(const CalibView &v, char *buf, size_t n) {
-  char rate[24], was[24];
-  cal_rate_text(v.median_x100 ? v.median_x100 : v.old_rate_x100, v.mech_sel, rate,
-                sizeof(rate));
+  char now_rate[24], was[24];
+  cal_rate_text(v.median_x100 ? v.median_x100 : v.old_rate_x100, v.mech_sel, now_rate,
+                sizeof(now_rate));
   cal_rate_text(v.old_rate_x100, v.mech_sel, was, sizeof(was));
+  /* lane budget: ≤ 6 lines (38..~140) — the body lane starts at 150 */
   size_t off = 0;
   off += (size_t)snprintf(buf + off, n - off, "F%u %s (%s)\n", (unsigned)v.node_id,
                           v.name[0] ? v.name : "?", pair_mech_name(v.mech_sel));
   if (v.median_x100)
-    off += (size_t)snprintf(buf + off, n - off, "Median: %s\n", rate);
-  off += (size_t)snprintf(buf + off, n - off, "Was: %s\nTest: %lu s (max %lu)\n",
-                          was, (unsigned long)v.test_s, (unsigned long)v.max_test_s);
+    off += (size_t)snprintf(buf + off, n - off, "Median: %s (was %s)\n", now_rate, was);
+  else
+    off += (size_t)snprintf(buf + off, n - off, "Was: %s\n", was);
   if (v.step == CAL_RUNTIME || v.step == CAL_DISPENSE)
-    off += (size_t)snprintf(buf + off, n - off, "Run: about %lu %s\n",
-                            (unsigned long)v.test_grams,
-                            cal_unit_label(v.mech_sel));
-  for (int i = 0; i < v.sample_count && off + 24 < n; i++) {
+    off += (size_t)snprintf(buf + off, n - off, "Test: %lu s (max %lu) - about %lu %s\n",
+                            (unsigned long)v.test_s, (unsigned long)v.max_test_s,
+                            (unsigned long)v.test_grams, cal_unit_label(v.mech_sel));
+  /* last 3 runs only — the lane caps at 6 lines */
+  for (int i = v.sample_count > 3 ? v.sample_count - 3 : 0;
+       i < v.sample_count && off + 28 < n; i++) {
     off += (size_t)snprintf(buf + off, n - off, "Run %d: %lu.%02lu %s in %lu ms\n",
                             i + 1, (unsigned long)(v.samples[i].grams_x100 / 100),
                             (unsigned long)(v.samples[i].grams_x100 % 100),
@@ -1316,16 +1319,16 @@ static void build_calib_screen() {
   lv_obj_set_flex_grow(spacer, 1);
   s_cal_left_lbl = new_label(header, "", &lv_font_montserrat_14, C_MUTED);
 
-  /* list lane (38..102, fixed like the pairing screen — the QEMU build has
-   * no LVGL heap to spare for per-row widgets) */
+  /* list lane (38..~140, ≤ 6 lines) and body lane (150..) — fixed like the
+   * pairing screen: the QEMU build has no LVGL heap to spare for per-row
+   * widgets, so both lanes are single multi-line labels */
   s_cal_list_lbl = new_label(s_cal_scr, "", &lv_font_montserrat_12, C_TEXT);
   lv_obj_set_pos(s_cal_list_lbl, 10, 38);
 
-  /* body lane (110..): per-step hint, note folded in */
   s_cal_body_lbl = new_label(s_cal_scr, "", &lv_font_montserrat_12, C_TEXT);
   lv_label_set_long_mode(s_cal_body_lbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(s_cal_body_lbl, UI_W - 20);
-  lv_obj_set_pos(s_cal_body_lbl, 10, 110);
+  lv_obj_set_pos(s_cal_body_lbl, 10, 150);
 }
 
 static void update_calib(const CalibView &v) {
@@ -1368,7 +1371,7 @@ static void update_calib(const CalibView &v) {
                    "Keep the food that came out,\nweigh the next run, or save\nthe median now.");
         } else {
           snprintf(buf, sizeof(buf),
-                   "Put a bowl under the gate and\nrun the test. Weigh what came\nout (min 5 g, §9.3).");
+                   "Put a bowl under the gate and\nrun the test. Weigh what came\nout (min 5 g or more).");
         }
         break;
       case CAL_DISPENSE:
@@ -1384,7 +1387,7 @@ static void update_calib(const CalibView &v) {
         break;
       case CAL_DONE:
         snprintf(buf, sizeof(buf),
-                 "Feeder #%u calibrated — saved\nto the profile and pushed.\n\nRe-run when the food or the\nhopper changes (§9.3).",
+                 "Feeder #%u calibrated — saved\nto the profile and pushed.\n\nRe-run when the food or the\nhopper changes.",
                  (unsigned)v.saved_node_id);
         break;
     }
