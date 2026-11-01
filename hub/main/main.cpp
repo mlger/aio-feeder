@@ -209,8 +209,7 @@ static void cb_pair_req(const uint8_t mac[6], const pair_req_payload_t &pr, int8
  * settings UI + a serial command. */
 static bool pairing_send_accept(const uint8_t mac[6], const pair_accept_payload_t &acc,
                                 uint32_t now) {
-  if (!eng.emit(mac, AIO_ZERO_KEY, MSG_PAIR_ACCEPT, acc.node_id, &acc, sizeof(acc), now))
-    return false;
+  if (!eng.send_pair_accept(mac, acc, now)) return false;
   const aio::HubNode *n = reg.by_id(acc.node_id);
   if (n) eng.add_peer(n->mac, n->id, n->key, n->key_len);
   reg.save(nvs);
