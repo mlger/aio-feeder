@@ -364,7 +364,7 @@ void test_capacity_summary_math(void) {
   TEST_ASSERT_EQUAL_UINT8(7, v.pct_full);
   TEST_ASSERT_EQUAL_UINT32(2800, v.to_fill);
   TEST_ASSERT_TRUE(v.amber); /* ≤ 20 % */
-  TEST_ASSERT_EQUAL_UINT8(0, strcmp(v.summary, "About 7 % full · 2800 g to fill"));
+  TEST_ASSERT_EQUAL_UINT8(0, strcmp(v.summary, "About 7 % full - 2800 g to fill"));
 
   v.cap_total = 5000;
   v.cap_now = 4900;
@@ -378,7 +378,7 @@ void test_capacity_summary_math(void) {
   v.cap_total = 1000;
   v.cap_now = 250;
   ui::pair_capacity_summary(&v);
-  TEST_ASSERT_EQUAL_UINT8(0, strcmp(v.summary, "About 25 % full · 750 ml to fill"));
+  TEST_ASSERT_EQUAL_UINT8(0, strcmp(v.summary, "About 25 % full - 750 ml to fill"));
 }
 
 void test_capacity_valid_boundaries(void) {

@@ -866,7 +866,7 @@ static inline void pair_capacity_summary(PairingView *v) {
   if (v->pct_full > 100) v->pct_full = 100;
   v->to_fill = v->cap_now <= v->cap_total ? v->cap_total - v->cap_now : 0;
   v->amber = v->pct_full <= 20;
-  snprintf(v->summary, sizeof(v->summary), "About %u %% full · %lu %s to fill",
+  snprintf(v->summary, sizeof(v->summary), "About %u %% full - %lu %s to fill",
            (unsigned)v->pct_full, (unsigned long)v->to_fill,
            pair_template_unit(v->mech_sel));
 }
