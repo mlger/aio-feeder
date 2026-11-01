@@ -295,7 +295,7 @@ class WizardSession {
         const HubNode *n = reg_->node(i);
         if (!n || !n->id) continue;
         v.node_ids[k] = n->id;
-        snprintf(v.node_names[k], sizeof(v.node_names[k]), "%s",
+        snprintf(v.node_names[k], sizeof(v.node_names[k]), "%.12s",
                  n->profile.name[0] ? n->profile.name : "?");
         k++;
       }
@@ -317,7 +317,7 @@ class WizardSession {
     v.s_amount = s_amount_;
     v.feed_cap = feed_cap_units();
     v.unit_ml = strcmp(unit_label(), "ml") == 0;
-    snprintf(v.done_node_name, sizeof(v.done_node_name), "%s", done_name());
+    snprintf(v.done_node_name, sizeof(v.done_node_name), "%.12s", done_name());
     snprintf(v.note, sizeof(v.note), "%s", note_);
     return v;
   }
