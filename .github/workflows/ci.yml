@@ -52,6 +52,9 @@ jobs:
             --flash hub/build/flash.img \
             --elf hub/build/aio-feeder-hub.elf \
             --screens dashboard,node_detail,sched_editor,history,alerts,pairing,pairing_code,pairing_form,pairing_done --out screens --timeout 320
+      - name: Serial log tail (diagnosis)
+        if: failure()
+        run: tail -120 serial.log || true
       - name: Boot smoke assertions
         run: |
           tail -60 serial.log
