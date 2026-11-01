@@ -271,7 +271,7 @@ static inline NodeDetail build_node_detail(const HubRegistry &reg, const EventLo
       d.flags = fresh[f].flags;
       d.heard = fresh[f].last_rx_ms != 0;
       if (d.heard)
-        d.last_rx_age_s = (uint32_t)(now_ms - fresh[f].last_rx_ms);
+        d.last_rx_age_s = (now_ms - fresh[f].last_rx_ms) / 1000;
     }
   }
 

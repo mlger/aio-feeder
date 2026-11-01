@@ -251,7 +251,7 @@ static void test_detail_state_freshness_and_offline(void) {
   const aio::ui::NodeDetail d1 =
       aio::ui::build_node_detail(reg, log_, 1, g_unix, g_now_ms, f, fc);
   TEST_ASSERT_EQUAL_INT(aio::ui::NODE_ONLINE, d1.state);
-  TEST_ASSERT_EQUAL_UINT32(5000, d1.last_rx_age_s);
+  TEST_ASSERT_EQUAL_UINT32(5, d1.last_rx_age_s); /* seconds, not ms */
   TEST_ASSERT_TRUE(d1.heard);
 
   const aio::ui::NodeDetail d3 =

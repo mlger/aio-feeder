@@ -239,9 +239,14 @@ static void seed(HubRegistry &reg, EventLog &evlog, aio::ui::AlertsAck &ack) {
     n->sched.entries[0].days_mask = 0x7F;
     n->sched.entries[0].amount = defs[i].amount;
     n->sched.pushed_at = (uint32_t)(unix - 3 * 3600); /* "pushed 3 h ago" */
-    /* mark everything through yesterday handled → no boot catch-up feeds */
-    n->run.last_done[0].day_start = (uint32_t)yday_start;
-    n->run.last_done[0].min_of_day = 1439;
+    /* mark every scheduled occurrence through today handled → the engine's
+     * boot scan raises no catch-up/missed-feed alerts of its own, so the
+     * curated event log below is the whole deterministic scene (the shot
+     * run covers ~2 min of pinned-clock time, well before the 07:30 feed) */
+    for (uint8_t e = 0; e < n->sched.entry_count && e < HUB_SCHED_MAX_ENTRIES; e++) {
+      n->run.last_done[e].day_start = (uint32_t)yday_start + 86400;
+      n->run.last_done[e].min_of_day = 1439;
+    }
     if (i < SIM_NODES) memcpy(g_keys[i], n->key, 32);
   }
   /* node 1 gets a second daily entry (17:30 @ 25 g) for a fuller detail shot */
@@ -252,6 +257,8 @@ static void seed(HubRegistry &reg, EventLog &evlog, aio::ui::AlertsAck &ack) {
       n->sched.entries[1].days_mask = 0x7F;
       n->sched.entries[1].amount = 25;
       n->sched.entry_count = 2;
+      n->run.last_done[1].day_start = (uint32_t)yday_start + 86400;
+      n->run.last_done[1].min_of_day = 1439;
     }
   }
   /* node 2: skip gate active for the next 2 h (detail gate banner state) */
