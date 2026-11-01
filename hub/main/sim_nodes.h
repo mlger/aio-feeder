@@ -56,11 +56,15 @@ struct SimFrame {
 };
 
 struct SimRing {
-  SimFrame f[12];
+  /* 4 slots: frames are drained every 1 ms loop iteration; the ring only
+   * bridges tick-to-tick bursts. Kept small — the QEMU build has no PSRAM
+   * and the static rings share internal DRAM with the LVGL framebuffer. */
+  static constexpr uint8_t CAP = 4;
+  SimFrame f[CAP];
   uint8_t head = 0, tail = 0;
   bool push(const uint8_t src[6], const uint8_t *data, size_t len) {
     if (len > SIM_MAX_FRAME) return false;
-    const uint8_t next = (uint8_t)((head + 1) % 12);
+    const uint8_t next = (uint8_t)((head + 1) % CAP);
     if (next == tail) return false; /* drop newest on overflow */
     memcpy(f[head].src, src, 6);
     memcpy(f[head].data, data, len);
@@ -71,7 +75,7 @@ struct SimRing {
   bool pop(SimFrame *out) {
     if (tail == head) return false;
     *out = f[tail];
-    tail = (uint8_t)((tail + 1) % 12);
+    tail = (uint8_t)((tail + 1) % CAP);
     return true;
   }
 };

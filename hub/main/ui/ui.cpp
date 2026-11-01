@@ -2,9 +2,9 @@
  * AIO Feeder — LVGL dashboard view (PLAN.md §8; M4a phase 1, QEMU shot mode).
  *
  * Renders aio::ui::Dashboard snapshots (hub/src/ui_model.h) into a static
- * 400×240 RGB565 framebuffer — same aspect as the 800×480 panel, sized to
- * internal SRAM because QEMU has no PSRAM. On hardware the same scene code
- * renders at 800×480 once the RGB panel backend lands (M5).
+ * 384×240 RGB565 framebuffer — same aspect family as the 800×480 panel,
+ * sized to internal SRAM because QEMU has no PSRAM. On hardware the same
+ * scene code renders at 800×480 once the RGB panel backend lands (M5).
  *
  * Screenshot protocol (CONFIG_AIO_UI_SHOT, captured by tools/qemu/
  * capture.py): after the scene settles, the task prints
@@ -36,10 +36,14 @@ namespace ui {
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
 
-#define UI_W 400
+#define UI_W 384
 #define UI_H 240
+/* UI_W is 384, not the panel-proportional 400: the QEMU build has no PSRAM
+ * and every static byte lives in internal DRAM — 400-wide overflowed
+ * dram0_0_seg by ~14 KB once the fifth screen landed (see tools/qemu/
+ * README.md). 384 still fits the two-column card grid (2 × 186 px). */
 
-/* QEMU pmemsave target — LVGL renders here (single full buffer, DIRECT). */
+/* QEMU pmemsave target — LVGL renders here (single full buffer, FULL mode). */
 extern "C" uint8_t g_shot_fb[UI_W * UI_H * 2];
 uint8_t g_shot_fb[UI_W * UI_H * 2];
 

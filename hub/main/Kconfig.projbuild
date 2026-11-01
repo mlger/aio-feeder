@@ -38,7 +38,7 @@ menu "AIO Feeder hub"
             QEMU build for the M4a screenshot run: wall clock pinned to a
             fixed Sunday morning, two sim nodes on a loopback link (real
             LinkEngine node role, real frames), and the LVGL dashboard
-            rendering into a static 400x240 framebuffer. tools/qemu/
+            rendering into a static 384x240 framebuffer. tools/qemu/
             capture.py dumps the framebuffer via the QEMU monitor
             'pmemsave' after each "AIO_SHOT" marker and writes PNGs.
 

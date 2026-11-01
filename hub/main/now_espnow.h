@@ -25,7 +25,13 @@
 #include "../../link_core/link.h"
 
 constexpr size_t AIO_NOW_MAX_FRAME = FRAME_HEADER_SIZE + FRAME_MAX_PAYLOAD + FRAME_MAC_SIZE;
+/* Radio-less builds (QEMU smoke/shot) never pump this ring — keep 2 slots
+ * so the static array stays out of the way of the LVGL framebuffer. */
+#ifdef CONFIG_AIO_NO_RADIO
+constexpr uint8_t AIO_NOW_RX_RING = 2;
+#else
 constexpr uint8_t AIO_NOW_RX_RING = 8;
+#endif
 
 struct NowRx {
   uint8_t mac[6];

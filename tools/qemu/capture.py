@@ -35,7 +35,7 @@ import zlib
 
 MARKER = re.compile(rb"AIO_SHOT\s+([A-Za-z0-9_\-]+)")
 FB_SYMBOL = "g_shot_fb"
-FB_W, FB_H = 400, 240  # must match hub/main/ui/ui.cpp
+FB_W, FB_H = 384, 240  # must match hub/main/ui/ui.cpp
 FB_BYTES = FB_W * FB_H * 2
 
 

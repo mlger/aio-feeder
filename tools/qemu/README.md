@@ -22,3 +22,9 @@ framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, converting each frame to
 `screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). Captured:
 `dashboard`, `node_detail`, `sched_editor`, `history`, `alerts` — all five
 M4a screens (the firmware rotates screens on a fixed 25 s schedule).
+
+RAM budget: the esp32s3 QEMU machine has no PSRAM, so the 176 KB LVGL
+framebuffer (384×240×2 — 400-wide overflowed `dram0_0_seg` by ~14 KB when
+the fifth screen landed) plus sim rings and the app's statics must all fit
+internal DRAM. Keep new statics in the shot build small; the ui/sim code
+documents the cuts (`UI_W 384`, `SimRing::CAP = 4`, 2-slot ESP-NOW ring).
