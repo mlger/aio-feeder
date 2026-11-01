@@ -42,11 +42,28 @@ jobs:
         run: pip install platformio
       - name: Build
         run: pio run -d ${{ matrix.project }} -e ${{ matrix.env }}
+      - name: Collect flashable parts
+        run: |
+          mkdir -p collect
+          BD=${{ matrix.project }}/.pio/build/${{ matrix.env }}
+          for f in firmware partitions bootloader boot_app0; do
+            cp -f "$BD/$f.bin" collect/ 2>/dev/null || true
+          done
+          # espressif8266 keeps no bootloader in the build dir — eboot is in
+          # the framework package and flashes at 0x0.
+          if [ ! -f collect/bootloader.bin ] && [ "${{ matrix.env }}" = "node_esp8266" ]; then
+            cp -f "$HOME/.platformio/packages/framework-arduinoespressif8266/bootloaders/eboot/eboot.bin" collect/bootloader.bin
+          fi
+          # Arduino OTA data partition image, if PIO didn't copy it into the build dir
+          if [ ! -f collect/boot_app0.bin ] && [ "${{ matrix.env }}" != "node_esp8266" ]; then
+            cp -f "$HOME/.platformio/packages/framework-arduinoespressif32/tools/partitions/boot_app0.bin" collect/boot_app0.bin
+          fi
+          ls -la collect
       - name: Upload firmware artifacts
         uses: actions/upload-artifact@v4
         with:
           name: fw-${{ matrix.env }}
-          path: ${{ matrix.project }}/.pio/build/${{ matrix.env }}/*.bin
+          path: collect
           if-no-files-found: error
 
   pages:
