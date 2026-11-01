@@ -273,6 +273,114 @@ static void test_detail_time_invalid_keeps_defaults(void) {
   TEST_ASSERT_EQUAL_STRING("never pushed", d.pushed);
 }
 
+/* --- schedule editor ---------------------------------------------------------------- */
+
+static void test_editor_base_snapshot_sorted_and_tz(void) {
+  HubNode *n = add_node(0xA5, 540, 10);
+  n->sched.entry_count = 2;
+  n->sched.entries[1].min_of_day = 420;
+  n->sched.entries[1].days_mask = 0x7F;
+  n->sched.entries[1].amount = 8;
+
+  const aio::ui::SchedEditor e =
+      aio::ui::build_sched_editor(reg, 1, g_unix);
+  TEST_ASSERT_TRUE(e.found);
+  TEST_ASSERT_TRUE(e.enabled);
+  TEST_ASSERT_EQUAL_UINT8(2, e.entry_count);
+  TEST_ASSERT_EQUAL_UINT16(420, e.entries[0].min_of_day);
+  TEST_ASSERT_EQUAL_UINT16(540, e.entries[1].min_of_day);
+  TEST_ASSERT_EQUAL_INT8(0, e.selected);
+  TEST_ASSERT_EQUAL_UINT16(420, e.d_min_of_day); /* draft loaded from row 0 */
+  TEST_ASSERT_EQUAL_STRING("Asia/Manila", e.tz);
+}
+
+static void test_editor_gates_and_unknown_node(void) {
+  HubNode *n = add_node(0xA5, 450, 40);
+  n->sched.hold_until = (uint32_t)(g_unix + 3600);
+  const aio::ui::SchedEditor e = aio::ui::build_sched_editor(reg, 1, g_unix);
+  TEST_ASSERT_TRUE(e.has_hold);
+  TEST_ASSERT_FALSE(e.has_skip);
+  TEST_ASSERT_EQUAL_INT32(60, e.gate_left_min);
+
+  const aio::ui::SchedEditor missing = aio::ui::build_sched_editor(reg, 42, g_unix);
+  TEST_ASSERT_FALSE(missing.found);
+}
+
+static void test_editor_draft_time_amount_clamps(void) {
+  aio::ui::SchedEditor e = aio::ui::build_sched_editor(reg, 1, g_unix);
+  aio::ui::editor_set_time(e, 2000);
+  TEST_ASSERT_EQUAL_UINT16(1439, e.d_min_of_day);
+  aio::ui::editor_set_time(e, 61);
+  TEST_ASSERT_EQUAL_UINT16(61, e.d_min_of_day);
+  aio::ui::editor_set_amount(e, 0);
+  TEST_ASSERT_EQUAL_UINT16(1, e.d_amount);
+  aio::ui::editor_set_amount(e, 5000);
+  TEST_ASSERT_EQUAL_UINT16(999, e.d_amount);
+}
+
+static void test_editor_toggle_day_never_empty(void) {
+  aio::ui::SchedEditor e = aio::ui::build_sched_editor(reg, 1, g_unix);
+  e.d_days = 0x02; /* only Monday */
+  aio::ui::editor_toggle_day(e, 1); /* last day: refuse to clear */
+  TEST_ASSERT_EQUAL_UINT8(0x02, e.d_days);
+  aio::ui::editor_toggle_day(e, 3); /* add Wed */
+  TEST_ASSERT_EQUAL_UINT8(0x0A, e.d_days);
+  aio::ui::editor_toggle_day(e, 3); /* remove Wed again */
+  TEST_ASSERT_EQUAL_UINT8(0x02, e.d_days);
+  aio::ui::editor_toggle_day(e, 9); /* invalid day: ignored */
+  TEST_ASSERT_EQUAL_UINT8(0x02, e.d_days);
+}
+
+static void test_editor_apply_updates_selected_and_resorts(void) {
+  add_node(0xA5, 540, 10); /* 09:00 */
+  add_node(0x5A, 555, 5);  /* id 2 for the fill test below */
+  aio::ui::SchedEditor e = aio::ui::build_sched_editor(reg, 1, g_unix);
+  TEST_ASSERT_EQUAL_UINT8(1, e.entry_count);
+  TEST_ASSERT_EQUAL_INT8(0, e.selected);
+
+  /* edit row 0 from 09:00 to 06:30 → sorts before, selection follows */
+  aio::ui::editor_set_time(e, 390);
+  TEST_ASSERT_TRUE(aio::ui::editor_apply_draft(e));
+  TEST_ASSERT_EQUAL_UINT16(390, e.entries[0].min_of_day);
+  TEST_ASSERT_EQUAL_UINT16(10, e.entries[0].amount);
+  TEST_ASSERT_EQUAL_INT8(0, e.selected);
+
+  /* no selection → draft becomes a new row */
+  e.selected = -1;
+  aio::ui::editor_set_time(e, 750); /* 12:30 */
+  TEST_ASSERT_TRUE(aio::ui::editor_apply_draft(e));
+  TEST_ASSERT_EQUAL_UINT8(2, e.entry_count);
+  TEST_ASSERT_EQUAL_UINT16(390, e.entries[0].min_of_day);
+  TEST_ASSERT_EQUAL_UINT16(750, e.entries[1].min_of_day);
+  TEST_ASSERT_EQUAL_INT8(1, e.selected); /* new row selected */
+}
+
+static void test_editor_add_remove_and_full_list(void) {
+  add_node(0xA5, 450, 40);
+  aio::ui::SchedEditor e = aio::ui::build_sched_editor(reg, 1, g_unix);
+  /* fill to UI_DETAIL_MAX_ENTRIES (selection forced to -1 → apply adds) */
+  for (int i = 0; i < aio::ui::UI_DETAIL_MAX_ENTRIES - 1; i++) {
+    e.selected = -1;
+    aio::ui::editor_set_time(e, (uint16_t)(500 + i * 10));
+    TEST_ASSERT_TRUE(aio::ui::editor_apply_draft(e));
+  }
+  TEST_ASSERT_EQUAL_UINT8(aio::ui::UI_DETAIL_MAX_ENTRIES, e.entry_count);
+  /* full and nothing selected → apply fails */
+  e.selected = -1;
+  TEST_ASSERT_FALSE(aio::ui::editor_apply_draft(e));
+
+  /* remove the selected row, then remove down to empty */
+  aio::ui::editor_select(e, 0);
+  TEST_ASSERT_TRUE(aio::ui::editor_remove_selected(e));
+  TEST_ASSERT_EQUAL_UINT8(aio::ui::UI_DETAIL_MAX_ENTRIES - 1, e.entry_count);
+  e.selected = -1;
+  TEST_ASSERT_FALSE(aio::ui::editor_remove_selected(e));
+  aio::ui::editor_select(e, 0);
+  while (e.entry_count) TEST_ASSERT_TRUE(aio::ui::editor_remove_selected(e));
+  TEST_ASSERT_EQUAL_UINT8(0, e.entry_count);
+  TEST_ASSERT_EQUAL_INT8(-1, e.selected);
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_empty_registry_renders_safe_defaults);
@@ -289,5 +397,11 @@ int main(void) {
   RUN_TEST(test_detail_events_newest_first_capped);
   RUN_TEST(test_detail_state_freshness_and_offline);
   RUN_TEST(test_detail_time_invalid_keeps_defaults);
+  RUN_TEST(test_editor_base_snapshot_sorted_and_tz);
+  RUN_TEST(test_editor_gates_and_unknown_node);
+  RUN_TEST(test_editor_draft_time_amount_clamps);
+  RUN_TEST(test_editor_toggle_day_never_empty);
+  RUN_TEST(test_editor_apply_updates_selected_and_resorts);
+  RUN_TEST(test_editor_add_remove_and_full_list);
   return UNITY_END();
 }

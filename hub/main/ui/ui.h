@@ -24,6 +24,9 @@ void publish(const Dashboard &d);
 /* Publish the detail snapshot for the node chosen by set_detail_node. */
 void publish_detail(const NodeDetail &d);
 
+/* Publish the schedule-editor base snapshot for the same node. */
+void publish_sched_editor(const SchedEditor &e);
+
 /* Which node the detail screen shows (dashboard tap target later; the QEMU
  * shot build pins it). */
 uint8_t detail_node();

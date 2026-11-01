@@ -671,9 +671,11 @@ static void aio_loop_task(void *) {
                                         p ? p->last_hb.flags : (uint8_t)0};
         }
         aio::ui::publish(aio::ui::build_dashboard(reg, evlog, hub_unix_now(), now, fr, fn));
+        const uint8_t dn = aio::ui::detail_node();
         aio::ui::publish_detail(
-            aio::ui::build_node_detail(reg, evlog, aio::ui::detail_node(), hub_unix_now(),
-                                       now, fr, fn));
+            aio::ui::build_node_detail(reg, evlog, dn, hub_unix_now(), now, fr, fn));
+        aio::ui::publish_sched_editor(
+            aio::ui::build_sched_editor(reg, dn, hub_unix_now()));
       }
 #endif
 

@@ -58,10 +58,13 @@ static const uint32_t C_ALERT = 0xE0A458;
 
 static Dashboard s_snap[2];
 static NodeDetail s_det_snap[2];
+static SchedEditor s_edit_snap[2];
 static volatile uint32_t s_seq = 0;
 static volatile uint32_t s_det_seq = 0;
+static volatile uint32_t s_edit_seq = 0;
 static uint32_t s_seen = 0;
 static uint32_t s_det_seen = 0;
+static uint32_t s_edit_seen = 0;
 static volatile uint8_t s_detail_id = 1; /* which node the detail screen shows */
 
 void publish(const Dashboard &d) {
@@ -74,6 +77,12 @@ void publish_detail(const NodeDetail &d) {
   const uint32_t s = s_det_seq;
   s_det_snap[s & 1] = d;
   s_det_seq = s + 1;
+}
+
+void publish_sched_editor(const SchedEditor &e) {
+  const uint32_t s = s_edit_seq;
+  s_edit_snap[s & 1] = e;
+  s_edit_seq = s + 1;
 }
 
 uint8_t detail_node() { return s_detail_id; }
@@ -100,6 +109,18 @@ static lv_obj_t *s_det_sched_panel = nullptr;
 static lv_obj_t *s_det_sched_rows[UI_DETAIL_MAX_ENTRIES];
 static lv_obj_t *s_det_ev_panel = nullptr;
 static lv_obj_t *s_det_ev_rows[UI_DETAIL_MAX_EVENTS];
+
+/* schedule editor screen (§8.3) */
+static lv_obj_t *s_ed_scr = nullptr;
+static lv_obj_t *s_ed_title_lbl = nullptr;
+static lv_obj_t *s_ed_clock_lbl = nullptr;
+static lv_obj_t *s_ed_tz_lbl = nullptr;
+static lv_obj_t *s_ed_rows[UI_DETAIL_MAX_ENTRIES];     /* entry list rows */
+static lv_obj_t *s_ed_time_lbl = nullptr;              /* draft time */
+static lv_obj_t *s_ed_amt_lbl = nullptr;               /* draft amount */
+static lv_obj_t *s_ed_day_btns[7];                     /* weekday chips */
+static lv_obj_t *s_ed_gate_lbl = nullptr;              /* gate/skip footer */
+static const uint32_t C_SEL = 0x35383F;                /* selected row bg */
 
 struct Card {
   lv_obj_t *root = nullptr;
@@ -538,6 +559,197 @@ static void update_detail(const NodeDetail &d) {
   }
 }
 
+/* --- schedule editor screen (§8.3) -------------------------------------------------- */
+
+static lv_obj_t *ed_row(lv_obj_t *parent, lv_obj_t **t, lv_obj_t **a) {
+  lv_obj_t *row = lv_obj_create(parent);
+  lv_obj_set_size(row, UI_W - 20, 20);
+  lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(row, 0, 0);
+  lv_obj_set_style_pad_all(row, 0, 0);
+  lv_obj_set_style_pad_left(row, 8, 0);
+  lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(row, 8, 0);
+  lv_obj_t *tl = new_label(row, "", &lv_font_montserrat_14, C_TEXT);
+  lv_obj_set_width(tl, 58);
+  lv_obj_t *w = new_label(row, "", &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_flex_grow(w, 1);
+  lv_obj_t *al = new_label(row, "", &lv_font_montserrat_14, C_TEXT);
+  if (t) *t = tl;
+  if (a) *a = al;
+  return row;
+}
+
+static void build_edit_screen() {
+  s_ed_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_ed_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_ed_scr, 0, 0);
+
+  /* header: back + title + tz + clock */
+  lv_obj_t *header = new_panel(s_ed_scr, UI_W, 32, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_right(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  s_ed_title_lbl = new_label(header, "Schedule", &lv_font_montserrat_16, C_TEXT);
+  lv_obj_t *spacer = lv_obj_create(header);
+  lv_obj_set_size(spacer, 1, 1);
+  lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(spacer, 0, 0);
+  lv_obj_set_flex_grow(spacer, 1);
+  s_ed_tz_lbl = new_label(header, "UTC", &lv_font_montserrat_12, C_MUTED);
+  s_ed_clock_lbl = new_label(header, "--:--", &lv_font_montserrat_14, C_MUTED);
+
+  /* scrollable column: entry list + edit panel */
+  lv_obj_t *col = lv_obj_create(s_ed_scr);
+  lv_obj_set_size(col, UI_W, UI_H - 32 - 24);
+  lv_obj_set_pos(col, 0, 32);
+  lv_obj_set_style_bg_opa(col, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(col, 0, 0);
+  lv_obj_set_style_pad_all(col, 0, 0);
+  lv_obj_set_style_pad_row(col, 4, 0);
+  lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_flex_align(col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START,
+                        LV_FLEX_ALIGN_START);
+  lv_obj_set_scroll_dir(col, LV_DIR_VER);
+  lv_obj_set_scrollbar_mode(col, LV_SCROLLBAR_MODE_AUTO);
+
+  lv_obj_t *list = new_panel(col, UI_W - 20, 0, C_PANEL);
+  lv_obj_set_style_pad_all(list, 4, 0);
+  lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(list, 2, 0);
+  lv_obj_t *lh = new_label(list, "ENTRIES", &lv_font_montserrat_12, C_MUTED);
+  (void)lh;
+  for (int i = 0; i < UI_DETAIL_MAX_ENTRIES; i++) {
+    lv_obj_t *t = nullptr, *a = nullptr;
+    s_ed_rows[i] = ed_row(list, &t, &a);
+    (void)t;
+    (void)a;
+    lv_obj_add_flag(s_ed_rows[i], LV_OBJ_FLAG_HIDDEN);
+  }
+
+  lv_obj_t *edit = new_panel(col, UI_W - 20, 96, C_PANEL);
+  lv_obj_set_style_pad_all(edit, 6, 0);
+  lv_obj_set_flex_flow(edit, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(edit, 4, 0);
+
+  lv_obj_t *eh = new_label(edit, "EDIT SELECTED", &lv_font_montserrat_12, C_MUTED);
+  (void)eh;
+
+  /* time + amount draft row */
+  lv_obj_t *ta = lv_obj_create(edit);
+  lv_obj_set_size(ta, UI_W - 32, 22);
+  lv_obj_set_style_bg_opa(ta, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(ta, 0, 0);
+  lv_obj_set_style_pad_all(ta, 0, 0);
+  lv_obj_set_flex_flow(ta, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_column(ta, 10, 0);
+  lv_obj_t *tlbl = new_label(ta, "time", &lv_font_montserrat_12, C_MUTED);
+  (void)tlbl;
+  s_ed_time_lbl = new_label(ta, "07:30", &lv_font_montserrat_14, C_TEXT);
+  lv_obj_t *albl = new_label(ta, "amount", &lv_font_montserrat_12, C_MUTED);
+  (void)albl;
+  s_ed_amt_lbl = new_label(ta, "40 g", &lv_font_montserrat_14, C_TEXT);
+
+  /* weekday chips */
+  lv_obj_t *days = lv_obj_create(edit);
+  lv_obj_set_size(days, UI_W - 32, 20);
+  lv_obj_set_style_bg_opa(days, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(days, 0, 0);
+  lv_obj_set_style_pad_all(days, 0, 0);
+  lv_obj_set_flex_flow(days, LV_FLEX_FLOW_ROW);
+  lv_obj_set_style_pad_column(days, 3, 0);
+  static const char *DCH[7] = {"S", "M", "T", "W", "T", "F", "S"};
+  for (int d = 0; d < 7; d++) {
+    lv_obj_t *b = lv_btn_create(days);
+    lv_obj_set_size(b, 46, 18);
+    lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD), 0);
+    s_ed_day_btns[d] = b;
+    lv_obj_t *l = new_label(b, DCH[d], &lv_font_montserrat_12, C_MUTED);
+    (void)l;
+  }
+
+  /* footer: gate state / push freshness */
+  s_ed_gate_lbl = new_label(s_ed_scr, "", &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_pos(s_ed_gate_lbl, 10, UI_H - 20);
+}
+
+static void update_edit(const SchedEditor &e) {
+  char buf[48];
+  if (s_ed_clock_lbl) lv_label_set_text(s_ed_clock_lbl, e.clock);
+  if (s_ed_tz_lbl) lv_label_set_text(s_ed_tz_lbl, e.tz);
+  snprintf(buf, sizeof(buf), "Feeder %u schedule", (unsigned)e.node_id);
+  if (s_ed_title_lbl) lv_label_set_text(s_ed_title_lbl, buf);
+
+  for (int i = 0; i < UI_DETAIL_MAX_ENTRIES; i++) {
+    lv_obj_t *row = s_ed_rows[i];
+    if (!row) continue;
+    if (!e.found || i >= e.entry_count) {
+      lv_obj_add_flag(row, LV_OBJ_FLAG_HIDDEN);
+      continue;
+    }
+    lv_obj_remove_flag(row, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_set_style_bg_color(row, lv_color_hex(i == e.selected ? C_SEL : C_PANEL), 0);
+    lv_obj_set_style_bg_opa(row, LV_OPA_COVER, 0);
+    lv_obj_t *t = lv_obj_get_child(row, 0);
+    lv_obj_t *w = lv_obj_get_child(row, 1);
+    lv_obj_t *a = lv_obj_get_child(row, 2);
+    const DetailSchedEntry &en = e.entries[i];
+    if (t) {
+      snprintf(buf, sizeof(buf), "%s%02u:%02u", i == e.selected ? "> " : "  ",
+               (unsigned)(en.min_of_day / 60), (unsigned)(en.min_of_day % 60));
+      lv_label_set_text((lv_obj_t *)t, buf);
+    }
+    if (w) {
+      days_text(en.days_mask, buf, sizeof(buf));
+      lv_label_set_text((lv_obj_t *)w, buf);
+    }
+    if (a) {
+      snprintf(buf, sizeof(buf), "%u g", (unsigned)en.amount);
+      lv_label_set_text((lv_obj_t *)a, buf);
+    }
+  }
+
+  if (s_ed_time_lbl) {
+    snprintf(buf, sizeof(buf), "%02u:%02u", (unsigned)(e.d_min_of_day / 60),
+             (unsigned)(e.d_min_of_day % 60));
+    lv_label_set_text(s_ed_time_lbl, buf);
+  }
+  if (s_ed_amt_lbl) {
+    snprintf(buf, sizeof(buf), "%u g", (unsigned)e.d_amount);
+    lv_label_set_text(s_ed_amt_lbl, buf);
+  }
+  for (int d = 0; d < 7; d++) {
+    lv_obj_t *b = s_ed_day_btns[d];
+    if (!b) continue;
+    const bool on = e.d_days & (1u << d);
+    lv_obj_set_style_bg_color(b, lv_color_hex(on ? C_SEL : C_CARD), 0);
+    lv_obj_t *l = lv_obj_get_child(b, 0);
+    if (l)
+      lv_obj_set_style_text_color((lv_obj_t *)l,
+                                  lv_color_hex(on ? C_TEXT : C_MUTED), 0);
+  }
+  if (s_ed_gate_lbl) {
+    if (e.has_skip || e.has_hold)
+      snprintf(buf, sizeof(buf), "%s active - %ld min left",
+               e.has_hold ? "hold" : "skip", (long)e.gate_left_min);
+    else
+      snprintf(buf, sizeof(buf), "no gates - %s",
+               e.enabled ? "schedule enabled" : "schedule paused");
+    lv_label_set_text(s_ed_gate_lbl, buf);
+    lv_obj_set_style_text_color(s_ed_gate_lbl,
+                                lv_color_hex((e.has_skip || e.has_hold) ? C_ALERT : C_MUTED),
+                                0);
+  }
+}
+
 /* --- LVGL plumbing ----------------------------------------------------------------- */
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -557,6 +769,7 @@ static void ui_task(void *) {
 
   build_screen();
   build_detail_screen();
+  build_edit_screen();
   lv_screen_load(s_scr);
 
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
@@ -564,12 +777,11 @@ static void ui_task(void *) {
   printf("ui: LVGL %d.%d.%d ready (%dx%d shot framebuffer)\n", LVGL_VERSION_MAJOR,
          LVGL_VERSION_MINOR, LVGL_VERSION_PATCH, UI_W, UI_H);
 
-  /* deterministic rotation for the QEMU screenshot run: dashboard first,
-   * node detail after SHOT_ROTATE_MS, then back. On hardware this is
-   * replaced by touch navigation (M4b); the shot build only needs every
-   * screen to appear on a fixed schedule. */
-  enum ShotScreen { SH_DASH = 0, SH_DETAIL = 1 };
-  constexpr uint32_t SHOT_ROTATE_MS = 25000;
+  /* deterministic rotation for the QEMU screenshot run: each screen gets a
+   * 25 s window, then the cycle repeats (the runner grabs one shot per
+   * screen name). On hardware this is replaced by touch navigation (M4b). */
+  enum ShotScreen { SH_DASH = 0, SH_DETAIL = 1, SH_EDIT = 2, SH_COUNT };
+  constexpr uint32_t SHOT_WINDOW_MS = 25000;
   ShotScreen shot = SH_DASH;
   ShotScreen loaded = SH_DASH;
 
@@ -578,9 +790,11 @@ static void ui_task(void *) {
     lv_tick_inc(now - last_tick);
     last_tick = now;
 
-    shot = (now - boot_ms >= SHOT_ROTATE_MS) ? SH_DETAIL : SH_DASH;
+    shot = (ShotScreen)((now - boot_ms) / SHOT_WINDOW_MS % SH_COUNT);
     if (shot != loaded) {
-      lv_screen_load(shot == SH_DASH ? s_scr : s_det_scr);
+      lv_screen_load(shot == SH_DASH   ? s_scr
+                     : shot == SH_DETAIL ? s_det_scr
+                                         : s_ed_scr);
       loaded = shot;
       s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
     }
@@ -595,6 +809,11 @@ static void ui_task(void *) {
       update_detail(s_det_snap[(ds - 1) & 1]);
       s_det_seen = ds;
     }
+    const uint32_t es = s_edit_seq;
+    if (es != s_edit_seen) {
+      update_edit(s_edit_snap[(es - 1) & 1]);
+      s_edit_seen = es;
+    }
 
     lv_timer_handler();
 
@@ -602,7 +821,9 @@ static void ui_task(void *) {
      * g_shot_fb after each marker; repeats every 5 s for reliability) */
     if (now - boot_ms > 6000 && s_last_flush_ms > 0 &&
         now - s_last_flush_ms > 400 && now - s_last_marker_ms > 5000) {
-      printf("\nAIO_SHOT %s\n", loaded == SH_DASH ? "dashboard" : "node_detail");
+      printf("\nAIO_SHOT %s\n", loaded == SH_DASH   ? "dashboard"
+                                : loaded == SH_DETAIL ? "node_detail"
+                                                      : "sched_editor");
       fflush(stdout);
       s_last_marker_ms = now;
     }
@@ -620,6 +841,7 @@ void start() {
 void start() {}
 void publish(const Dashboard &) {}
 void publish_detail(const NodeDetail &) {}
+void publish_sched_editor(const SchedEditor &) {}
 uint8_t detail_node() { return 1; }
 void set_detail_node(uint8_t) {}
 

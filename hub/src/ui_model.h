@@ -342,6 +342,179 @@ static inline NodeDetail build_node_detail(const HubRegistry &reg, const EventLo
   return d;
 }
 
+/* --- schedule editor (§8.3) ------------------------------------------------------ */
+
+struct SchedEditor {
+  bool found = false;
+  uint8_t node_id = 0;
+  bool enabled = false;
+
+  uint8_t entry_count = 0;                         /* sorted display copy */
+  DetailSchedEntry entries[UI_DETAIL_MAX_ENTRIES]; /* capped like the detail view */
+
+  int8_t selected = -1;        /* selected row, -1 = none (draft for a new row) */
+  uint16_t d_min_of_day = 480; /* draft fields — edited by touch, rendered live */
+  uint16_t d_amount = 20;
+  uint8_t d_days = 0x7F;
+
+  bool has_skip = false; /* node-level gates (header shows Undo skip / Resume) */
+  bool has_hold = false;
+  int32_t gate_left_min = 0;
+
+  char tz[16] = "UTC"; /* daylight-saving rule name (§8.3) */
+  char clock[8] = "--:--"; /* HH:MM at snapshot time */
+};
+
+/* Editor base snapshot. Pure; host-tested. Draft ops below mutate the struct
+ * in place; commit/push to the node is an engine command (M4b), not part of
+ * the model. */
+static inline SchedEditor build_sched_editor(const HubRegistry &reg, uint8_t node_id,
+                                             int64_t unix_now) {
+  SchedEditor e;
+  const HubNode *n = reg.by_id(node_id);
+  if (!n) return e;
+  e.found = true;
+  e.node_id = node_id;
+  e.enabled = n->sched.enabled != 0;
+
+  for (uint8_t i = 0; i < n->sched.entry_count; i++) {
+    const sched_entry_t &s = n->sched.entries[i];
+    uint8_t pos = e.entry_count;
+    if (pos >= UI_DETAIL_MAX_ENTRIES) {
+      if (s.min_of_day >= e.entries[pos - 1].min_of_day) continue;
+      pos = (uint8_t)(pos - 1);
+    } else {
+      e.entry_count++;
+    }
+    while (pos > 0 && e.entries[pos - 1].min_of_day > s.min_of_day) {
+      e.entries[pos] = e.entries[pos - 1];
+      pos--;
+    }
+    e.entries[pos].min_of_day = s.min_of_day;
+    e.entries[pos].amount = s.amount;
+    e.entries[pos].days_mask = s.days_mask;
+  }
+
+  if (unix_now >= 1600000000) {
+    if (n->sched.skip_until > (uint32_t)unix_now) e.has_skip = true;
+    if (n->sched.hold_until > (uint32_t)unix_now) e.has_hold = true;
+    const uint32_t gate = (n->sched.hold_until > n->sched.skip_until) ? n->sched.hold_until
+                                                                      : n->sched.skip_until;
+    if (gate > (uint32_t)unix_now)
+      e.gate_left_min = (int32_t)((gate - (uint32_t)unix_now + 59) / 60);
+  }
+
+  switch (reg.data().tz_rule) {
+    case TZ_MANILA: snprintf(e.tz, sizeof(e.tz), "Asia/Manila"); break;
+    case TZ_EU_CENTRAL: snprintf(e.tz, sizeof(e.tz), "EU Central"); break;
+    case TZ_US_EASTERN: snprintf(e.tz, sizeof(e.tz), "US Eastern"); break;
+    default: snprintf(e.tz, sizeof(e.tz), "UTC");
+  }
+  const LocalTime tnow = local_from_unix(unix_now, reg.data().tz_rule);
+  snprintf(e.clock, sizeof(e.clock), "%02u:%02u", (unsigned)(tnow.min_of_day / 60),
+           (unsigned)(tnow.min_of_day % 60));
+
+  if (e.entry_count) {
+    e.selected = 0;
+    e.d_min_of_day = e.entries[0].min_of_day;
+    e.d_amount = e.entries[0].amount;
+    e.d_days = e.entries[0].days_mask;
+  }
+  return e;
+}
+
+/* Select a row and load it into the draft fields. */
+static inline void editor_select(SchedEditor &e, int8_t idx) {
+  if (idx < 0 || idx >= (int8_t)e.entry_count) {
+    e.selected = -1;
+    return;
+  }
+  e.selected = idx;
+  e.d_min_of_day = e.entries[idx].min_of_day;
+  e.d_amount = e.entries[idx].amount;
+  e.d_days = e.entries[idx].days_mask;
+}
+
+/* Draft time clamp 00:00–23:59. */
+static inline void editor_set_time(SchedEditor &e, uint16_t min_of_day) {
+  if (min_of_day > 1439) min_of_day = 1439;
+  e.d_min_of_day = min_of_day;
+}
+
+/* Draft amount clamp 1–999 (g or ml). */
+static inline void editor_set_amount(SchedEditor &e, uint16_t amount) {
+  if (amount < 1) amount = 1;
+  if (amount > 999) amount = 999;
+  e.d_amount = amount;
+}
+
+/* Toggle one weekday bit; the mask never drops to zero (§8.3 weekday toggles). */
+static inline void editor_toggle_day(SchedEditor &e, uint8_t wday) {
+  if (wday > 6) return;
+  const uint8_t bit = (uint8_t)(1u << wday);
+  if (e.d_days & bit) {
+    if (e.d_days != bit) e.d_days &= (uint8_t)~bit; /* keep at least one day */
+  } else {
+    e.d_days |= bit;
+  }
+}
+
+/* Write the draft into the selected row (or insert a new row when none is
+ * selected). In-memory only: the caller re-sorts on the next snapshot build.
+ * Returns false when the list is full and nothing is selected. */
+static inline bool editor_apply_draft(SchedEditor &e) {
+  if (e.selected >= 0) {
+    DetailSchedEntry &row = e.entries[e.selected];
+    row.min_of_day = e.d_min_of_day;
+    row.amount = e.d_amount;
+    row.days_mask = e.d_days;
+    /* keep the display copy sorted */
+    for (int8_t i = e.selected; i > 0 &&
+                               e.entries[i - 1].min_of_day > e.entries[i].min_of_day;
+         i--) {
+      const DetailSchedEntry t = e.entries[i];
+      e.entries[i] = e.entries[i - 1];
+      e.entries[i - 1] = t;
+    }
+    for (int8_t i = e.selected;
+         i < (int8_t)(e.entry_count - 1) && e.entries[i].min_of_day > e.entries[i + 1].min_of_day;
+         i++) {
+      const DetailSchedEntry t = e.entries[i];
+      e.entries[i] = e.entries[i + 1];
+      e.entries[i + 1] = t;
+    }
+    return true;
+  }
+  if (e.entry_count >= UI_DETAIL_MAX_ENTRIES) return false;
+  e.entries[e.entry_count].min_of_day = e.d_min_of_day;
+  e.entries[e.entry_count].amount = e.d_amount;
+  e.entries[e.entry_count].days_mask = e.d_days;
+  e.entry_count++;
+  e.selected = (int8_t)(e.entry_count - 1);
+  /* insertion-sort the new row into place */
+  for (int8_t i = e.selected; i > 0 && e.entries[i - 1].min_of_day > e.entries[i].min_of_day;
+       i--) {
+    const DetailSchedEntry t = e.entries[i];
+    e.entries[i] = e.entries[i - 1];
+    e.entries[i - 1] = t;
+    e.selected = i;
+  }
+  return true;
+}
+
+/* Remove the selected row; the draft keeps the removed row's values. */
+static inline bool editor_remove_selected(SchedEditor &e) {
+  if (e.selected < 0 || e.selected >= (int8_t)e.entry_count) return false;
+  for (int8_t i = e.selected; i < (int8_t)(e.entry_count - 1); i++)
+    e.entries[i] = e.entries[i + 1];
+  e.entry_count--;
+  if (e.entry_count == 0)
+    e.selected = -1;
+  else if (e.selected >= (int8_t)e.entry_count)
+    e.selected = (int8_t)(e.entry_count - 1);
+  return true;
+}
+
 }  // namespace ui
 }  // namespace aio
 
