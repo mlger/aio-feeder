@@ -41,3 +41,9 @@ LVGL pool is raised 64 → 72 KB (`CONFIG_LV_MEM_SIZE_KILOBYTES` in
 `sdkconfig.qemu.defaults`; note `LV_MEM_POOL_EXPAND_SIZE` is a no-op in
 9.2.2). The ui task prints `lv pool total/free` at boot — watch it before
 adding screens.
+
+v0.6 took the build to 10 slots and overflowed `dram0_0_seg` by 464 B:
+the PIN pad became a single `lv_btnmatrix` (12 separate buttons cost
+~1.5 KB of pool for widgets the shot never touches), which both paid for
+the three new screens' widgets and let the pool drop 72 → 70 KB, covering
+the settings/wizard snapshot buffers with ~1.5 KB to spare.
