@@ -649,13 +649,13 @@ static void aio_loop_task(void *) {
       const uint32_t now = ms_now();
       nowt.pump(eng, now);
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
-      sim::pump_to_hub(eng, now); /* node → hub sim frames (QEMU shot build) */
+      aio::sim::pump_to_hub(eng, now); /* node → hub sim frames (QEMU shot build) */
 #endif
       eng.tick(now);
       core.tick(now, hub_unix_now());
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
-      sim::tick_nodes(now); /* node engines + hub → node sim frames */
+      aio::sim::tick_nodes(now); /* node engines + hub → node sim frames */
 
       /* dashboard + detail snapshots → UI task every 400 ms */
       static uint32_t ui_ms = 0;
@@ -723,7 +723,7 @@ extern "C" void app_main(void) {
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
   /* pin the wall clock + seed the demo registry before the boot scan (M4a
    * QEMU screenshot build — see tools/qemu/README.md) */
-  sim::seed(reg, evlog, g_alerts_ack);
+  aio::sim::seed(reg, evlog, g_alerts_ack);
 #endif
 
   time_begin(); /* PCF85063 → system clock; SNTP starts with the radio */
@@ -735,14 +735,14 @@ extern "C" void app_main(void) {
 #if defined(CONFIG_AIO_NO_RADIO) && CONFIG_AIO_NO_RADIO
   printf("radio disabled (QEMU smoke build) — core+console only\n");
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
-  eng.begin(aio::LinkEngine::Role::Hub, sim::hub_transport(), make_handlers(), ms_now());
+  eng.begin(aio::LinkEngine::Role::Hub, aio::sim::hub_transport(), make_handlers(), ms_now());
 #else
   eng.begin(aio::LinkEngine::Role::Hub, nullptr, make_handlers(), ms_now());
 #endif
   eng.set_self(aio::LINK_HUB_ID, 0);
   eng.set_channel(HUB_CHAN_DEFAULT);
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
-  sim::begin_nodes();
+  aio::sim::begin_nodes();
 #endif
 #else
   if (!nowt.begin(HUB_CHAN_DEFAULT)) printf("ESP-NOW init FAILED\n");

@@ -16,8 +16,9 @@
  * The frame is stable between markers because the snapshot only changes on
  * engine updates and the sim clock is pinned.
  *
- * LVGL 9 notes: single full-size buffer + RENDER_MODE_DIRECT + full_refresh
- * → g_shot_fb always holds the complete frame.
+ * LVGL 9 notes: single full-size buffer + RENDER_MODE_FULL — every flush
+ * redraws the whole screen, so g_shot_fb always holds the complete frame
+ * (9.3 removed lv_display_set_full_refresh; FULL mode is the portable way).
  */
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -1094,8 +1095,7 @@ static void ui_task(void *) {
   s_disp = lv_display_create(UI_W, UI_H);
   lv_display_set_flush_cb(s_disp, flush_cb);
   lv_display_set_buffers(s_disp, g_shot_fb, nullptr, sizeof(g_shot_fb),
-                         LV_DISPLAY_RENDER_MODE_DIRECT);
-  lv_display_set_full_refresh(s_disp, true);
+                         LV_DISPLAY_RENDER_MODE_FULL);
 
   build_screen();
   build_detail_screen();
