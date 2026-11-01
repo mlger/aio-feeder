@@ -147,8 +147,8 @@ static void cb_hello(const uint8_t mac[6], const hello_payload_t &pl, int8_t rss
 }
 
 static void cb_feed_ack(uint8_t node_id, const feed_ack_payload_t &a) {
-  printf("FEED_ACK node=%u id=%u accepted=%u reason=%u\n", node_id, a.feed_id, a.accepted,
-         a.reason);
+  printf("FEED_ACK node=%u id=%u accepted=%u reason=%u\n", node_id, (unsigned)a.feed_id,
+         a.accepted, a.reason);
   core.on_feed_ack(node_id, a, (uint32_t)hub_unix_now());
 }
 
@@ -161,15 +161,15 @@ static void cb_feed_result(uint8_t node_id, const feed_result_payload_t &r) {
     loop_last_feed_id = r.feed_id;
     loop_ok++;
   }
-  printf("FEED_RESULT node=%u id=%u status=%u on_ms=%u pulses=%u t=%u\n", node_id, r.feed_id,
-         r.status, r.actual_on_ms, r.pulses, (unsigned)r.t_unix);
+  printf("FEED_RESULT node=%u id=%u status=%u on_ms=%u pulses=%u t=%u\n", node_id,
+         (unsigned)r.feed_id, r.status, r.actual_on_ms, r.pulses, (unsigned)r.t_unix);
   core.on_feed_result(node_id, r, (uint32_t)hub_unix_now());
 }
 
 static void cb_heartbeat(uint8_t node_id, const heartbeat_payload_t &hb, int8_t rssi) {
   printf("HB node=%u up=%us vin=%u day=%u flags=0x%02X drift=%d rssi=%d\n", node_id,
          (unsigned)(hb.uptime_ms / 1000), hb.vin_mv, hb.day_units, hb.flags,
-         hb.rtc_drift_ms, rssi);
+         (int)hb.rtc_drift_ms, rssi);
   /* Ack non-reply heartbeats with STATUS_REQ so the node's freshness window
    * (§6.2 scan trigger) stays fed on an otherwise quiet link (D30). */
   aio::LinkPeer *p = eng.peer_by_node(node_id);
@@ -190,7 +190,8 @@ static void cb_pair_req(const uint8_t mac[6], const pair_req_payload_t &pr, int8
 }
 
 static void cb_feed_unknown(uint32_t feed_id, uint8_t node_id) {
-  printf("FEED UNKNOWN id=%u node=%u (alert: never re-issued, §6.6)\n", feed_id, node_id);
+  printf("FEED UNKNOWN id=%u node=%u (alert: never re-issued, §6.6)\n", (unsigned)feed_id,
+         node_id);
   core.on_feed_unknown(feed_id, node_id, (uint32_t)hub_unix_now());
 }
 
@@ -416,7 +417,7 @@ static int cmd_feedloop(int argc, char **argv) {
   loop_next_ms = ms_now();
   memset(seen_results, 0, sizeof(seen_results));
   printf("feedloop start: node=%u n=%u (bench radio mode on the node!)\n", loop_node,
-         loop_target);
+         (unsigned)loop_target);
   return 0;
 }
 
@@ -576,12 +577,14 @@ static int cmd_stats(int argc, char **argv) {
   (void)argc; (void)argv;
   StateLock lock;
   const aio::LinkStats &s = eng.stats();
-  printf("tx=%u tx_fail=%u rx_ok=%u rx_dup=%u rx_replay=%u\n", s.tx, s.tx_fail, s.rx_ok,
-         s.rx_dup, s.rx_replay);
-  printf("bad_len=%u bad_ver=%u bad_mac=%u no_peer=%u test_rx=%u\n", s.rx_bad_len,
-         s.rx_bad_ver, s.rx_bad_mac, s.rx_no_peer, s.test_rx);
-  printf("feed_retries=%u feed_unknown=%u results_deduped=%u inflight=%u\n", s.feed_retries,
-         s.feed_unknown, s.results_deduped, core.fm().inflight_count());
+  printf("tx=%u tx_fail=%u rx_ok=%u rx_dup=%u rx_replay=%u\n", (unsigned)s.tx,
+         (unsigned)s.tx_fail, (unsigned)s.rx_ok, (unsigned)s.rx_dup, (unsigned)s.rx_replay);
+  printf("bad_len=%u bad_ver=%u bad_mac=%u no_peer=%u test_rx=%u\n", (unsigned)s.rx_bad_len,
+         (unsigned)s.rx_bad_ver, (unsigned)s.rx_bad_mac, (unsigned)s.rx_no_peer,
+         (unsigned)s.test_rx);
+  printf("feed_retries=%u feed_unknown=%u results_deduped=%u inflight=%u\n",
+         (unsigned)s.feed_retries, (unsigned)s.feed_unknown, (unsigned)s.results_deduped,
+         (unsigned)core.fm().inflight_count());
   printf("events: ok=%u rej=%u unknown=%u missed=%u\n", evlog.count_of(aio::EV_FEED_OK),
          evlog.count_of(aio::EV_FEED_REJ), evlog.count_of(aio::EV_FEED_UNKNOWN),
          evlog.count_of(aio::EV_SKIPPED_MISSED));
@@ -653,7 +656,7 @@ static void aio_loop_task(void *) {
       }
       if (loop_target && loop_sent >= loop_target && !eng.feed_pending()) {
         printf("feedloop done: sent=%u ok=%u dup_errors=%u (expect sent==ok, 0 dups)\n",
-               loop_sent, loop_ok, loop_dup_errors);
+               (unsigned)loop_sent, (unsigned)loop_ok, (unsigned)loop_dup_errors);
         loop_target = 0;
       }
     }

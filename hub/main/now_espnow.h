@@ -64,11 +64,17 @@ struct NowTransportIdf : public aio::ILinkTransport {
       wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
       if (esp_wifi_init(&cfg) != ESP_OK) return false;
       if (esp_wifi_set_mode(WIFI_MODE_STA) != ESP_OK) return false;
-#if defined(CONFIG_AIO_WIFI_SSID) && CONFIG_AIO_WIFI_SSID[0]
-      {
+#ifdef CONFIG_AIO_WIFI_SSID
+      const bool have_creds = strlen(CONFIG_AIO_WIFI_SSID) > 0;
+#else
+      const bool have_creds = false;
+#endif
+      if (have_creds) {
         wifi_config_t wc{};
         strncpy((char *)wc.sta.ssid, CONFIG_AIO_WIFI_SSID, sizeof(wc.sta.ssid) - 1);
+#ifdef CONFIG_AIO_WIFI_PASS
         strncpy((char *)wc.sta.password, CONFIG_AIO_WIFI_PASS, sizeof(wc.sta.password) - 1);
+#endif
         wc.sta.threshold.authmode = WIFI_AUTH_WPA2_PSK;
         esp_wifi_set_config(WIFI_IF_STA, &wc);
         if (esp_wifi_start() != ESP_OK) return false;
@@ -77,10 +83,9 @@ struct NowTransportIdf : public aio::ILinkTransport {
         esp_sntp_setservername(0, "pool.ntp.org");
         esp_sntp_setservername(1, "time.nist.gov");
         esp_sntp_init();
+      } else if (esp_wifi_start() != ESP_OK) {
+        return false;
       }
-#else
-      if (esp_wifi_start() != ESP_OK) return false;
-#endif
       /* ESP-NOW latency matters (FEED retries are 300 ms spaced) */
       esp_wifi_set_ps(WIFI_PS_NONE);
       wifi_up_ = true;
