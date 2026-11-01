@@ -26,7 +26,7 @@ aio-feeder/
 ├─ hub/                 # hub firmware — env hub_esp32s3
 ├─ node/                # node firmware — envs node_esp8266, node_esp32c3
 │  ├─ hal_esp8266/  hal_esp32c3/
-├─ node_core/           # portable node logic (host-tested)
+├─ node_core/           # portable node logic: actuator FSM, limits, journal (host-tested)
 ├─ test/                # host unit tests (Unity, native)
 ├─ tools/               # flasher manifest builder, QEMU scripts, simulators
 ├─ hardware/            # schematics, BOM, enclosure CAD
@@ -71,5 +71,7 @@ a clear error until this is on), or `gh api -X POST repos/mlger/aio-feeder/pages
 
 ## Status
 
-M0 — Setup. Repo, PlatformIO envs, CI, shared proto lib and the web flasher
-pipeline are in; firmware is a boot stub. Next: M1 bench node (PLAN.md §12).
+M1 — Bench node (PLAN.md §12). HAL v1 on both node MCUs, hard relay-off
+timer, watchdog, DS3231, A/B config slots, feed journal, actuator FSM and the
+serial CLI are in (host-tested); hub firmware is still a boot stub. Bench
+checklist: `docs/bench-m1.md`. Next: M2 link (ESP-NOW).

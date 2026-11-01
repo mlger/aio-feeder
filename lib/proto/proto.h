@@ -51,6 +51,23 @@ typedef enum {
   RESULT_COUNT
 } result_status_t;
 
+/* Node result codes for FEED_RESULT / FEED_ACK.reason (PLAN.md §9.2). */
+typedef enum {
+  FEED_OK = 0,
+  FEED_REJ_COOLDOWN,
+  FEED_REJ_LIMIT_HOUR,
+  FEED_REJ_LIMIT_DAY,
+  FEED_REJ_TOO_LONG,
+  FEED_REJ_NO_TIME,
+  FEED_REJ_FAULT,
+  FEED_REJ_LOW_VOLT,
+  FEED_REJ_LIMITS_UNCONFIRMED,
+  FEED_REJ_MANUAL_STOP,
+  FEED_ABORTED,
+  FEED_GATE_NOT_OPENED,
+  FEED_GATE_STUCK_OPEN,
+} feed_result_t;
+
 /* HEARTBEAT.flags bits (PLAN.md §6.5). */
 #define HB_FLAG_MANUAL_STOP 0x01
 #define HB_FLAG_TIME_INVALID 0x02

@@ -7,6 +7,18 @@
     "lvgl": {
       "type": "http",
       "url": "https://lvgl.mcp.kapa.ai/"
+    },
+    "espressif-documentation": {
+      "type": "http",
+      "url": "https://mcp.espressif.com/docs"
+    },
+    "espressif-components": {
+      "type": "http",
+      "url": "https://components.espressif.com/mcp"
+    },
+    "espressif-engineering": {
+      "type": "http",
+      "url": "https://ts-mcp.espressif.com/mcp"
     }
   }
 }

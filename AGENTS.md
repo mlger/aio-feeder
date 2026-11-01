@@ -46,3 +46,5 @@ project-specific notes for agents working on **AIO Feeder**.
   limits, watchdogs or the relay-off timer needs the checks PLAN.md §3.3 demands.
   "Never cut" above includes the full safety list there.
 - Shared wire format lives only in `lib/proto/proto.h` — never re-declare it.
+- `node_core/` is header-only and host-tested; device code lives in `node/src/`
+  (HALs per MCU, DS3231 driver, CLI). Keep safety logic host-testable.

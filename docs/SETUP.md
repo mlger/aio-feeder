@@ -36,15 +36,21 @@ Vendored in this repo so every agent gets it with zero setup:
 
 | Server | URL | Purpose |
 |---|---|---|
-| `context7` | `https://mcp.context7.com/mcp` | Up-to-date docs for PlatformIO, ESP-IDF, Arduino cores, LVGL, etc. (https://github.com/upstash/context7) |
+| `espressif-documentation` | `https://mcp.espressif.com/docs` | Semantic search over Espressif docs — ESP-IDF, Arduino-ESP32, ESP-AT (`search_espressif_sources`). OAuth on first connect; 40 req/h rate limit |
+| `espressif-components` | `https://components.espressif.com/mcp` | ESP Component Registry — search managed components, usage docs (`idf.py add-dependency` targets) |
+| `espressif-engineering` | `https://ts-mcp.espressif.com/mcp` | Espressif troubleshooting workflows — environment setup, Wi-Fi debugging, schematic/PCB review. OAuth on first connect |
+| `context7` | `https://mcp.context7.com/mcp` | Up-to-date docs for PlatformIO, LVGL, Arduino cores, etc. (https://github.com/upstash/context7) |
 | `lvgl` | `https://lvgl.mcp.kapa.ai/` | Official LVGL docs MCP — mandated by PLAN.md §7.1 / D26 |
 
 Claude Code picks up project-scope servers from the repo-root `.mcp.json`
-automatically (approve them when prompted). The plan sketched
-`.claude/.mcp.json`; the root `.mcp.json` is the path Claude Code actually
-reads, so that is what ships. Other clients:
+automatically (approve them when prompted; OAuth servers open a browser flow
+on first use). The plan sketched `.claude/.mcp.json`; the root `.mcp.json` is
+the path Claude Code actually reads, so that is what ships. Other clients:
 
 ```bash
+claude mcp add --transport http espressif-documentation https://mcp.espressif.com/docs
+claude mcp add --transport http espressif-components https://components.espressif.com/mcp
+claude mcp add --transport http espressif-engineering https://ts-mcp.espressif.com/mcp
 claude mcp add --transport http context7 https://mcp.context7.com/mcp
 claude mcp add --transport http lvgl https://lvgl.mcp.kapa.ai/
 ```
@@ -88,10 +94,11 @@ Notes:
 | Criterion | Status |
 |---|---|
 | Repo + plan + prototype checked in | ✅ |
-| PlatformIO envs (hub_esp32s3, node_esp8266, node_esp32c3) | ✅ (boot stubs) |
+| PlatformIO envs (hub_esp32s3, node_esp8266, node_esp32c3) | ✅ (hub stub; node = M1 bench firmware) |
 | Shared proto lib | ✅ `lib/proto/proto.h` |
-| Host unit tests in CI | ✅ `test/` (Unity, native) |
+| Host unit tests in CI | ✅ `test/` (Unity, native): proto + node_core safety |
 | CI builds all targets | ✅ `.github/workflows/ci.yml` |
 | Web flasher deployed to GitHub Pages | ✅ live: https://mlger.github.io/aio-feeder/ |
 | QEMU job boots hub + C3 images in CI | ⏳ deferred — needs ESP-IDF hub build (D6) |
-| LVGL docs MCP config | ✅ `.mcp.json` |
+| LVGL docs MCP config | ✅ `.mcp.json` (LVGL + context7 + 3 Espressif servers) |
+| M1 bench node firmware (hard timer, serial CLI, HAL v1) | ✅ code; hardware verification per `docs/bench-m1.md` |
