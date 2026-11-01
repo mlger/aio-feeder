@@ -1982,8 +1982,9 @@ static void ui_task(void *) {
           break;
         }
         case SH_PIN: {
+          const bool unlocked = strncmp(s_pin_note, "unlocked", 8) == 0;
           if (s_pin_len >= 4)
-            shot_name = s_pin_note[0] ? "pin_wrong" : "pin_ok";
+            shot_name = unlocked ? "pin_ok" : "pin_wrong";
           else
             shot_name = s_pin_len ? "pin_typing" : "pin_entry";
           break;
