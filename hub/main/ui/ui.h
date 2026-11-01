@@ -36,6 +36,9 @@ void publish_alerts(const AlertsView &v);
 /* Publish the pairing snapshot (§8.5 — one per pairing step). */
 void publish_pairing(const PairingView &p);
 
+/* Publish the calibration wizard snapshot (§8.4 — one per wizard step). */
+void publish_calib(const CalibView &c);
+
 /* Which node the detail screen shows (dashboard tap target later; the QEMU
  * shot build pins it). */
 uint8_t detail_node();

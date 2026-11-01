@@ -21,10 +21,12 @@ socket, waits for `AIO_SHOT <screen>` markers on serial and dumps the LVGL
 framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, converting each frame to
 `screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). Captured:
 `dashboard`, `node_detail`, `sched_editor`, `history`, `alerts` — the five
-M4a screens — plus the four M4b pairing steps `pairing`, `pairing_code`,
-`pairing_form`, `pairing_done` (the firmware rotates screens on a fixed
-25 s schedule; the pairing flow auto-plays inside its slot, driven by the
-sim candidate's `PAIR_REQ` beacons — see `docs/bench-m4b.md`).
+M4a screens — plus the M4b pairing steps `pairing`, `pairing_code`,
+`pairing_form`, `pairing_done` and the calibration wizard steps `calib`,
+`calib_weigh`, `calib_done` (the firmware rotates screens on a fixed 25 s
+× 7-slot schedule; the pairing and calibration flows auto-play inside their
+slots, driven by the sim candidate's `PAIR_REQ` beacons and sim-node FEED
+results — see `docs/bench-m4b.md`).
 
 RAM budget: the esp32s3 QEMU machine has no PSRAM, so the 176 KB LVGL
 framebuffer (384×240×2 — 400-wide overflowed `dram0_0_seg` by ~14 KB when

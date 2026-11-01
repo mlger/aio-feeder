@@ -52,6 +52,7 @@
 #include "hub_registry.h"
 #include "hub_store.h"
 #include "hub_time.h"
+#include "calib_session.h"
 #include "now_espnow.h"
 #include "nvs_store.h"
 #include "pairing_session.h"
@@ -85,6 +86,7 @@ static aio::EventLog evlog;
 static aio::ui::AlertsAck g_alerts_ack; /* §8.7 ack keys, RAM-only (resets on reboot) */
 static aio::HubCore core;
 static aio::PairingSession g_pair; /* §6.3 pairing window (M4b) */
+static aio::CalibSession g_calib; /* §9.3 calibration wizard (M4b) */
 static aio::Pcf85063 rtc;
 static aio::PcfI2cIdf rtc_bus;
 static bool rtc_ok = false;
@@ -176,6 +178,7 @@ static void cb_feed_result(uint8_t node_id, const feed_result_payload_t &r) {
   }
   printf("FEED_RESULT node=%u id=%u status=%u on_ms=%u pulses=%u t=%u\n", node_id,
          (unsigned)r.feed_id, r.status, r.actual_on_ms, r.pulses, (unsigned)r.t_unix);
+  g_calib.on_result(r.feed_id, r.status, r.actual_on_ms); /* §9.3 wizard routing */
   core.on_feed_result(node_id, r, (uint32_t)hub_unix_now());
 }
 
@@ -326,6 +329,8 @@ static void hub_help() {
   printf("  statusreq <id>         ask for a heartbeat now\n");
   printf("  abort <id> <feed_id>   ABORT\n");
   printf("  stats                  link counters\n");
+  printf("  pair open|close|select|confirm|form|status   pairing (§6.3)\n");
+  printf("  cal start <id> | secs <s> | run | weigh <g> | save | close\n");
 }
 
 static void sched_push(uint8_t node_id) {
@@ -686,6 +691,85 @@ static int cmd_pair(int argc, char **argv) {
   return 0;
 }
 
+/* calibration wizard from the bench console (§8.4/§9.3; the touchscreen
+ * wizard drives the same session):
+ *   cal start <id>      open the wizard for a node
+ *   cal secs <s>        test run length (≤ node max on-time, SR2/D27)
+ *   cal run             send the commanded test FEED (bypasses feed_manager,
+ *                       like feedloop — the node enforces its own caps)
+ *   cal weigh <grams>   enter the weighed amount (decimal ok, min 5 g, §9.3.3)
+ *   cal save            write the median into the profile + push CONFIG
+ *   cal close | cal status
+ */
+static bool calib_run_send(uint32_t now) {
+  aio::HubNode *n = reg.by_id(g_calib.node_id());
+  if (!n || !g_calib.is_open()) return false;
+  const feed_payload_t f{(uint32_t)(++reg.data().feed_id_seq),
+                         (uint16_t)g_calib.test_grams(), n->profile.unit, 0};
+  if (!eng.send_feed(g_calib.node_id(), f, now)) return false;
+  g_calib.mark_sent(f.feed_id, now);
+  return true;
+}
+
+static int cmd_cal(int argc, char **argv) {
+  if (argc < 2) {
+    printf("usage: cal start <id>|secs <s>|run|weigh <g>|save|close|status\n");
+    return 1;
+  }
+  StateLock lock;
+  const uint32_t now = ms_now();
+  if (!strcmp(argv[1], "start") && argc == 3) {
+    aio::HubNode *n = reg.by_id((uint8_t)parse_num(argv[2]));
+    if (!n) {
+      printf("no such node\n");
+      return 1;
+    }
+    printf("%s\n", g_calib.start(n->id, n->profile)
+                        ? "calibration open — cal secs/run/weigh"
+                        : "wizard already open");
+  } else if (!strcmp(argv[1], "secs") && argc == 3) {
+    printf("%s\n", g_calib.set_test_s(parse_num(argv[2])) ? "test length set"
+                                                           : "secs rejected (≤ max on-time)");
+  } else if (!strcmp(argv[1], "run") && argc == 2) {
+    printf("%s\n", calib_run_send(now) ? "test FEED sent — watch the node"
+                                        : "run failed");
+  } else if (!strcmp(argv[1], "weigh") && argc == 3) {
+    const double g = atof(argv[2]);
+    if (g <= 0) {
+      printf("usage: cal weigh <grams>\n");
+      return 1;
+    }
+    printf("%s\n", g_calib.set_weigh_grams_x100((uint32_t)(g * 100.0 + 0.5))
+                        ? "sample taken — cal run for the next one"
+                        : "weigh rejected");
+  } else if (!strcmp(argv[1], "save") && argc == 2) {
+    aio::HubNode *n = reg.by_id(g_calib.node_id());
+    if (!n || !g_calib.apply(&n->profile)) {
+      printf("save failed (no samples?)\n");
+      return 1;
+    }
+    reg.save(nvs);
+    printf("saved %lu x100 ms per %s — CONFIG %s\n",
+           (unsigned long)n->profile.cal_ms_per_unit_x100,
+           n->profile.unit == UNIT_ML ? "ml" : "g",
+           eng.send_config(n->id, n->profile, 1, now) ? "sent" : "send failed");
+    g_calib.mark_saved();
+  } else if (!strcmp(argv[1], "close") && argc == 2) {
+    g_calib.close();
+    printf("closed\n");
+  } else if (!strcmp(argv[1], "status") && argc == 2) {
+    const aio::ui::CalibView v = g_calib.view(now);
+    static const char *STEP[] = {"idle", "runtime", "dispense", "weigh", "done"};
+    printf("step=%s node=%u test=%lus runs=%u median=%lu\n", STEP[v.step], v.node_id,
+           (unsigned long)v.test_s, v.sample_count, (unsigned long)v.median_x100);
+    if (v.note[0]) printf("  note: %s\n", v.note);
+  } else {
+    printf("usage: cal start <id>|secs <s>|run|weigh <g>|save|close|status\n");
+    return 1;
+  }
+  return 0;
+}
+
 static void add_cmd(const char *name, const char *help, const char *hint,
                     esp_console_cmd_func_t fn) {
   esp_console_cmd_t c{};
@@ -718,6 +802,8 @@ static void register_commands() {
   add_cmd("stats", "link counters", nullptr, cmd_stats);
   add_cmd("pair", "pairing window (§6.3)", "open|close|select|confirm|form|status",
           cmd_pair);
+  add_cmd("cal", "calibration wizard (§9.3)",
+          "start <id>|secs <s>|run|weigh <g>|save|close", cmd_cal);
 }
 
 /* --- main loop task (1 ms; shares state with the REPL under g_state_mu) ---------- */
@@ -738,7 +824,7 @@ static void aio_loop_task(void *) {
       aio::sim::tick_nodes(now); /* node engines + hub → node sim frames */
 
       /* pairing flow driver (M4b shot): the session advances on the same
-       * 25 s grid the UI rotation uses; slot 5 of 6 is the pairing screen.
+       * 25 s grid the UI rotation uses; slot 5 of 7 is the pairing screen.
        * Keep 25000 and the slot index in sync with ui.cpp SHOT_WINDOW_MS
        * and the SH_PAIR rotation entry. Stage bounds (8/14.5/21 s) put one
        * marker inside each phase with ≥1.5 s margin before the next flip
@@ -749,7 +835,7 @@ static void aio_loop_task(void *) {
       static uint32_t pair_cycle = UINT32_MAX;
       static uint8_t pair_stage = 0;
       const uint32_t cyc = now / 25000;
-      if (cyc % 6 == 5) {
+      if (cyc % 7 == 5) {
         if (pair_cycle != cyc) {
           pair_cycle = cyc;
           pair_stage = 0;
@@ -786,6 +872,63 @@ static void aio_loop_task(void *) {
         }
       }
 
+      /* calibration wizard driver (M4b shot): slot 6 of 7, paced so each
+       * captured phase holds across a marker beat (markers at +2 +7 +12
+       * +17 +22 into the 25 s slot):
+       *   start@0   RUNTIME holds [0,8)          → +2 "calib"
+       *   run@8     result lands ~8.1 → WEIGH holds [8.1,13.5)
+       *   weigh@13.5 run2 → WEIGH holds [14.1,18) → +17 "calib_weigh"
+       *   weigh@18  run3 → WEIGH holds [18.6,20)
+       *   weigh@20  3 samples → RUNTIME
+       *   save@21   DONE holds [21,25)           → +22 "calib_done"
+       * (DISPENSE is machine-paced (~50 ms with the sim node) and shares
+       * the "calib" marker name; its state is visible in the serial log.) */
+      static uint32_t cal_cycle = UINT32_MAX;
+      static uint8_t cal_stage = 0;
+      if (cyc % 7 == 6) {
+        if (cal_cycle != cyc) {
+          cal_cycle = cyc;
+          cal_stage = 0;
+          const aio::HubNode *cn = reg.by_id(1);
+          if (cn) {
+            g_calib.close();
+            g_calib.start(1, cn->profile);
+          }
+        }
+        const uint32_t m = now % 25000;
+        if (cal_stage == 0 && m >= 8000) {
+          if (!calib_run_send(now)) printf("calib shot: run1 failed\n");
+          cal_stage = 1;
+        }
+        if (cal_stage == 1 && m >= 13500) {
+          if (!g_calib.set_weigh_grams_x100(800)) printf("calib shot: weigh1 failed\n");
+          if (!calib_run_send(now)) printf("calib shot: run2 failed\n");
+          cal_stage = 2;
+        }
+        if (cal_stage == 2 && m >= 18000) {
+          if (!g_calib.set_weigh_grams_x100(750)) printf("calib shot: weigh2 failed\n");
+          if (!calib_run_send(now)) printf("calib shot: run3 failed\n");
+          cal_stage = 3;
+        }
+        if (cal_stage == 3 && m >= 20000) {
+          if (!g_calib.set_weigh_grams_x100(820)) printf("calib shot: weigh3 failed\n");
+          cal_stage = 4;
+        }
+        if (cal_stage == 4 && m >= 21000) {
+          aio::HubNode *cn2 = reg.by_id(1);
+          if (cn2 && g_calib.apply(&cn2->profile)) {
+            reg.save(nvs);
+            eng.send_config(1, cn2->profile, 1, now);
+            g_calib.mark_saved();
+            printf("calib: node 1 rate now %lu x100 ms/unit (median of 3)\n",
+                   (unsigned long)cn2->profile.cal_ms_per_unit_x100);
+          } else {
+            printf("calib shot: save failed\n");
+          }
+          cal_stage = 5;
+        }
+      }
+
       /* dashboard + detail snapshots → UI task every 400 ms */
       static uint32_t ui_ms = 0;
       if (now - ui_ms >= 400) {
@@ -810,6 +953,7 @@ static void aio_loop_task(void *) {
         aio::ui::publish_alerts(
             aio::ui::build_alerts(reg, evlog, hub_unix_now(), now, fr, fn, g_alerts_ack));
         aio::ui::publish_pairing(g_pair.view(now));
+        aio::ui::publish_calib(g_calib.view(now));
       }
 #endif
 
@@ -818,6 +962,9 @@ static void aio_loop_task(void *) {
 #if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
       g_pair.tick(now);
 #endif
+      /* FEED_RESULT deadline (§9.3.2) — both builds: the shot driver's runs
+       * resolve in ~50 ms with the sim node, far inside the 15 s window */
+      g_calib.tick(now);
 
       /* feedloop driver: one feed in flight at a time (§9.5) — M2 bench path,
        * deliberately bypassing feed_manager so the radio loopback measures the
