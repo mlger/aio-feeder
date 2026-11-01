@@ -92,6 +92,6 @@ Notes:
 | Shared proto lib | ✅ `lib/proto/proto.h` |
 | Host unit tests in CI | ✅ `test/` (Unity, native) |
 | CI builds all targets | ✅ `.github/workflows/ci.yml` |
-| Web flasher deployed to GitHub Pages | ✅ CI `pages` job (needs one-time Pages enable) |
+| Web flasher deployed to GitHub Pages | ✅ live: https://mlger.github.io/aio-feeder/ |
 | QEMU job boots hub + C3 images in CI | ⏳ deferred — needs ESP-IDF hub build (D6) |
 | LVGL docs MCP config | ✅ `.mcp.json` |
