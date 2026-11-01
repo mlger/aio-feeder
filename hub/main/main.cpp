@@ -36,6 +36,7 @@
 #include <esp_app_desc.h>
 #include <esp_console.h>
 #include <esp_mac.h>
+#include <esp_random.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -53,6 +54,7 @@
 #include "hub_time.h"
 #include "now_espnow.h"
 #include "nvs_store.h"
+#include "pairing_session.h"
 #include "pcf85063.h"
 #include "pcf85063_idf.h"
 #include "ui/ui.h"
@@ -82,6 +84,7 @@ static aio::HubRegistry reg;
 static aio::EventLog evlog;
 static aio::ui::AlertsAck g_alerts_ack; /* §8.7 ack keys, RAM-only (resets on reboot) */
 static aio::HubCore core;
+static aio::PairingSession g_pair; /* §6.3 pairing window (M4b) */
 static aio::Pcf85063 rtc;
 static aio::PcfI2cIdf rtc_bus;
 static bool rtc_ok = false;
@@ -195,8 +198,23 @@ static void cb_heartbeat(uint8_t node_id, const heartbeat_payload_t &hb, int8_t 
 }
 
 static void cb_pair_req(const uint8_t mac[6], const pair_req_payload_t &pr, int8_t rssi) {
-  printf("PAIR_REQ from %02X:%02X:%02X:%02X:%02X:%02X fw=%u (pairing UI is M4)\n", mac[0],
-         mac[1], mac[2], mac[3], mac[4], mac[5], pr.fw_ver);
+  const bool added = g_pair.on_pair_req(mac, pr, rssi, ms_now(), &reg);
+  printf("PAIR_REQ from %02X:%02X:%02X:%02X:%02X:%02X fw=%u rssi=%d%s\n", mac[0], mac[1],
+         mac[2], mac[3], mac[4], mac[5], pr.fw_ver, rssi,
+         added ? " (candidate)" : "");
+}
+
+/* Send the committed PAIR_ACCEPT (zero-key discovery frame, §6.4) and put
+ * the new peer on the link. Used by the shot driver and, later, the real
+ * settings UI + a serial command. */
+static bool pairing_send_accept(const uint8_t mac[6], const pair_accept_payload_t &acc,
+                                uint32_t now) {
+  if (!eng.emit(mac, AIO_ZERO_KEY, MSG_PAIR_ACCEPT, acc.node_id, &acc, sizeof(acc), now))
+    return false;
+  const aio::HubNode *n = reg.by_id(acc.node_id);
+  if (n) eng.add_peer(n->mac, n->id, n->key, n->key_len);
+  reg.save(nvs);
+  return true;
 }
 
 static void cb_feed_unknown(uint32_t feed_id, uint8_t node_id) {
@@ -608,6 +626,67 @@ static int cmd_help(int argc, char **argv) {
   return 0;
 }
 
+/* pairing window from the bench console (real UI is the touchscreen, M4b):
+ *   pair open              → 60 s discovery window
+ *   pair close             → cancel
+ *   pair select <idx>      → show the candidate's confirmation code
+ *   pair confirm           → code matched on the node → form step
+ *   pair form <name> <mech> <total> <now>  → commit + send PAIR_ACCEPT
+ *   pair status            → current step / candidates
+ */
+static int cmd_pair(int argc, char **argv) {
+  if (argc < 2) {
+    printf("usage: pair open|close|select|confirm|form|status ...\n");
+    return 1;
+  }
+  StateLock lock;
+  const uint32_t now = ms_now();
+  const aio::ui::PairingView v = g_pair.view(now);
+  if (!strcmp(argv[1], "open")) {
+    printf("%s\n", g_pair.open(now) ? "pairing window open (60 s)" : "already open");
+  } else if (!strcmp(argv[1], "close")) {
+    g_pair.close();
+    printf("closed\n");
+  } else if (!strcmp(argv[1], "select") && argc == 3) {
+    printf("%s\n", g_pair.select((uint8_t)parse_num(argv[2])) ? "code shown — compare with the node"
+                                                               : "select failed");
+  } else if (!strcmp(argv[1], "confirm")) {
+    printf("%s\n", g_pair.confirm_code() ? "confirmed — set the form (pair form ...)"
+                                          : "confirm failed");
+  } else if (!strcmp(argv[1], "form") && argc == 6) {
+    g_pair.set_form(argv[2], (uint8_t)parse_num(argv[3]), (uint32_t)parse_num(argv[4]),
+                    (uint32_t)parse_num(argv[5]));
+    pair_accept_payload_t acc{};
+    uint8_t nid = 0;
+    const aio::PairingSession::CommitResult r = g_pair.commit(reg, &acc, &nid);
+    if (r != aio::PairingSession::PAIR_COMMIT_OK) {
+      printf("commit failed (%u)\n", r);
+      return 1;
+    }
+    const aio::HubNode *nn = reg.by_id(nid);
+    printf("%s\n", nn && pairing_send_accept(nn->mac, acc, now)
+                        ? "committed — PAIR_ACCEPT sent"
+                        : "committed — accept send failed");
+  } else if (!strcmp(argv[1], "status")) {
+    static const char *STEP[] = {"idle", "discover", "code", "form", "done"};
+    printf("step=%s cands=%u left=%us", STEP[v.step], v.cand_count, v.window_left_s);
+    for (int i = 0; i < v.cand_count; i++) {
+      printf("\n  [%u] %02X:%02X:%02X:%02X:%02X:%02X fw=%u rssi=%d", i, v.cand[i].mac[0],
+             v.cand[i].mac[1], v.cand[i].mac[2], v.cand[i].mac[3], v.cand[i].mac[4],
+             v.cand[i].mac[5], v.cand[i].fw_ver, v.cand[i].rssi);
+    }
+    if (v.step == aio::ui::PAIR_CODE || v.step == aio::ui::PAIR_FORM)
+      printf("\n  code=%c%c%c%c", v.code_digits[0], v.code_digits[1], v.code_digits[2],
+             v.code_digits[3]);
+    if (v.step == aio::ui::PAIR_DONE) printf("\n  node_id=%u", v.new_node_id);
+    printf("\n");
+  } else {
+    printf("usage: pair open|close|select|confirm|form|status ...\n");
+    return 1;
+  }
+  return 0;
+}
+
 static void add_cmd(const char *name, const char *help, const char *hint,
                     esp_console_cmd_func_t fn) {
   esp_console_cmd_t c{};
@@ -638,6 +717,8 @@ static void register_commands() {
   add_cmd("statusreq", "ask for a heartbeat now", "<node_id>", cmd_statusreq);
   add_cmd("abort", "send ABORT", "<node_id> <feed_id>", cmd_abort);
   add_cmd("stats", "link counters", nullptr, cmd_stats);
+  add_cmd("pair", "pairing window (§6.3)", "open|close|select|confirm|form|status",
+          cmd_pair);
 }
 
 /* --- main loop task (1 ms; shares state with the REPL under g_state_mu) ---------- */
@@ -656,6 +737,46 @@ static void aio_loop_task(void *) {
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
       aio::sim::tick_nodes(now); /* node engines + hub → node sim frames */
+
+      /* pairing flow driver (M4b shot): the session advances on the same
+       * 25 s grid the UI rotation uses; slot 5 of 6 is the pairing screen.
+       * Keep 25000 and the slot index in sync with ui.cpp SHOT_WINDOW_MS
+       * and the SH_PAIR rotation entry. Phase bounds (8.5/14.5/20.5 s) sit
+       * between the runner's 5 s marker cadence so each captured frame is
+       * unambiguous. */
+      static uint32_t pair_cycle = UINT32_MAX;
+      static uint8_t pair_stage = 0;
+      const uint32_t cyc = now / 25000;
+      if (cyc % 6 == 5) {
+        if (pair_cycle != cyc) {
+          pair_cycle = cyc;
+          pair_stage = 0;
+          /* drop the node a previous rotation committed, then reopen */
+          const aio::HubNode *pn = reg.by_mac(aio::sim::SIM_PAIR_MAC);
+          if (pn) {
+            eng.remove_peer(pn->mac);
+            reg.remove(pn->id);
+          }
+          g_pair.close();
+          g_pair.open(now);
+        }
+        const uint32_t m = now % 25000;
+        if (pair_stage == 0 && m >= 8500) {
+          g_pair.select(0);
+          g_pair.confirm_code();
+          pair_stage = 1;
+        }
+        if (pair_stage == 1 && m >= 14500) {
+          g_pair.set_form("kitA", 0, 1500, 400);
+          pair_accept_payload_t acc{};
+          uint8_t nid = 0;
+          if (g_pair.commit(reg, &acc, &nid) == aio::PairingSession::PAIR_COMMIT_OK) {
+            pairing_send_accept(aio::sim::SIM_PAIR_MAC, acc, now);
+            printf("pairing: committed node %u (PAIR_ACCEPT sent, key wrapped)\n", nid);
+          }
+          pair_stage = 2;
+        }
+      }
 
       /* dashboard + detail snapshots → UI task every 400 ms */
       static uint32_t ui_ms = 0;
@@ -680,7 +801,14 @@ static void aio_loop_task(void *) {
         aio::ui::publish_history(aio::ui::build_history(reg, evlog, hub_unix_now()));
         aio::ui::publish_alerts(
             aio::ui::build_alerts(reg, evlog, hub_unix_now(), now, fr, fn, g_alerts_ack));
+        aio::ui::publish_pairing(g_pair.view(now));
       }
+#endif
+
+      /* pairing window expiry (§6.3): the shot driver manages its own
+       * lifecycle on the rotation grid, so only the non-shot build ticks */
+#if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
+      g_pair.tick(now);
 #endif
 
       /* feedloop driver: one feed in flight at a time (§9.5) — M2 bench path,
@@ -728,6 +856,8 @@ extern "C" void app_main(void) {
 
   time_begin(); /* PCF85063 → system clock; SNTP starts with the radio */
   core.begin(&reg, &link_adapter, &nvs, &evlog, hub_unix_now());
+  g_pair.begin([](uint8_t *out, size_t n) { esp_fill_random(out, n); });
+  g_pair.set_channel(HUB_CHAN_DEFAULT);
 
   /* QEMU boot marker — everything above works without the radio */
   printf("core ready (radio starting)\n");
