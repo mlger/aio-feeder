@@ -715,7 +715,7 @@ Steps: (1) time zone and NTP, (2) Wi-Fi name and a connection test, (3) choose a
 | M2 | Link | ESP-NOW hub↔node: HELLO, FEED/ACK/RESULT, heartbeat, channel scan, `skip_until` / `hold_until` fields | 1000-feed loopback with no duplicates |
 | M3 | Hub core | Scheduler, time (NTP/RTC), feed_manager, storage, log (no UI) | Schedules fire correctly across reboots |
 | M4a | Hub UI — operate | Dashboard, node detail, schedule editor, history, alerts; skip next, hold mode, feed preview, double-feed check, stock estimate, notes, history chart | Daily operation via touchscreen; all screens pass the QEMU screenshot run |
-| M4b | Hub UI — set up | Pairing (with confirmation code), calibration wizard, settings, PIN; backup, export, setup wizard | Full setup workflow via touchscreen |
+| M4b | Hub UI — set up | Pairing (with confirmation code), calibration wizard, settings, PIN; backup, export, setup wizard — **done v0.6.0** (pairing v0.5, calib v0.5, settings/PIN/backup/wizard v0.6; LVGL scenes + host-tested sessions, QEMU-shot covered; touch wiring of the tap targets lands with the display backend in M5) | Full setup workflow via touchscreen |
 | M5 | Profiles & types | Profile system; motor/pump variants | Mixed-type nodes working |
 | M6 | Remote | Web dashboard, MQTT, HA discovery, notification messages | Control + telemetry from phone |
 | M7 | Resilience | Offline schedule (incl. skip/hold on nodes), missed-feed policy, alerts, sensors | FMEA items 1–8, 13–17 and 22–23 verified |
@@ -825,7 +825,7 @@ or `claude mcp add --transport http lvgl https://lvgl.mcp.kapa.ai/`.
 | D15 | Time trust window: 24 h without a healthy RTC; `rtc_trust_days` (default 30) with one (see D21). Confirm both in M1 | Proposed |
 | D16 | Stock level is a counted estimate, always labelled as such; a sensor can replace it for alarms later | Proposed |
 | D17 | Skip and hold are pushed to nodes with the schedule (SR10) | Proposed |
-| D18 | Backups exclude the PIN and the MQTT password | Proposed |
+| D18 | Backups exclude the PIN and the MQTT password | Decided (v0.6): the backup JSON carries no PIN material at all (only a salted hash exists on the hub) and no MQTT password; the Wi-Fi password joins the exclusion list (D31) |
 | D19 | Notifications are MQTT messages on `aio/hub/notify`, not a separate cloud service | Proposed |
 | D20 | Double-feed window = 60 min, manual feeds only | Proposed |
 | D21 | DS3231 RTC is a core part of every node; RTC time is trusted only while the oscillator-stop flag is clear and the last sync is within `rtc_trust_days` | Proposed |
@@ -838,6 +838,9 @@ or `claude mcp add --transport http lvgl https://lvgl.mcp.kapa.ai/`.
 | D28 | Storage capacity is user-entered (size and amount now) at pairing, in the wizard and on the node page, not fixed by template | Proposed |
 | D29 | M2 pairing is serial-provisioned: node `pair <hub_mac>` generates a random 256-bit key, the operator pastes it into the hub CLI. OTA PAIR_REQ/PAIR_ACCEPT with confirmation code + wrapped key (D14) lands in M3 with the hub UI; wire formats and crypto are already in `lib/proto/pairing.h` and host-tested | Decided (v0.5, both sides): the hub runs the full flow — 60 s window, discovery list, confirmation code, §9.7 capacity form, key wrap + registry commit + zero-key PAIR_ACCEPT (`hub/src/pairing_session.h`, host-tested, QEMU-shot covered). Nodes beacon PAIR_REQ (stable persisted nonce) when unpaired, verify the derived code on PAIR_ACCEPT and unwrap + store the key on `pairok`; serial `pair <hub_mac>` stays as fallback (`docs/bench-m4b.md`) |
 | D30 | On an otherwise quiet link the hub acks every non-reply HEARTBEAT with STATUS_REQ; the node answers with a heartbeat whose frame-flags bit0 is set, which the hub does not re-ack. Keeps the node's §6.2 freshness window fed without a ping-pong | Proposed |
+| D31 | Backup files carry the per-node link keys (a replaced hub restores without re-pairing every feeder) but never the Wi-Fi password — restore keeps the current credentials; the card is the user's own, §9.12 excludes only the PIN and the MQTT password | Decided (v0.6, `hub/src/backup.h`) |
+| D32 | QEMU has no SD (§7.7): the shot build backs `IBackupStore` with a heap-allocated RAM "virtual SD" so the backup/restore panes screenshot with real files; hardware uses SDMMC 1-bit on the 4.3B slot (CLK/CMD/D0 = 11/12/13, Kconfig-overridable), mounted best-effort — feeding never depends on the card (§7.5) | Decided (v0.6, `hub/main/backup_store.h`) |
+| D33 | The PIN gates the touchscreen settings flow and, when the scope covers feeds, manual feeds; the serial console stays an owner/maintenance path (no PIN prompt) — the §8 lock protects the exposed surface, the bench CLI the wired one | Decided (v0.6) |
 
 ---
 
