@@ -740,10 +740,11 @@ static void aio_loop_task(void *) {
       /* pairing flow driver (M4b shot): the session advances on the same
        * 25 s grid the UI rotation uses; slot 5 of 6 is the pairing screen.
        * Keep 25000 and the slot index in sync with ui.cpp SHOT_WINDOW_MS
-       * and the SH_PAIR rotation entry. Stage bounds (8.5/13.5/21.5 s) put
-       * one marker inside each phase with ≥0.6 s margin before the next
-       * flip (the runner dumps the fb ~0.8 s after a marker):
-       * discover [0,8.5) code [8.5,13.5) form [13.5,21.5) done [21.5,25)
+       * and the SH_PAIR rotation entry. Stage bounds (8/14.5/21 s) put one
+       * marker inside each phase with ≥1.5 s margin before the next flip
+       * (the runner dumps the fb ~0.8 s after a marker, and marker prints
+       * can land late when the ui loop stalls):
+       * discover [0,8) code [8,14.5) form [14.5,21) done [21,25)
        * markers at +2 +7 +12 +17 +22 → discover, dup, code, form, done. */
       static uint32_t pair_cycle = UINT32_MAX;
       static uint8_t pair_stage = 0;
@@ -762,15 +763,15 @@ static void aio_loop_task(void *) {
           g_pair.open(now);
         }
         const uint32_t m = now % 25000;
-        if (pair_stage == 0 && m >= 8500) {
+        if (pair_stage == 0 && m >= 8000) {
           if (!g_pair.select(0)) printf("pairing shot: select failed\n");
           pair_stage = 1;
         }
-        if (pair_stage == 1 && m >= 13500) {
+        if (pair_stage == 1 && m >= 14500) {
           if (!g_pair.confirm_code()) printf("pairing shot: confirm failed\n");
           pair_stage = 2;
         }
-        if (pair_stage == 2 && m >= 21500) {
+        if (pair_stage == 2 && m >= 21000) {
           g_pair.set_form("kitA", 0, 1500, 400);
           pair_accept_payload_t acc{};
           uint8_t nid = 0;

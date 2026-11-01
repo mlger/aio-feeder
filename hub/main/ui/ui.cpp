@@ -1138,20 +1138,22 @@ static void build_pairing_screen() {
 
   /* discovery list (DISCOVER step) — one multi-line label instead of one
    * widget per row: the QEMU build counts LVGL heap bytes (the first cut
-   * with per-row objects exhausted the internal heap during render). */
+   * with per-row objects exhausted the internal heap during render).
+   * Fixed lanes so nothing overlaps: list 38..94 (≤4 lines), code at 52 is
+   * only shown in the CODE step (list empty then), body always at 110. */
   s_pair_cand_lbl = new_label(s_pair_scr, "", &lv_font_montserrat_12, C_TEXT);
   lv_obj_set_pos(s_pair_cand_lbl, 10, 38);
 
   /* confirmation code (CODE step) */
   s_pair_code_lbl = new_label(s_pair_scr, "- - - -", &lv_font_montserrat_20, C_TEXT);
-  lv_obj_set_pos(s_pair_code_lbl, 10, 96);
+  lv_obj_set_pos(s_pair_code_lbl, 10, 52);
   lv_obj_add_flag(s_pair_code_lbl, LV_OBJ_FLAG_HIDDEN);
 
   /* body (all steps; the per-step hint is folded into the text) */
   s_pair_body_lbl = new_label(s_pair_scr, "", &lv_font_montserrat_12, C_TEXT);
   lv_label_set_long_mode(s_pair_body_lbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(s_pair_body_lbl, UI_W - 20);
-  lv_obj_set_pos(s_pair_body_lbl, 10, 40);
+  lv_obj_set_pos(s_pair_body_lbl, 10, 110);
 }
 
 static void update_pairing(const PairingView &v) {
