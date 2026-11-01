@@ -48,11 +48,16 @@
 #include <cstring>
 #include <cstdio>
 
+#include "backup.h"
+#include "backup_store.h"
 #include "hub_core.h"
 #include "hub_registry.h"
 #include "hub_store.h"
 #include "hub_time.h"
 #include "calib_session.h"
+#include "pin_lock.h"
+#include "settings_store.h"
+#include "wizard_session.h"
 #include "now_espnow.h"
 #include "nvs_store.h"
 #include "pairing_session.h"
@@ -73,6 +78,8 @@
 #define AIO_FIRMWARE_NAME "aio-feeder-hub"
 #endif
 
+using namespace aio; /* the bench firmware body speaks the core vocabulary */
+
 constexpr uint8_t HUB_CHAN_DEFAULT = 1;
 constexpr int64_t TIME_VALID_MIN = 1600000000; /* 2020-09 (SR7 range check) */
 
@@ -86,7 +93,17 @@ static aio::EventLog evlog;
 static aio::ui::AlertsAck g_alerts_ack; /* §8.7 ack keys, RAM-only (resets on reboot) */
 static aio::HubCore core;
 static aio::PairingSession g_pair; /* §6.3 pairing window (M4b) */
-static aio::CalibSession g_calib; /* §9.3 calibration wizard (M4b) */
+static aio::CalibSession g_calib;  /* §9.3 calibration wizard (M4b) */
+static aio::HubSettings g_set;     /* §8.8 settings blob (M4b) */
+static aio::PinLock g_pin;         /* §8 PIN lock (M4b, RAM) */
+static aio::WizardSession g_wiz;   /* §9.13 setup wizard (M4b) */
+static aio::IBackupStore *g_sd = nullptr; /* SD card / virtual SD (M4b) */
+static char g_sd_note[24] = "no card";
+static char g_backup_last[32] = "";
+static uint8_t g_backup_count = 0;
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+static uint8_t s_set_section = 0; /* active settings pane (shot driver) */
+#endif
 static aio::Pcf85063 rtc;
 static aio::PcfI2cIdf rtc_bus;
 static bool rtc_ok = false;
@@ -251,6 +268,109 @@ static aio::LinkHandlers make_handlers() {
   return h;
 }
 
+/* --- settings + backup (M4b) ------------------------------------------------------ */
+
+static void settings_persist() {
+  if (!settings_save(*static_cast<IHubStore *>(&nvs), g_set))
+    printf("settings save FAILED\n");
+  g_pin.configure(g_set);
+}
+
+static void sd_refresh_note() {
+  if (!g_sd) return;
+  snprintf(g_sd_note, sizeof(g_sd_note), "%s",
+           g_sd->present() ? backup_store_kind() : "no card");
+}
+
+static void backup_list_note() {
+  char names[4][BACKUP_NAME_LEN];
+  const int n = g_sd ? g_sd->list(names, 4) : 0;
+  g_backup_count = (uint8_t)(n < 0 ? 0 : n);
+  g_backup_last[0] = '\0';
+  if (n > 0) snprintf(g_backup_last, sizeof(g_backup_last), "%s", names[0]);
+}
+
+/* Runs a backup / CSV export with a transient heap buffer (the JSON for a
+ * full registry does not fit the loop task's stack; statics are the QEMU
+ * build's binding budget). Callers hold the state lock. */
+static void backup_op(bool csv) {
+  if (!g_sd) {
+    printf("no backup store\n");
+    return;
+  }
+  char *buf = static_cast<char *>(malloc(BACKUP_JSON_MAX));
+  char name[BACKUP_NAME_LEN];
+  size_t len = 0;
+  bool ok;
+  if (!buf) {
+    printf("out of memory for the backup buffer\n");
+    return;
+  }
+  if (csv)
+    ok = csv_export_now(*g_sd, reg, evlog, hub_unix_now(), buf, BACKUP_JSON_MAX,
+                        name, &len);
+  else
+    ok = backup_write_now(*g_sd, reg, g_set, hub_unix_now(), buf, BACKUP_JSON_MAX,
+                          name, &len);
+  if (ok)
+    printf("%s %s (%zu B)\n", csv ? "CSV:" : "backup:", name, len);
+  else
+    printf("%s failed (card %s)\n", csv ? "csv" : "backup",
+           g_sd->present() ? "write error" : "missing");
+  free(buf);
+  if (ok) backup_list_note();
+}
+
+static void backup_restore_op(const char *name) {
+  if (!g_sd) return;
+  char *buf = static_cast<char *>(malloc(BACKUP_JSON_MAX));
+  if (!buf) {
+    printf("out of memory for the restore buffer\n");
+    return;
+  }
+  HubSettings set = g_set;
+  const aio::RestoreResult r =
+      backup_restore_now(*g_sd, name, reg, set, buf, BACKUP_JSON_MAX);
+  free(buf);
+  if (r != aio::RESTORE_OK) {
+    printf("restore failed (%u) - nothing changed\n", (unsigned)r);
+    return;
+  }
+  g_set = set; /* PIN + Wi-Fi password kept by the applier (§9.12) */
+  settings_persist();
+  reg.save(nvs);
+  /* rebuild the link peer table from the restored registry */
+  while (eng.peer_count()) {
+    aio::LinkPeer *p = eng.peer_by_index(0);
+    if (!p || !eng.remove_peer(p->mac)) break;
+  }
+  for (int i = 0; i < aio::HUB_MAX_NODES; i++) {
+    const aio::HubNode *n = reg.node(i);
+    if (!n || !n->id) continue;
+    eng.add_peer(n->mac, n->id, n->key, n->key_len);
+    eng.send_config(n->id, n->profile, 1, ms_now());
+    eng.send_schedule_set(n->id, n->sched.version, n->sched.entries,
+                          n->sched.entry_count, n->sched.skip_until,
+                          n->sched.hold_until, ms_now());
+  }
+  printf("restored %s: nodes=%u tz=%u (CONFIG + SCHEDULE_SET re-pushed)\n", name,
+         (unsigned)reg.count(), (unsigned)reg.data().tz_rule);
+}
+
+static void factory_reset() { /* caller holds the state lock */
+  g_pair.close();
+  g_calib.close();
+  g_wiz.close();
+  for (uint8_t id = 1; id <= aio::HUB_MAX_NODES; id++)
+    nvs.del(aio::FeedManager::pend_key_for(id));
+  reg.reset();
+  reg.save(nvs);
+  g_set = settings_defaults();
+  settings_persist(); /* PIN gone with the blob (factory reset, §8.8) */
+  printf("factory reset done - nodes=%u, settings back to defaults\n",
+         (unsigned)reg.count());
+}
+
 /* --- parse helpers (unchanged from the bench CLI) -------------------------------- */
 
 static void print_mac(const uint8_t mac[6]) {
@@ -337,6 +457,13 @@ static void hub_help() {
   printf("  stats                  link counters\n");
   printf("  pair open|close|select|confirm|form|status   pairing (§6.3)\n");
   printf("  cal start <id> | secs <s> | run | weigh <g> | save | close\n");
+  printf("  set show | brightness <n> | screenoff <s> | retention <d>\n");
+  printf("      ntp <0|1> | wifi <ssid> [pass] | factoryreset RESET\n");
+  printf("  pin status | set <cur> <new> | off <cur> | scope <0|1>\n");
+  printf("  backup now | ls | restore <name> | csv\n");
+  printf("  wiz start | tz <0-3> | ntp <0|1> | wifi <ssid> [pass]\n");
+  printf("      node <id|new> | cap <total> <now> | sched <min> <days> <amt>\n");
+  printf("      next | back | save\n");
 }
 
 static void sched_push(uint8_t node_id) {
@@ -432,9 +559,24 @@ static int cmd_peers(int argc, char **argv) {
 }
 
 static int cmd_feed(int argc, char **argv) {
-  if (argc != 3) { printf("usage: feed <node_id> <amount>\n"); return 1; }
+  if (argc < 3 || argc > 4) {
+    printf("usage: feed <node_id> <amount> [pin]\n");
+    return 1;
+  }
   StateLock lock;
   const uint32_t now = ms_now();
+  /* §8: when the PIN scope covers manual feeds, the correct 4-digit code
+   * (or an unexpired 60 s unlock) is required. Schedules never ask. */
+  if (g_pin.blocks_manual_feed()) {
+    if (argc != 4) {
+      printf("PIN required: feed <id> <amount> <pin>\n");
+      return 1;
+    }
+    if (!g_pin.unlock(argv[3], now)) {
+      printf("wrong PIN\n");
+      return 1;
+    }
+  }
   const int64_t unix_now = hub_unix_now();
   if (!time_valid()) printf("note: clock invalid — manual feed still allowed (SR7)\n");
   const bool ok = core.request_manual((uint8_t)parse_num(argv[1]), (uint16_t)parse_num(argv[2]),
@@ -780,6 +922,268 @@ static int cmd_cal(int argc, char **argv) {
   return 0;
 }
 
+/* settings (§8.8) from the bench console — the touchscreen panes edit the
+ * same blob:
+ *   set show | brightness <10-100> | screenoff <0|30|60|120|300>
+ *   set retention <7|30|90> | ntp <0|1> | wifi <ssid> [pass]
+ *   set factoryreset RESET   (typed word, §8.8 Danger zone)
+ */
+static int cmd_set(int argc, char **argv) {
+  if (argc < 2) {
+    printf("usage: set show|brightness|screenoff|retention|ntp|wifi|factoryreset ...\n");
+    return 1;
+  }
+  StateLock lock;
+  if (!strcmp(argv[1], "show")) {
+    printf("brightness=%u screenoff=%us retention=%ud ntp=%u pin=%u scope=%u\n",
+           (unsigned)g_set.brightness, (unsigned)g_set.screen_off_s,
+           (unsigned)g_set.history_days, (unsigned)g_set.ntp_on,
+           (unsigned)g_set.pin_enabled, (unsigned)g_set.pin_scope);
+    printf("wifi ssid='%s' (pass kept on device) sd=%s backups=%u\n",
+           g_set.wifi_ssid, g_sd_note, (unsigned)g_backup_count);
+    return 0;
+  }
+  if (!strcmp(argv[1], "brightness") && argc == 3) {
+    g_set.brightness = set_clamp_brightness((int)parse_num(argv[2]));
+    settings_persist();
+    printf("brightness=%u\n", (unsigned)g_set.brightness);
+    return 0;
+  }
+  if (!strcmp(argv[1], "screenoff") && argc == 3) {
+    const uint32_t v = parse_num(argv[2]);
+    if (!set_screen_off_valid((uint16_t)v)) {
+      printf("bad timeout (0, 30, 60, 120, 300)\n");
+      return 1;
+    }
+    g_set.screen_off_s = (uint16_t)v;
+    settings_persist();
+    printf("screenoff=%us\n", (unsigned)v);
+    return 0;
+  }
+  if (!strcmp(argv[1], "retention") && argc == 3) {
+    const uint32_t v = parse_num(argv[2]);
+    if (!set_retention_valid((uint8_t)v)) {
+      printf("bad retention (7, 30, 90)\n");
+      return 1;
+    }
+    g_set.history_days = (uint8_t)v;
+    settings_persist();
+    printf("retention=%ud (pruned on the next sweep)\n", (unsigned)v);
+    return 0;
+  }
+  if (!strcmp(argv[1], "ntp") && argc == 3) {
+    g_set.ntp_on = parse_num(argv[2]) ? 1 : 0;
+    settings_persist();
+    printf("ntp=%u\n", (unsigned)g_set.ntp_on);
+    return 0;
+  }
+  if (!strcmp(argv[1], "wifi") && argc >= 3) {
+    if (strlen(argv[2]) >= sizeof(g_set.wifi_ssid)) {
+      printf("ssid too long\n");
+      return 1;
+    }
+    snprintf(g_set.wifi_ssid, sizeof(g_set.wifi_ssid), "%s", argv[2]);
+    snprintf(g_set.wifi_pass, sizeof(g_set.wifi_pass), "%s",
+             argc >= 4 ? argv[3] : "");
+    settings_persist();
+    printf("wifi ssid='%s' pass %s (takes effect on reboot)\n", g_set.wifi_ssid,
+          g_set.wifi_pass[0] ? "set" : "cleared/open");
+    return 0;
+  }
+  if (!strcmp(argv[1], "factoryreset")) {
+    if (argc != 3 || strcmp(argv[2], "RESET") != 0) {
+      printf("type it: set factoryreset RESET\n");
+      return 1;
+    }
+    factory_reset();
+    return 0;
+  }
+  printf("usage: set show|brightness|screenoff|retention|ntp|wifi|factoryreset ...\n");
+  return 1;
+}
+
+/* PIN (§8, FR10): stored as a salted hash in the settings blob; the RAM
+ * PinLock tracks the 60 s unlock window. */
+static int cmd_pin(int argc, char **argv) {
+  if (argc < 2) {
+    printf("usage: pin status | set <cur> <new> | off <cur> | scope <0|1>\n");
+    return 1;
+  }
+  StateLock lock;
+  if (!strcmp(argv[1], "status")) {
+    printf("pin=%s scope=%s fails=%u\n", g_set.pin_enabled ? "on" : "off",
+           g_set.pin_scope == PIN_SCOPE_SETTINGS_FEEDS ? "settings+feeds"
+                                                       : "settings",
+           (unsigned)g_pin.fail_count());
+    return 0;
+  }
+  if (!strcmp(argv[1], "set") && argc == 4) {
+    if (g_set.pin_enabled && !pin_verify(g_set, argv[2])) {
+      printf("current PIN wrong\n");
+      return 1;
+    }
+    if (!pin_valid_digits(argv[3])) {
+      printf("new PIN must be exactly 4 digits\n");
+      return 1;
+    }
+    pin_set(&g_set, argv[3], [](uint8_t *o, size_t n) { esp_fill_random(o, n); });
+    settings_persist();
+    printf("PIN set (salted hash stored; backups never carry it, D18)\n");
+    return 0;
+  }
+  if (!strcmp(argv[1], "off") && argc == 3) {
+    if (!g_set.pin_enabled) {
+      printf("PIN already off\n");
+      return 0;
+    }
+    if (!pin_verify(g_set, argv[2])) {
+      printf("current PIN wrong\n");
+      return 1;
+    }
+    g_set.pin_enabled = 0;
+    settings_persist();
+    printf("PIN off\n");
+    return 0;
+  }
+  if (!strcmp(argv[1], "scope") && argc == 3) {
+    const uint32_t s = parse_num(argv[2]);
+    if (s >= PIN_SCOPE_COUNT) {
+      printf("scope 0 = settings only, 1 = settings and manual feeds\n");
+      return 1;
+    }
+    g_set.pin_scope = (uint8_t)s;
+    settings_persist();
+    printf("scope=%u\n", (unsigned)s);
+    return 0;
+  }
+  printf("usage: pin status | set <cur> <new> | off <cur> | scope <0|1>\n");
+  return 1;
+}
+
+/* backup / restore / CSV export (§9.12) against the SD card. */
+static int cmd_backup(int argc, char **argv) {
+  if (argc < 2) {
+    printf("usage: backup now | ls | restore <name> | csv\n");
+    return 1;
+  }
+  StateLock lock;
+  if (!strcmp(argv[1], "now") && argc == 2) {
+    backup_op(false);
+    return 0;
+  }
+  if (!strcmp(argv[1], "csv") && argc == 2) {
+    backup_op(true);
+    return 0;
+  }
+  if (!strcmp(argv[1], "ls")) {
+    char names[BACKUP_SLOTS_MAX][BACKUP_NAME_LEN];
+    const int n = g_sd ? g_sd->list(names, BACKUP_SLOTS_MAX) : 0;
+    printf("%s: %d file(s)\n", g_sd_note, n);
+    for (int i = 0; i < n; i++) printf("  %s\n", names[i]);
+    return 0;
+  }
+  if (!strcmp(argv[1], "restore") && argc == 3) {
+    backup_restore_op(argv[2]);
+    return 0;
+  }
+  printf("usage: backup now | ls | restore <name> | csv\n");
+  return 1;
+}
+
+/* setup wizard (§9.13) from the bench console — the touchscreen wizard
+ * drives the same session; nothing touches the registry until 'wiz save'. */
+static int cmd_wiz(int argc, char **argv) {
+  if (argc < 2) {
+    printf("usage: wiz start|tz|ntp|wifi|node|cap|sched|next|back|save|close|status\n");
+    return 1;
+  }
+  StateLock lock;
+  const uint32_t now = ms_now();
+  if (!strcmp(argv[1], "start") && argc == 2) {
+    printf("%s\n", g_wiz.open() ? "wizard open - step 1: time zone"
+                                 : "wizard already open");
+    return 0;
+  }
+  if (!strcmp(argv[1], "close")) {
+    g_wiz.close();
+    printf("closed\n");
+    return 0;
+  }
+  if (g_wiz.step() == ui::WIZ_IDLE) {
+    printf("wiz start first\n");
+    return 1;
+  }
+  if (!strcmp(argv[1], "tz") && argc == 3) {
+    printf("%s\n", g_wiz.set_tz((uint8_t)parse_num(argv[2]), g_set.ntp_on)
+                        ? "zone set"
+                        : "bad rule (0-3)");
+  } else if (!strcmp(argv[1], "ntp") && argc == 3) {
+    printf("%s\n", g_wiz.set_tz(g_wiz.view().tz_rule, parse_num(argv[2]) != 0)
+                        ? "ntp set"
+                        : "failed");
+  } else if (!strcmp(argv[1], "wifi") && argc >= 3) {
+    printf("%s\n", g_wiz.set_wifi(argv[2], argc >= 4 ? argv[3] : "")
+                        ? "wifi set"
+                        : "ssid required");
+    /* the real connection test runs at bring-up on hardware; the bench CLI
+     * records the attempt so the step can be passed honestly either way */
+    g_wiz.wifi_test_result(false, "checked at boot (bench CLI)");
+  } else if (!strcmp(argv[1], "node") && argc == 3) {
+    if (!strcmp(argv[2], "new")) {
+      g_wiz.choose_pair_new();
+      printf("pair a feeder now ('pair open'); the wizard resumes on commit\n");
+    } else {
+      printf("%s\n", g_wiz.choose_existing((uint8_t)parse_num(argv[2]))
+                          ? "node chosen"
+                          : "no such node");
+    }
+  } else if (!strcmp(argv[1], "cap") && argc == 4) {
+    printf("%s\n", g_wiz.set_capacity(parse_num(argv[2]), parse_num(argv[3]))
+                        ? "capacity set"
+                        : "size 1..100000, in-it 0..size");
+  } else if (!strcmp(argv[1], "sched") && argc == 5) {
+    printf("%s\n", g_wiz.set_schedule((uint16_t)parse_num(argv[2]),
+                                       (uint8_t)parse_num(argv[3]),
+                                       (uint16_t)parse_num(argv[4]))
+                        ? "schedule set"
+                        : "bad time/days/amount (see note)");
+  } else if (!strcmp(argv[1], "next") && argc == 2) {
+    printf("%s\n", g_wiz.next() ? "next step" : "blocked (see note)");
+  } else if (!strcmp(argv[1], "back") && argc == 2) {
+    printf("%s\n", g_wiz.back() ? "back a step" : "cannot go back");
+  } else if (!strcmp(argv[1], "save") && argc == 2) {
+    uint8_t nid = 0;
+    const WizardSession::CommitResult r = g_wiz.commit(reg, g_set, &nid);
+    if (r != WizardSession::WZ_COMMIT_OK) {
+      printf("save failed (%u)\n", (unsigned)r);
+      return 1;
+    }
+    settings_persist();
+    reg.save(nvs);
+    aio::HubNode *n = reg.by_id(nid);
+    if (n) {
+      eng.send_schedule_set(nid, n->sched.version, n->sched.entries,
+                            n->sched.entry_count, n->sched.skip_until,
+                            n->sched.hold_until, now);
+      eng.send_config(nid, n->profile, 1, now);
+      n->sched.pushed_at = (uint32_t)hub_unix_now();
+      reg.save(nvs);
+    }
+    printf("wizard done: node %u - SCHEDULE_SET + CONFIG sent\n", (unsigned)nid);
+  } else if (!strcmp(argv[1], "status") && argc == 2) {
+    static const char *STEP[] = {"idle", "tz", "wifi", "node", "cap", "sched",
+                                 "done"};
+    const ui::WizardView v = g_wiz.view();
+    printf("step=%s (%u of 6)%s\n", STEP[v.step], (unsigned)v.step_no,
+           v.skip_cap ? " [hopper asked at pairing]" : "");
+    if (v.note[0]) printf("  note: %s\n", v.note);
+  } else {
+    printf("usage: wiz start|tz|ntp|wifi|node|cap|sched|next|back|save|close|status\n");
+    return 1;
+  }
+  return 0;
+}
+
 static void add_cmd(const char *name, const char *help, const char *hint,
                     esp_console_cmd_func_t fn) {
   esp_console_cmd_t c{};
@@ -814,6 +1218,14 @@ static void register_commands() {
           cmd_pair);
   add_cmd("cal", "calibration wizard (§9.3)",
           "start <id>|secs <s>|run|weigh <g>|save|close", cmd_cal);
+  add_cmd("set", "hub settings (§8.8)",
+          "show|brightness|screenoff|retention|ntp|wifi|factoryreset", cmd_set);
+  add_cmd("pin", "PIN lock (§8)", "status|set <cur> <new>|off <cur>|scope <0|1>",
+          cmd_pin);
+  add_cmd("backup", "backup/restore/CSV (§9.12)", "now|ls|restore <name>|csv",
+          cmd_backup);
+  add_cmd("wiz", "setup wizard (§9.13)",
+          "start|tz|ntp|wifi|node|cap|sched|next|back|save", cmd_wiz);
 }
 
 /* --- main loop task (1 ms; shares state with the REPL under g_state_mu) ---------- */
@@ -939,6 +1351,122 @@ static void aio_loop_task(void *) {
         }
       }
 
+      /* settings screen driver (M4b shot): slot 7 of 10. Stage bounds keep
+       * each captured pane across a marker beat (markers at +2 +7 +12 +17
+       * +22 into the 25 s slot): RESTART [0,8) → "settings", SECURITY
+       * [8,14.5) → "settings_security" (+12), BACKUP [14.5,21) →
+       * "settings_backup" (+17), DANGER [21,25). */
+      static uint32_t set_cycle = UINT32_MAX;
+      static uint8_t set_stage = 0;
+      if (cyc % 10 == 7) {
+        if (set_cycle != cyc) {
+          set_cycle = cyc;
+          set_stage = 0;
+          g_pin.relock(); /* Security pane shows the locked state */
+        }
+        const uint32_t m = now % 25000;
+        uint8_t sec = SET_SEC_RESTART;
+        if (m >= 21000)
+          sec = SET_SEC_DANGER;
+        else if (m >= 14500)
+          sec = SET_SEC_BACKUP;
+        else if (m >= 8000)
+          sec = SET_SEC_SECURITY;
+        if (sec != set_stage) {
+          set_stage = sec;
+          s_set_section = sec;
+        }
+      }
+
+      /* PIN pad driver (M4b shot): slot 8 of 10. Idle [0,8) → "pin_entry",
+       * two digits [8,14.5) → "pin_typing", four digits + wrong note
+       * [14.5,21) → "pin_wrong", correct code [21,25) → "pin_ok". */
+      static uint32_t pin_cycle = UINT32_MAX;
+      static uint8_t pin_stage = 0;
+      if (cyc % 10 == 8) {
+        if (pin_cycle != cyc) {
+          pin_cycle = cyc;
+          pin_stage = 0;
+          aio::ui::pin_clear();
+          aio::ui::pin_note("");
+        }
+        const uint32_t m = now % 25000;
+        if (pin_stage == 0 && m >= 8000) {
+          aio::ui::pin_press('1');
+          aio::ui::pin_press('2');
+          pin_stage = 1;
+        }
+        if (pin_stage == 1 && m >= 14500) {
+          aio::ui::pin_press('9');
+          aio::ui::pin_press('9'); /* 1299 != 1234 → wrong */
+          aio::ui::pin_note("wrong PIN - try again");
+          pin_stage = 2;
+        }
+        if (pin_stage == 2 && m >= 21000) {
+          aio::ui::pin_clear();
+          aio::ui::pin_press('1');
+          aio::ui::pin_press('2');
+          aio::ui::pin_press('3');
+          aio::ui::pin_press('4');
+          aio::ui::pin_note("unlocked for 60 s");
+          pin_stage = 3;
+        }
+      }
+
+      /* setup wizard driver (M4b shot): slot 9 of 10, five phases on 5 s
+       * beats — tz [0,5) "wizard", node [5,10) "wizard_node", cap [10,15)
+       * "wizard_cap", sched [15,20) "wizard_sched", done [20,25)
+       * "wizard_done". Commit lands once per cycle; the node's previous
+       * schedule is restored at the next cycle start so the seeded scene
+       * stays deterministic for the other slots. */
+      static uint32_t wiz_cycle = UINT32_MAX;
+      static uint8_t wiz_stage = 0;
+      static HubSched wiz_saved_sched;
+      if (cyc % 10 == 9) {
+        if (wiz_cycle != cyc) {
+          wiz_cycle = cyc;
+          if (wiz_stage == 5) { /* restore what last cycle's commit replaced */
+            HubNode *rn = reg.by_id(1);
+            if (rn) {
+              rn->sched = wiz_saved_sched;
+              rn->sched.version = ++reg.data().sched_version;
+            }
+          }
+          wiz_stage = 0;
+          HubNode *wn = reg.by_id(1);
+          if (wn) wiz_saved_sched = wn->sched;
+          g_wiz.close();
+          g_wiz.open();
+          g_wiz.set_tz(TZ_MANILA, true);
+        }
+        const uint32_t m = now % 25000;
+        if (wiz_stage == 0 && m >= 5000) {
+          g_wiz.set_wifi("home-net", "pw");
+          g_wiz.wifi_test_result(false, "no radio (QEMU)");
+          g_wiz.next(); /* → node */
+          g_wiz.choose_existing(1);
+          wiz_stage = 1;
+        }
+        if (wiz_stage == 1 && m >= 10000) {
+          g_wiz.next(); /* → cap (existing node: hopper is asked) */
+          g_wiz.set_capacity(1500, 400);
+          wiz_stage = 2;
+        }
+        if (wiz_stage == 2 && m >= 15000) {
+          g_wiz.next(); /* → sched */
+          g_wiz.set_schedule(480, 0x7F, 40);
+          wiz_stage = 3;
+        }
+        if (wiz_stage == 3 && m >= 20000) {
+          uint8_t nid = 0;
+          if (g_wiz.commit(reg, g_set, &nid) == WizardSession::WZ_COMMIT_OK) {
+            printf("wizard shot: node %u committed (SCHEDULE_SET skipped in the shot build)\n",
+                   (unsigned)nid);
+          }
+          wiz_stage = 5;
+        }
+      }
+
       /* dashboard + detail snapshots → UI task every 400 ms */
       static uint32_t ui_ms = 0;
       if (now - ui_ms >= 400) {
@@ -964,6 +1492,15 @@ static void aio_loop_task(void *) {
             aio::ui::build_alerts(reg, evlog, hub_unix_now(), now, fr, fn, g_alerts_ack));
         aio::ui::publish_pairing(g_pair.view(now));
         aio::ui::publish_calib(g_calib.view(now));
+        /* settings + wizard snapshots (M4b screens; section via the driver) */
+        aio::SettingsView sv =
+            aio::ui::build_settings(reg, g_set, hub_unix_now(), g_sd_note,
+                                    g_backup_count, g_backup_last,
+                                    g_pin.blocks_settings(),
+                                    g_pin.unlock_left_s(now));
+        sv.section = s_set_section;
+        aio::ui::publish_settings(sv);
+        aio::ui::publish_wizard(g_wiz.view());
       }
 #endif
 
@@ -975,6 +1512,18 @@ static void aio_loop_task(void *) {
       /* FEED_RESULT deadline (§9.3.2) — both builds: the shot driver's runs
        * resolve in ~50 ms with the sim node, far inside the 15 s window */
       g_calib.tick(now);
+      /* §8: the PIN unlock window auto re-locks after 60 s */
+      g_pin.tick(now);
+      /* §7.5 retention: prune the RAM ring once a minute (feeding never
+       * waits for this — the ring self-evicts at CAP anyway) */
+      {
+        static uint32_t last_prune_ms = 0;
+        if (now - last_prune_ms > 60000) {
+          last_prune_ms = now;
+          if (time_valid()) evlog.prune_older_than((uint32_t)hub_unix_now(),
+                                                   g_set.history_days);
+        }
+      }
 
       /* feedloop driver: one feed in flight at a time (§9.5) — M2 bench path,
        * deliberately bypassing feed_manager so the radio loopback measures the
@@ -1014,11 +1563,39 @@ extern "C" void app_main(void) {
     printf("registry: fresh (no valid blob)\n");
     reg.reset();
   }
+  if (!settings_load(nvs, &g_set)) {
+    g_set = settings_defaults();
+    printf("settings: defaults (no valid blob)\n");
+  }
+  g_pin.configure(g_set);
+  g_wiz.bind_registry(&reg);
+  g_sd = backup_store_create();
+  if (!g_sd->mount()) printf("backup store: %s unavailable\n", backup_store_kind());
+  sd_refresh_note();
+  backup_list_note();
+  printf("settings: brightness=%u screenoff=%us retention=%ud pin=%s sd=%s\n",
+         (unsigned)g_set.brightness, (unsigned)g_set.screen_off_s,
+         (unsigned)g_set.history_days, g_set.pin_enabled ? "on" : "off", g_sd_note);
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
   /* pin the wall clock + seed the demo registry before the boot scan (M4a
    * QEMU screenshot build — see tools/qemu/README.md) */
   aio::sim::seed(reg, evlog, g_alerts_ack);
+  /* shot scene: PIN lock engaged (scope: settings only) + a real backup file
+   * on the virtual SD so the settings panes show live data */
+  g_set.brightness = 70;
+  pin_set(&g_set, "1234", [](uint8_t *o, size_t n) { esp_fill_random(o, n); });
+  g_pin.configure(g_set);
+  {
+    char *buf = static_cast<char *>(malloc(BACKUP_JSON_MAX));
+    char name[BACKUP_NAME_LEN];
+    size_t len = 0;
+    if (buf && backup_write_now(*g_sd, reg, g_set, hub_unix_now(), buf,
+                                BACKUP_JSON_MAX, name, &len))
+      printf("virtual SD: seeded %s (%zu B)\n", name, len);
+    free(buf);
+    backup_list_note();
+  }
 #endif
 
   time_begin(); /* PCF85063 → system clock; SNTP starts with the radio */

@@ -14,6 +14,8 @@ idf_component_register(
         esp_netif
         esp_event
         esp_app_format
+        fatfs
+        sdmmc
 )
 
 target_include_directories(${COMPONENT_LIB} PRIVATE

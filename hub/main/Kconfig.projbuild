@@ -22,6 +22,22 @@ menu "AIO Feeder hub"
         int "I2C SCL GPIO for the onboard PCF85063"
         default 9
 
+    config AIO_SD_CLK
+        int "SD card CLK GPIO (SDMMC 1-bit)"
+        default 11
+        help
+            Waveshare ESP32-S3-Touch-LCD-4.3B microSD slot: CLK/CMD/D0 on
+            GPIO 11/12/13 (PLAN.md §4.3). Verify against the schematic
+            before relying on it [VERIFY].
+
+    config AIO_SD_CMD
+        int "SD card CMD GPIO"
+        default 12
+
+    config AIO_SD_D0
+        int "SD card D0 GPIO (1-bit mode)"
+        default 13
+
     config AIO_NO_RADIO
         bool "Skip ESP-NOW/Wi-Fi bring-up entirely (QEMU smoke build)"
         default n

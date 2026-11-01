@@ -77,6 +77,13 @@ static uint32_t s_pair_seen = 0;
 static CalibView s_cal_snap[2];
 static volatile uint32_t s_cal_seq = 0;
 static uint32_t s_cal_seen = 0;
+static SettingsView s_set_snap[2];
+static volatile uint32_t s_set_seq = 0;
+static uint32_t s_set_seen = 0;
+static WizardView s_wiz_snap[2];
+static volatile uint32_t s_wiz_seq = 0;
+static uint32_t s_wiz_seen = 0;
+static char s_pin_note[32] = {0}; /* PIN pad status line (view-side) */
 static uint32_t s_seen = 0;
 static uint32_t s_det_seen = 0;
 static uint32_t s_edit_seen = 0;
@@ -124,6 +131,45 @@ void publish_calib(const CalibView &c) {
   const uint32_t s = s_cal_seq;
   s_cal_snap[s & 1] = c;
   s_cal_seq = s + 1;
+}
+
+void publish_settings(const SettingsView &v) {
+  const uint32_t s = s_set_seq;
+  s_set_snap[s & 1] = v;
+  s_set_seq = s + 1;
+}
+
+void publish_wizard(const WizardView &v) {
+  const uint32_t s = s_wiz_seq;
+  s_wiz_snap[s & 1] = v;
+  s_wiz_seq = s + 1;
+}
+
+/* --- PIN pad (§8 lock: 4 digits, view-side state) -------------------------------- */
+
+static char s_pin[5] = {0};
+static uint8_t s_pin_len = 0;
+
+void pin_press(char c) {
+  if (c == 'C') {
+    pin_clear();
+    return;
+  }
+  if (c < '0' || c > '9' || s_pin_len >= 4) return;
+  s_pin[s_pin_len++] = c;
+  s_pin[s_pin_len] = '\0';
+}
+
+void pin_clear() {
+  s_pin_len = 0;
+  s_pin[0] = '\0';
+}
+
+uint8_t pin_entered_len() { return s_pin_len; }
+const char *pin_entered() { return s_pin; }
+
+void pin_note(const char *note) {
+  snprintf(s_pin_note, sizeof(s_pin_note), "%s", note ? note : "");
 }
 
 uint8_t detail_node() { return s_detail_id; }
@@ -1400,6 +1446,365 @@ static void update_calib(const CalibView &v) {
   }
 }
 
+/* --- settings screen (§8.8; M4b) ------------------------------------------------------ */
+
+/* Section list (left lane) + active pane body (right lane), both single
+ * multi-line labels — the QEMU build has no LVGL heap for per-row widgets
+ * (see the pairing screen note). */
+static const char *SET_SECTIONS[UI_SET_SECTION_COUNT] = {
+    "Restart", "Display", "Time", "Network", "Remote",
+    "Security", "Storage", "Backup", "Wizard", "Danger"};
+
+static lv_obj_t *s_set_scr = nullptr;
+static lv_obj_t *s_set_clock_lbl = nullptr;
+static lv_obj_t *s_set_list_lbl = nullptr;
+static lv_obj_t *s_set_body_lbl = nullptr;
+
+static void build_settings_screen() {
+  s_set_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_set_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_set_scr, 0, 0);
+
+  lv_obj_t *header = new_panel(s_set_scr, UI_W, 30, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_right(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  lv_obj_t *title = new_label(header, "Settings", &lv_font_montserrat_16, C_TEXT);
+  (void)title;
+  lv_obj_t *spacer = lv_obj_create(header);
+  lv_obj_set_size(spacer, 1, 1);
+  lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(spacer, 0, 0);
+  lv_obj_set_flex_grow(spacer, 1);
+  s_set_clock_lbl = new_label(header, "--:--", &lv_font_montserrat_14, C_MUTED);
+
+  s_set_list_lbl = new_label(s_set_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_obj_set_pos(s_set_list_lbl, 10, 38);
+
+  s_set_body_lbl = new_label(s_set_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_label_set_long_mode(s_set_body_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_set_body_lbl, UI_W - 158);
+  lv_obj_set_pos(s_set_body_lbl, 148, 38);
+}
+
+static void set_body_text(const SettingsView &v, char *buf, size_t n) {
+  switch (v.section) {
+    case SET_SEC_RESTART:
+      snprintf(buf, n,
+               "Restart hub\n\nBridges stay down and the\nschedule survives a restart.\nAsk for confirmation first.");
+      break;
+    case SET_SEC_DISPLAY:
+      snprintf(buf, n, "Brightness: %u %%\nScreen off: %s\n\nDim first, then off;\nfirst touch only wakes.",
+               (unsigned)v.brightness,
+               v.screen_off_s ? "on (timeout)" : "never");
+      break;
+    case SET_SEC_TIME:
+      snprintf(buf, n, "Zone: %s\nNTP: %s\nSource: %s\n\nShown on every screen.",
+               v.tz_rule == TZ_MANILA   ? "Asia/Manila"
+               : v.tz_rule == TZ_EU_CENTRAL ? "EU Central"
+               : v.tz_rule == TZ_US_EASTERN ? "US Eastern"
+                                            : "UTC",
+               v.ntp_on ? "on" : "off", v.time_src);
+      break;
+    case SET_SEC_NETWORK:
+      if (v.wifi_set)
+        snprintf(buf, n, "Wi-Fi: %s\nESP-NOW ch: %u\n\nPassword stays on the hub\n(and out of backups).",
+                 v.wifi_ssid, (unsigned)v.chan);
+      else
+        snprintf(buf, n, "Wi-Fi: not set\nESP-NOW ch: %u\n\nSet it in the wizard or\nwith 'set wifi'.",
+                 (unsigned)v.chan);
+      break;
+    case SET_SEC_REMOTE:
+      snprintf(buf, n,
+               "Web dashboard + MQTT\nland with remote access\n(the next milestone).\n\nNotifications ride on MQTT.");
+      break;
+    case SET_SEC_SECURITY:
+      if (v.pin_enabled)
+        snprintf(buf, n, "PIN lock: ON\nScope: %s\n%s%s",
+                 v.pin_scope == PIN_SCOPE_SETTINGS_FEEDS
+                     ? "settings + feeds"
+                     : "settings only",
+                 v.locked_now ? "Locked - enter PIN." : "Unlocked now.",
+                 v.unlock_left_s ? "" : "");
+      else
+        snprintf(buf, n,
+                 "PIN lock: OFF\n\nA 4-digit code gates this\nscreen (and manual feeds\nif the scope says so).\n\nSchedules never lock.");
+      break;
+    case SET_SEC_STORAGE:
+      snprintf(buf, n, "History kept: %u d\nCard: %s\n\nFeeding never waits for\nthe card.",
+               (unsigned)v.retention_days, v.sd_status);
+      break;
+    case SET_SEC_BACKUP:
+      if (v.backup_count)
+        snprintf(buf, n, "Card: %s\nFiles: %u\nNewest: %s\n\nBack up now / restore /\nCSV export.",
+                 v.sd_status, (unsigned)v.backup_count, v.backup_last);
+      else
+        snprintf(buf, n, "Card: %s\nFiles: 0\n\nBack up now / restore /\nCSV export.",
+                 v.sd_status);
+      break;
+    case SET_SEC_WIZARD:
+      snprintf(buf, n,
+               "Run setup wizard\n\nSix steps: zone, Wi-Fi,\nfeeder, hopper, schedule,\ndone. Nothing is written\nuntil you save.");
+      break;
+    case SET_SEC_DANGER:
+      snprintf(buf, n,
+               "Factory reset\n\nWipes nodes, schedules,\nsettings and the PIN.\nType RESET to confirm.\n\nHistory stays on the card.");
+      break;
+    default:
+      snprintf(buf, n, "Settings");
+      break;
+  }
+}
+
+static void update_settings(const SettingsView &v) {
+  char buf[320];
+  if (s_set_clock_lbl) lv_label_set_text(s_set_clock_lbl, v.clock);
+
+  if (s_set_list_lbl) {
+    size_t off = 0;
+    buf[0] = '\0';
+    for (int i = 0; i < UI_SET_SECTION_COUNT && off + 16 < sizeof(buf); i++) {
+      off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s %s\n",
+                              i == (int)v.section ? ">" : " ", SET_SECTIONS[i]);
+    }
+    lv_label_set_text(s_set_list_lbl, buf);
+  }
+  if (s_set_body_lbl) {
+    set_body_text(v, buf, sizeof(buf));
+    lv_label_set_text(s_set_body_lbl, buf);
+    lv_obj_set_style_text_color(
+        s_set_body_lbl, lv_color_hex(v.section == SET_SEC_DANGER ? C_ALERT : C_TEXT), 0);
+  }
+}
+
+/* --- PIN entry screen (§8 lock; M4b) -------------------------------------------------- */
+
+static lv_obj_t *s_pin_scr = nullptr;
+static lv_obj_t *s_pin_dots_lbl = nullptr;
+static lv_obj_t *s_pin_note_lbl = nullptr;
+static lv_obj_t *s_pin_scope_lbl = nullptr;
+static lv_obj_t *s_pin_keys[12];
+
+static void build_pin_screen() {
+  s_pin_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_pin_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_pin_scr, 0, 0);
+
+  lv_obj_t *header = new_panel(s_pin_scr, UI_W, 30, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  lv_obj_t *title = new_label(header, "Enter PIN", &lv_font_montserrat_16, C_TEXT);
+  (void)title;
+
+  s_pin_scope_lbl = new_label(s_pin_scr, "Settings are locked", &lv_font_montserrat_12,
+                              C_MUTED);
+  lv_obj_set_pos(s_pin_scope_lbl, 10, 38);
+
+  s_pin_dots_lbl = new_label(s_pin_scr, "-  -  -  -", &lv_font_montserrat_20, C_TEXT);
+  lv_obj_set_pos(s_pin_dots_lbl, 10, 58);
+
+  s_pin_note_lbl = new_label(s_pin_scr, "", &lv_font_montserrat_12, C_ALERT);
+  lv_obj_set_pos(s_pin_note_lbl, 10, 88);
+
+  /* 4×3 keypad on the right half — real buttons: the M5 touch backend wires
+   * the callbacks; the shot build only renders them */
+  static const char *KEYS[12] = {"1", "2", "3", "4", "5", "6",
+                                 "7", "8", "9", "C", "0", "OK"};
+  for (int i = 0; i < 12; i++) {
+    lv_obj_t *b = lv_btn_create(s_pin_scr);
+    lv_obj_set_size(b, 52, 26);
+    lv_obj_set_pos(b, 200 + (i % 3) * 60, 40 + (i / 3) * 32);
+    lv_obj_set_style_bg_color(b, lv_color_hex(C_CARD), 0);
+    lv_obj_set_style_radius(b, 6, 0);
+    lv_obj_t *l = new_label(b, KEYS[i], &lv_font_montserrat_14, C_TEXT);
+    lv_obj_center(l);
+    s_pin_keys[i] = b;
+  }
+
+  lv_obj_t *hint = new_label(s_pin_scr, "Unlocks for 60 s.\nSchedules never lock.",
+                             &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_pos(hint, 10, UI_H - 40);
+}
+
+static void update_pin_screen() {
+  char buf[24];
+  if (s_pin_dots_lbl) {
+    if (s_pin_len == 0)
+      snprintf(buf, sizeof(buf), "-  -  -  -");
+    else {
+      buf[0] = '\\0';
+      size_t off = 0;
+      for (int i = 0; i < 4 && off + 4 < sizeof(buf); i++) {
+        off += (size_t)snprintf(buf + off, sizeof(buf) - off, "%s%c",
+                                i ? "  " : "", i < (int)s_pin_len ? s_pin[i] : '-');
+      }
+    }
+    lv_label_set_text(s_pin_dots_lbl, buf);
+  }
+  if (s_pin_note_lbl) {
+    lv_label_set_text(s_pin_note_lbl, s_pin_note);
+    lv_obj_set_style_text_color(
+        s_pin_note_lbl,
+        lv_color_hex(strncmp(s_pin_note, "unlocked", 8) == 0 ? C_ONLINE : C_ALERT), 0);
+  }
+}
+
+/* --- setup wizard screen (§8.9, §9.13; M4b) ------------------------------------------- */
+
+static lv_obj_t *s_wiz_scr = nullptr;
+static lv_obj_t *s_wiz_step_lbl = nullptr; /* "Step 3 of 6" */
+static lv_obj_t *s_wiz_head_lbl = nullptr;
+static lv_obj_t *s_wiz_list_lbl = nullptr; /* choices / current values */
+static lv_obj_t *s_wiz_body_lbl = nullptr; /* per-step hint + note */
+
+static void build_wizard_screen() {
+  s_wiz_scr = lv_obj_create(nullptr);
+  lv_obj_set_style_bg_color(s_wiz_scr, lv_color_hex(C_BG), 0);
+  lv_obj_set_style_pad_all(s_wiz_scr, 0, 0);
+
+  lv_obj_t *header = new_panel(s_wiz_scr, UI_W, 30, C_PANEL);
+  lv_obj_set_pos(header, 0, 0);
+  lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
+  lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER,
+                        LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_left(header, 10, 0);
+  lv_obj_set_style_pad_right(header, 10, 0);
+  lv_obj_set_style_pad_column(header, 8, 0);
+  lv_obj_t *back = new_label(header, "<", &lv_font_montserrat_20, C_MUTED);
+  (void)back;
+  s_wiz_head_lbl = new_label(header, "Setup", &lv_font_montserrat_16, C_TEXT);
+  lv_obj_t *spacer = lv_obj_create(header);
+  lv_obj_set_size(spacer, 1, 1);
+  lv_obj_set_style_bg_opa(spacer, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(spacer, 0, 0);
+  lv_obj_set_flex_grow(spacer, 1);
+  s_wiz_step_lbl = new_label(header, "", &lv_font_montserrat_12, C_MUTED);
+
+  s_wiz_list_lbl = new_label(s_wiz_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_obj_set_pos(s_wiz_list_lbl, 10, 38);
+
+  s_wiz_body_lbl = new_label(s_wiz_scr, "", &lv_font_montserrat_12, C_TEXT);
+  lv_label_set_long_mode(s_wiz_body_lbl, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(s_wiz_body_lbl, UI_W - 20);
+  lv_obj_set_pos(s_wiz_body_lbl, 10, 150);
+}
+
+static void wiz_list_text(const WizardView &v, char *buf, size_t n) {
+  size_t off = 0;
+  switch (v.step) {
+    case WIZ_TZ: {
+      static const char *TZS[TZ_RULE_COUNT] = {"UTC", "Asia/Manila", "EU Central",
+                                               "US Eastern"};
+      for (int i = 0; i < TZ_RULE_COUNT; i++)
+        off += (size_t)snprintf(buf + off, n - off, "%s %s\n",
+                                i == (int)v.tz_rule ? ">" : " ", TZS[i]);
+      off += (size_t)snprintf(buf + off, n - off, "NTP: %s\n", v.ntp_on ? "on" : "off");
+      break;
+    }
+    case WIZ_WIFI:
+      snprintf(buf, n, "Network: %s\nState: %s", v.wifi_ssid[0] ? v.wifi_ssid : "-",
+               v.wifi_state == 1 ? v.wifi_note
+                                 : (v.wifi_state == 0 ? v.wifi_note : "untested"));
+      break;
+    case WIZ_NODE: {
+      for (int i = 0; i < v.node_count && off + 24 < n; i++)
+        off += (size_t)snprintf(buf + off, n - off, "%s F%u %s\n",
+                                v.node_sel == (int8_t)v.node_ids[i] ? ">" : " ",
+                                (unsigned)v.node_ids[i], v.node_names[i]);
+      off += (size_t)snprintf(buf + off, n - off, "%s Pair a new feeder\n",
+                              v.node_sel == -2 ? ">" : " ");
+      break;
+    }
+    case WIZ_CAP:
+      snprintf(buf, n, "Full: %lu %s\nIn it now: %lu %s\n\n%s",
+               (unsigned long)v.cap_total, v.unit_ml ? "ml" : "g",
+               (unsigned long)v.cap_now, v.unit_ml ? "ml" : "g", v.summary);
+      break;
+    case WIZ_SCHED:
+      snprintf(buf, n, "Time: %02u:%02u\nDays: %s\nAmount: %u %s (max %lu)",
+               (unsigned)(v.s_min / 60), (unsigned)(v.s_min % 60),
+               wiz_days_preset(v.s_days), (unsigned)v.s_amount,
+               v.unit_ml ? "ml" : "g", (unsigned long)v.feed_cap);
+      break;
+    case WIZ_DONE:
+      snprintf(buf, n, "Feeder: %s\nFirst feed set.", v.done_node_name);
+      break;
+    default:
+      buf[0] = '\\0';
+      break;
+  }
+}
+
+static void wiz_body_text(const WizardView &v, char *buf, size_t n) {
+  switch (v.step) {
+    case WIZ_IDLE:
+      snprintf(buf, n, "Run from Settings or the\nempty Home screen.");
+      break;
+    case WIZ_TZ:
+      snprintf(buf, n, "Pick the time zone.\nNTP needs Wi-Fi; the\nonboard RTC covers\npower cuts either way.");
+      break;
+    case WIZ_WIFI:
+      snprintf(buf, n, "Name the network and test\nthe connection. The password\nnever leaves the hub.");
+      break;
+    case WIZ_NODE:
+      snprintf(buf, n, "Use a paired feeder, or pair\na new one - the wizard comes\nback when it lands.");
+      break;
+    case WIZ_CAP:
+      snprintf(buf, n, "How much fits in the\nhopper, and how much is\nin it now? Drives the\nstock estimate.");
+      break;
+    case WIZ_SCHED:
+      snprintf(buf, n, "First schedule: time, days,\namount within the feeder's\nper-feed cap. Saved last.");
+      break;
+    case WIZ_DONE:
+      snprintf(buf, n, "Feeder %s is set.\n\nNext: run a calibration\nand tap Refilled when\nyou top up. Nothing was\nsent to the node until\nyou saved.",
+               v.done_node_name);
+      break;
+  }
+  if (v.note[0])
+    snprintf(buf + strlen(buf), n - strlen(buf), "\n\n%s", v.note);
+}
+
+static void update_wizard(const WizardView &v) {
+  char buf[280];
+  if (s_wiz_step_lbl) {
+    if (v.step_no)
+      snprintf(buf, sizeof(buf), "Step %u of 6%s", (unsigned)v.step_no,
+               v.skip_cap ? " (hopper asked at pairing)" : "");
+    else
+      buf[0] = '\\0';
+    lv_label_set_text(s_wiz_step_lbl, buf);
+  }
+  if (s_wiz_head_lbl) {
+    static const char *TITLES[] = {"Setup", "Time zone", "Wi-Fi", "Feeder",
+                                   "Hopper", "First schedule", "Done"};
+    lv_label_set_text(s_wiz_head_lbl, TITLES[v.step]);
+  }
+  if (s_wiz_list_lbl) {
+    wiz_list_text(v, buf, sizeof(buf));
+    lv_label_set_text(s_wiz_list_lbl, buf);
+    lv_obj_set_style_text_color(
+        s_wiz_list_lbl, lv_color_hex(v.step == WIZ_CAP && v.amber ? C_ALERT : C_TEXT), 0);
+  }
+  if (s_wiz_body_lbl) {
+    wiz_body_text(v, buf, sizeof(buf));
+    lv_label_set_text(s_wiz_body_lbl, buf);
+    lv_obj_set_style_text_color(s_wiz_body_lbl,
+                                lv_color_hex(v.note[0] ? C_ALERT : C_TEXT), 0);
+  }
+}
+
 /* --- LVGL plumbing ----------------------------------------------------------------- */
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
@@ -1423,6 +1828,9 @@ static void ui_task(void *) {
   build_alerts_screen();
   build_pairing_screen();
   build_calib_screen();
+  build_settings_screen();
+  build_pin_screen();
+  build_wizard_screen();
   lv_screen_load(s_scr);
 
   /* pool pressure at boot (the 7-screen QEMU build runs against the 64 KB
@@ -1449,8 +1857,11 @@ static void ui_task(void *) {
     SH_EDIT = 2,
     SH_HIST = 3,
     SH_ALERTS = 4,
-    SH_PAIR = 5, /* slot index mirrored by the pairing driver in main.cpp */
-    SH_CAL = 6,  /* slot index mirrored by the calibration driver in main.cpp */
+    SH_PAIR = 5,  /* slot index mirrored by the pairing driver in main.cpp */
+    SH_CAL = 6,   /* slot index mirrored by the calibration driver in main.cpp */
+    SH_SET = 7,   /* settings driver (main.cpp) */
+    SH_PIN = 8,   /* PIN pad driver (main.cpp) */
+    SH_WIZ = 9,   /* setup wizard driver (main.cpp) */
     SH_COUNT
   };
   constexpr uint32_t SHOT_WINDOW_MS = 25000;
@@ -1464,13 +1875,16 @@ static void ui_task(void *) {
 
     shot = (ShotScreen)((now - boot_ms) / SHOT_WINDOW_MS % SH_COUNT);
     if (shot != loaded) {
-      lv_screen_load(shot == SH_DASH      ? s_scr
-                     : shot == SH_DETAIL  ? s_det_scr
-                     : shot == SH_EDIT    ? s_ed_scr
-                     : shot == SH_HIST    ? s_hi_scr
-                     : shot == SH_ALERTS  ? s_alr_scr
-                     : shot == SH_PAIR    ? s_pair_scr
-                                          : s_cal_scr);
+      lv_screen_load(shot == SH_DASH ? s_scr
+                     : shot == SH_DETAIL ? s_det_scr
+                     : shot == SH_EDIT   ? s_ed_scr
+                     : shot == SH_HIST   ? s_hi_scr
+                     : shot == SH_ALERTS ? s_alr_scr
+                     : shot == SH_PAIR   ? s_pair_scr
+                     : shot == SH_CAL    ? s_cal_scr
+                     : shot == SH_SET    ? s_set_scr
+                     : shot == SH_PIN    ? s_pin_scr
+                                         : s_wiz_scr);
       loaded = shot;
       s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
     }
@@ -1510,6 +1924,17 @@ static void ui_task(void *) {
       update_calib(s_cal_snap[(cs - 1) & 1]);
       s_cal_seen = cs;
     }
+    const uint32_t sts = s_set_seq;
+    if (sts != s_set_seen) {
+      update_settings(s_set_snap[(sts - 1) & 1]);
+      s_set_seen = sts;
+    }
+    const uint32_t ws = s_wiz_seq;
+    if (ws != s_wiz_seen) {
+      update_wizard(s_wiz_snap[(ws - 1) & 1]);
+      s_wiz_seen = ws;
+    }
+    if (loaded == SH_PIN) update_pin_screen(); /* view-side pad state */
 
     lv_timer_handler();
 
@@ -1543,6 +1968,29 @@ static void ui_task(void *) {
                                             : "calib";
           break;
         }
+        case SH_SET: {
+          const SettingsView &sv = s_set_snap[(s_set_seq - 1) & 1];
+          shot_name = sv.section == SET_SEC_SECURITY ? "settings_security"
+                      : sv.section == SET_SEC_BACKUP ? "settings_backup"
+                                                     : "settings";
+          break;
+        }
+        case SH_PIN: {
+          if (s_pin_len >= 4)
+            shot_name = s_pin_note[0] ? "pin_wrong" : "pin_ok";
+          else
+            shot_name = s_pin_len ? "pin_typing" : "pin_entry";
+          break;
+        }
+        case SH_WIZ: {
+          const WizardView &wv = s_wiz_snap[(s_wiz_seq - 1) & 1];
+          shot_name = wv.step == WIZ_NODE  ? "wizard_node"
+                      : wv.step == WIZ_CAP ? "wizard_cap"
+                      : wv.step == WIZ_SCHED ? "wizard_sched"
+                      : wv.step == WIZ_DONE ? "wizard_done"
+                                            : "wizard";
+          break;
+        }
         default: break;
       }
       printf("\nAIO_SHOT %s\n", shot_name);
@@ -1568,6 +2016,13 @@ void publish_history(const HistoryView &) {}
 void publish_alerts(const AlertsView &) {}
 void publish_pairing(const PairingView &) {}
 void publish_calib(const CalibView &) {}
+void publish_settings(const SettingsView &) {}
+void publish_wizard(const WizardView &) {}
+void pin_press(char) {}
+void pin_clear() {}
+uint8_t pin_entered_len() { return 0; }
+const char *pin_entered() { return ""; }
+void pin_note(const char *) {}
 uint8_t detail_node() { return 1; }
 void set_detail_node(uint8_t) {}
 

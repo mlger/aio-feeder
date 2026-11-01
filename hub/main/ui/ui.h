@@ -39,6 +39,20 @@ void publish_pairing(const PairingView &p);
 /* Publish the calibration wizard snapshot (§8.4 — one per wizard step). */
 void publish_calib(const CalibView &c);
 
+/* Publish the settings snapshot (§8.8 — section list + active pane). */
+void publish_settings(const SettingsView &v);
+
+/* Publish the setup-wizard snapshot (§8.9/§9.13 — one per step). */
+void publish_wizard(const WizardView &v);
+
+/* PIN pad (view-side state for the §8 lock screen; the settings flow on
+ * hardware calls pin_verify with pin_entered() once 4 digits are in). */
+void pin_press(char c); /* '0'..'9' digit, or 'C' to clear */
+void pin_clear();
+uint8_t pin_entered_len();
+const char *pin_entered(); /* digits typed so far, NUL-terminated */
+void pin_note(const char *note); /* status line: "wrong PIN", "unlocked" */
+
 /* Which node the detail screen shows (dashboard tap target later; the QEMU
  * shot build pins it). */
 uint8_t detail_node();
