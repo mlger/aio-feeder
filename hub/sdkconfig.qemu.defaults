@@ -16,8 +16,10 @@ CONFIG_AIO_UI_SHOT=y
 # dedup table (4 KB, REPL-only) is freed in this build and the pool rises to
 # 72 KB. CONFIG_LV_MEM_POOL_EXPAND_SIZE_KILOBYTES is a no-op in 9.2.2 (it
 # only feeds TLSF_MAX_POOL_SIZE). Hardware (PSRAM) is untouched.
-CONFIG_LV_MEM_SIZE_KILOBYTES=70
-# v0.6 (10 screens): the PIN pad moved to one lv_btnmatrix (was 12 buttons,
-# ~1.5 KB of pool for widgets the shot never touches), which paid for the
-# three new screens AND let the pool drop 72 -> 70 KB to cover the .bss
-# growth of the settings/wizard snapshots (the link overflowed by 464 B).
+CONFIG_LV_MEM_SIZE_KILOBYTES=84
+# v0.6 (10 screens): the shot framebuffer dropped 384 -> 352 px wide
+# (2 x 170 px cards), freeing ~15 KB of .bss — enough for the settings/
+# wizard snapshots (the first link overflowed by 464 B) AND a 72 -> 84 KB
+# pool: at 70 KB the ten screens left 2.2 KB free at boot and the first
+# dashboard render died in lv_memset(NULL) (StoreProhibited, the same
+# failure mode the 64 KB pool hit on the seventh screen).

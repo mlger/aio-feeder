@@ -36,12 +36,15 @@ namespace ui {
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
 
-#define UI_W 384
+#define UI_W 352
 #define UI_H 240
-/* UI_W is 384, not the panel-proportional 400: the QEMU build has no PSRAM
+/* UI_W is 352, not the panel-proportional 400: the QEMU build has no PSRAM
  * and every static byte lives in internal DRAM — 400-wide overflowed
  * dram0_0_seg by ~14 KB once the fifth screen landed (see tools/qemu/
- * README.md). 384 still fits the two-column card grid (2 × 186 px). */
+ * README.md). 384 fit the two-column card grid until v0.6's three extra
+ * screens pushed .bss over again; 352 (2 × 170 px cards) frees ~15 KB,
+ * which funds the 84 KB LVGL pool the ten screens need. Same scene code
+ * renders at 800×480 on hardware. */
 
 /* QEMU pmemsave target — LVGL renders here (single full buffer, FULL mode). */
 extern "C" uint8_t g_shot_fb[UI_W * UI_H * 2];
@@ -333,7 +336,7 @@ static lv_obj_t *new_label(lv_obj_t *parent, const char *txt, const lv_font_t *f
 }
 
 static void build_card(Card &c, lv_obj_t *parent) {
-  c.root = new_panel(parent, 186, 88, C_CARD);
+  c.root = new_panel(parent, 170, 88, C_CARD);
   lv_obj_set_style_radius(c.root, 10, 0);
   lv_obj_set_style_pad_all(c.root, 8, 0);
   lv_obj_set_flex_flow(c.root, LV_FLEX_FLOW_COLUMN);
@@ -343,7 +346,7 @@ static void build_card(Card &c, lv_obj_t *parent) {
 
   /* row 0: status dot + name */
   lv_obj_t *row = lv_obj_create(c.root);
-  lv_obj_set_size(row, 170, 18);
+  lv_obj_set_size(row, 154, 18);
   lv_obj_set_style_bg_opa(row, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(row, 0, 0);
   lv_obj_set_style_pad_all(row, 0, 0);
@@ -914,7 +917,7 @@ static void build_history_screen() {
     lv_obj_set_flex_align(col, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER,
                           LV_FLEX_ALIGN_CENTER);
     lv_obj_set_style_pad_row(col, 0, 0);
-    lv_obj_set_x(col, (int32_t)(6 + i * 50));
+    lv_obj_set_x(col, (int32_t)(6 + i * 46));
     lv_obj_set_y(col, 2);
     lv_obj_t *bar = lv_obj_create(col);
     lv_obj_set_size(bar, 30, 4);
@@ -1626,8 +1629,8 @@ static void build_pin_screen() {
                                  "7", "8", "9", "C", "0", "OK", nullptr};
   lv_obj_t *kb = lv_btnmatrix_create(s_pin_scr);
   lv_btnmatrix_set_map(kb, KEYS);
-  lv_obj_set_size(kb, 168, 148);
-  lv_obj_set_pos(kb, 202, 38);
+  lv_obj_set_size(kb, 164, 148);
+  lv_obj_set_pos(kb, 178, 38);
   lv_obj_set_style_bg_opa(kb, LV_OPA_TRANSP, 0);
   lv_obj_set_style_border_width(kb, 0, 0);
   lv_obj_set_style_pad_all(kb, 2, 0);

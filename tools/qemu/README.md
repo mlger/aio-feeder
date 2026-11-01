@@ -42,8 +42,12 @@ LVGL pool is raised 64 → 72 KB (`CONFIG_LV_MEM_SIZE_KILOBYTES` in
 9.2.2). The ui task prints `lv pool total/free` at boot — watch it before
 adding screens.
 
-v0.6 took the build to 10 slots and overflowed `dram0_0_seg` by 464 B:
+v0.6 took the build to 10 slots and overflowed `dram0_0_seg` by 464 B;
 the PIN pad became a single `lv_btnmatrix` (12 separate buttons cost
-~1.5 KB of pool for widgets the shot never touches), which both paid for
-the three new screens' widgets and let the pool drop 72 → 70 KB, covering
-the settings/wizard snapshot buffers with ~1.5 KB to spare.
+~1.5 KB of pool for widgets the shot never touches). Shrinking the pool
+to 70 KB got the link through but left only 2.2 KB free at boot and the
+first dashboard render died in `lv_memset(NULL)` (StoreProhibited — the
+same failure mode the 64 KB pool hit on the seventh screen). Final fix:
+the shot framebuffer dropped 384 → 352 px wide (2 × 170 px cards),
+freeing ~15 KB of .bss — the pool now runs 84 KB with real headroom.
+`tools/qemu/capture.py` carries the same FB_W/FB_H constants.
