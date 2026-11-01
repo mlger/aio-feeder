@@ -159,9 +159,28 @@ takes the weighed result (≥ 5 g, §9.3.3), sanity-ranges the derived rate,
 keeps the median of up to 5 runs and writes it into the profile + pushes
 CONFIG; the `cal` bench CLI and the LVGL calibration screen drive the same
 session, and the QEMU shot run captures `calib` / `calib_weigh` /
-`calib_done`. Next: settings/wizard screens, PIN, backup/export.
+`calib_done`.
+
+The **M4b remainder** completes the setup workflow: the **settings screen**
+(§8.8 jump bar — Restart, Display, Time, Network, Remote, Security, Storage,
+Backup, Wizard, Danger) edits a CRC'd settings blob (brightness, screen-off,
+history retention 7/30/90, NTP, Wi-Fi credentials kept on-device); the **PIN
+lock** (§8, FR10) gates settings — and, when the scope says so, manual feeds —
+with a 4-digit salted-hash code, 60 s unlock, schedules never blocked; the
+**backup/export** (§9.12, FR19, D18/D31/D32) writes nodes + schedules +
+settings as JSON to the SD card (per-node link keys included for the
+replaced-hub case; PIN and Wi-Fi/MQTT passwords never leave the hub),
+restores with confirmation while keeping history and secrets, and exports
+the feed history as quoted CSV (time,node,amount,unit,result,source); the
+**setup wizard** (§9.13, FR21) walks six steps — zone+NTP, Wi-Fi, first
+feeder (existing or newly paired), hopper size/level (skipped when pairing
+just asked), first schedule within the per-feed cap, done — with Back at
+every step and nothing written until save. The `set` / `pin` / `backup` /
+`wiz` bench CLIs drive the same sessions, and the QEMU shot run captures
+`settings*` / `pin_*` / `wizard_*` states.
 
 Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**, **v0.4.0** (M4a hub UI), **v0.5.0**
-(M4b pairing, hub + node). Cut the next one the same way —
+(M4b pairing, hub + node), **v0.6.0** (M4b settings, PIN, backup/export,
+wizard). Cut the next one the same way —
 `git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the firmware zips
 to a GitHub Release automatically.
