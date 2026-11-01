@@ -43,7 +43,7 @@ struct Hal {
     Wire.begin(HAL_SDA_PIN, HAL_SCL_PIN);
     timer1_isr_init();
     timer1_attachInterrupt(hal_relay_off_isr);
-    timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE_LOOP);
+    timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE);
     ESP.wdtEnable(0); /* software WDT feeds alongside the always-on HW WDT */
   }
 
@@ -56,7 +56,7 @@ struct Hal {
     g_relay_off_fired = false;
     timer1_write(ms * 312UL); /* 80 MHz / 256 = 3.2 µs per tick */
   }
-  void cancel_relay_off() { timer1_disable(); timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE_LOOP); }
+  void cancel_relay_off() { timer1_disable(); timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE); }
   bool relay_off_fired() { return g_relay_off_fired; }
 
   void feed_wdt() { ESP.wdtFeed(); }

@@ -18,7 +18,7 @@
 
 #include <stdint.h>
 #include <string.h>
-#include "limits.h"
+#include "node_limits.h"
 #include "feed_journal.h"
 #include "proto.h"
 #include "profile.h"

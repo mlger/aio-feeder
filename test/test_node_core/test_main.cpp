@@ -5,7 +5,7 @@
 #include "crc16.h"
 #include "profile.h"
 #include "config_slots.h"
-#include "limits.h"
+#include "node_limits.h"
 #include "feed_journal.h"
 #include "time_validity.h"
 #include "actuator.h"
