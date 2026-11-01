@@ -57,6 +57,16 @@ static inline uint16_t profile_max_on_ms(const node_profile_t *p) {
              : (p ? p->max_on_ms_single : 0);
 }
 
+/* [NEW v0.7] Largest single actuation in the profile's unit (SR2): the max
+ * on-time divided by the calibrated rate. The setup wizard clamps its first
+ * schedule amount to this (§9.13 "amount within the node's per-feed cap").
+ * Pulse mode is out of scope for v1 time-based cal. */
+static inline uint32_t profile_feed_cap_units(const node_profile_t *p) {
+  if (!p || !p->cal_ms_per_unit_x100) return 0;
+  const uint32_t ms = profile_max_on_ms(p);
+  return (uint32_t)(((uint64_t)ms * 100u) / p->cal_ms_per_unit_x100);
+}
+
 static inline uint16_t profile_crc16(const node_profile_t *p) {
   return crc16_ccitt(0xFFFF, (const uint8_t *)p,
                      (size_t)((const uint8_t *)&p->crc16 - (const uint8_t *)p));

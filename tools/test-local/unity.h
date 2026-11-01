@@ -88,5 +88,10 @@ void tearDown(void);
 #define TEST_ASSERT_LESS_THAN_UINT32(e, a) TEST_ASSERT((a) < (e))
 #define TEST_ASSERT_GREATER_THAN_UINT32(e, a) TEST_ASSERT((a) > (e))
 #define TEST_ASSERT_LESS_OR_EQUAL_UINT32(e, a) TEST_ASSERT((a) <= (e))
+#define TEST_ASSERT_EQUAL_UINT8_ARRAY(e, a, n) TEST_ASSERT_EQUAL_HEX8_ARRAY(e, a, n)
+#define TEST_ASSERT_EQUAL_INT8_ARRAY(e, a, n) TEST_ASSERT_EQUAL_HEX8_ARRAY(e, a, n)
+/* Unity's internal name, used by one pairing test — alias it for the shim */
+#define UNITY_TEST_ASSERT_EQUAL_UINT(e, a, l) TEST_ASSERT_EQUAL_INT(e, a)
+#define UNITY_TEST_ASSERT_EQUAL_UINT8(e, a, l, ...) TEST_ASSERT_EQUAL_INT(e, a)
 
 #endif /* AIO_TEST_LOCAL_UNITY_SHIM_H */
