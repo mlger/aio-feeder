@@ -78,7 +78,8 @@
 #define AIO_FIRMWARE_NAME "aio-feeder-hub"
 #endif
 
-using namespace aio; /* the bench firmware body speaks the core vocabulary */
+using namespace aio;    /* the bench firmware body speaks the core vocabulary */
+using namespace aio::ui; /* SET_SEC_*, WIZ_*, views — §8/§9 names at hand */
 
 constexpr uint8_t HUB_CHAN_DEFAULT = 1;
 constexpr int64_t TIME_VALID_MIN = 1600000000; /* 2020-09 (SR7 range check) */

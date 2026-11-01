@@ -14,14 +14,24 @@
 #ifndef AIO_BACKUP_STORE_H
 #define AIO_BACKUP_STORE_H
 
-#include <dirent.h>
-#include <sys/stat.h>
-
 #include <cstdio>
 #include <cstring>
 
 #include "../../hub/src/backup.h"
 #include "sdkconfig.h"
+
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+/* the shot build needs nothing beyond the RAM store below */
+#else
+#include <dirent.h>
+#include <sys/stat.h>
+
+#include <driver/gpio.h>
+#include <driver/sdmmc_host.h>
+#include <esp_err.h>
+#include <esp_vfs_fat.h>
+#include <sdmmc_cmd.h>
+#endif
 
 namespace aio {
 
@@ -34,12 +44,6 @@ static inline IBackupStore *backup_store_create() {
 static inline const char *backup_store_kind() { return "virtual SD"; }
 
 #else  /* hardware: SDMMC 1-bit + FAT */
-
-#include <driver/gpio.h>
-#include <driver/sdmmc_host.h>
-#include <esp_err.h>
-#include <esp_vfs_fat.h>
-#include <sdmmc_cmd.h>
 
 class SdBackupStore : public IBackupStore {
  public:
@@ -65,7 +69,7 @@ class SdBackupStore : public IBackupStore {
   bool write(const char *name, const char *data, size_t len) override {
     if (!mounted_) return false;
     char path[80];
-    snprintf(path, sizeof(path), MOUNT "/%s", name);
+    snprintf(path, sizeof(path), "%s/%s", MOUNT, name);
     FILE *f = fopen(path, "w");
     if (!f) return false;
     const size_t n = fwrite(data, 1, len, f);
@@ -108,7 +112,7 @@ class SdBackupStore : public IBackupStore {
   int read(const char *name, char *out, size_t cap) override {
     if (!mounted_) return -1;
     char path[80];
-    snprintf(path, sizeof(path), MOUNT "/%s", name);
+    snprintf(path, sizeof(path), "%s/%s", MOUNT, name);
     FILE *f = fopen(path, "r");
     if (!f) return -1;
     const size_t n = fread(out, 1, cap, f);
