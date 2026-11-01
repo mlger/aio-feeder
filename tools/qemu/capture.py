@@ -144,6 +144,7 @@ def main() -> int:
                     help="comma-separated screen names to capture")
     ap.add_argument("--out", default="screens", help="output dir for PNGs")
     ap.add_argument("--serial", default="serial.log", help="serial log path")
+    ap.add_argument("--qemu-log", default="qemu.log", help="QEMU stdout/stderr path")
     ap.add_argument("--monitor", default="/tmp/aio-qemu-mon.sock", help="monitor socket")
     ap.add_argument("--nm", default="xtensa-esp-elf-nm", help="nm binary")
     ap.add_argument("--timeout", type=float, default=75.0, help="overall deadline (s)")
@@ -175,8 +176,11 @@ def main() -> int:
     if os.path.exists(args.monitor):
         os.remove(args.monitor)
     print("[capture] qemu:", " ".join(qemu_cmd))
-    qemu = subprocess.Popen(qemu_cmd, stdout=subprocess.DEVNULL,
-                            stderr=subprocess.STDOUT)
+    # keep QEMU's own output — an early exit with no guest serial is
+    # undiagnosable otherwise (v0.6: QEMU died twice right after the app
+    # banner with nothing on serial)
+    qemu_out = open(args.qemu_log, "w")
+    qemu = subprocess.Popen(qemu_cmd, stdout=qemu_out, stderr=subprocess.STDOUT)
 
     mon = Monitor(args.monitor)
     deadline = time.time() + args.timeout
@@ -237,6 +241,14 @@ def main() -> int:
     if missing:
         print(f"[capture] MISSING screens: {', '.join(missing)} "
               f"(markers seen: {sorted(seen_markers) or 'none'})")
+        try:
+            with open(args.qemu_log, encoding="utf-8", errors="replace") as f:
+                tail = f.read()[-2000:]
+            if tail.strip():
+                print("[capture] --- qemu.log tail ---")
+                print(tail)
+        except OSError:
+            pass
         return 1
     print(f"[capture] done: {', '.join(captured)}")
     return 0
