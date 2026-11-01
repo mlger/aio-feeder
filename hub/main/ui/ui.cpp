@@ -1625,8 +1625,9 @@ static void build_pin_screen() {
    * counts both LVGL-pool and static-DRAM bytes, and 12 separate buttons
    * cost ~1.5 KB of pool for pixels the shot never touches. The M5 touch
    * backend wires the events; the shot build only renders it. */
-  static const char *KEYS[13] = {"1", "2", "3", "4", "5", "6",
-                                 "7", "8", "9", "C", "0", "OK", nullptr};
+  static const char *KEYS[17] = {"1", "2", "3", "\n", "4", "5", "6", "\n",
+                                 "7", "8", "9", "\n", "C", "0", "OK", nullptr};
+  static_assert(sizeof(KEYS) / sizeof(KEYS[0]) == 17, "map must end with nullptr");
   lv_obj_t *kb = lv_btnmatrix_create(s_pin_scr);
   lv_btnmatrix_set_map(kb, KEYS);
   lv_obj_set_size(kb, 164, 148);
@@ -1774,7 +1775,9 @@ static void wiz_body_text(const WizardView &v, char *buf, size_t n) {
       snprintf(buf, n, "First schedule: time, days,\namount within the feeder's\nper-feed cap. Saved last.");
       break;
     case WIZ_DONE:
-      snprintf(buf, n, "Feeder %s is set.\n\nNext: run a calibration\nand tap Refilled when\nyou top up. Nothing was\nsent to the node until\nyou saved.",
+      /* lane budget: the body starts at y=150 — 5 lines max on a 240 px
+       * frame (the nothing-until-save rule is the sched step's hint) */
+      snprintf(buf, n, "Feeder %s is set.\n\nNext: run a calibration\nand tap Refilled when\nyou top up.",
                v.done_node_name);
       break;
   }
