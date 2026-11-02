@@ -1,6 +1,10 @@
 ## IDF component manager manifest for the hub main component.
 ## LVGL 9 powers the M4a hub UI (PLAN.md §7.1, §8); pulled from the registry
-## in every build (hardware + QEMU screenshot build).
+## in every build (hardware + QEMU screenshot build). M5 adds the GT911
+## touch driver (esp-bsp line of esp_lcd_touch components) for the hardware
+## display backend; the CH422G expander is 3 register writes, done inline in
+## display_hw.cpp.
 dependencies:
   idf: ">=5.3"
   lvgl/lvgl: "~9.2"
+  espressif/esp_lcd_touch_gt911: "^1.2"

@@ -9,6 +9,7 @@
 #define AIO_UI_H
 
 #include "../../hub/src/ui_model.h"
+#include "../../hub/src/ui_nav.h"
 
 namespace aio {
 namespace ui {
@@ -52,6 +53,24 @@ void pin_clear();
 uint8_t pin_entered_len();
 const char *pin_entered(); /* digits typed so far, NUL-terminated */
 void pin_note(const char *note); /* status line: "wrong PIN", "unlocked" */
+
+/* --- M5 touch wiring ---------------------------------------------------- */
+
+/* Engine loop polls once per tick: drains the tap requests the LVGL task
+ * queued (nav::Actions one-shot flags; hub/src/ui_nav.h). */
+void take_actions(nav::Actions &out);
+
+/* Engine mirrors PinLock state (§8 60 s expiry, configure changes) so the
+ * nav model bounces the user off protected screens. */
+void nav_sync_lock(bool locked);
+
+/* Engine reports the PIN verdict after verifying digits — the nav model
+ * lands on the settings screen on success, stays on PIN on failure. */
+void pin_gate_result(bool ok);
+
+/* Shot-build helper: queue a synthetic tap at logical (x, y) that flows
+ * through the real LVGL indev (hit-test → callbacks → requests). */
+void inject_tap(int x, int y);
 
 /* Which node the detail screen shows (dashboard tap target later; the QEMU
  * shot build pins it). */

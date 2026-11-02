@@ -143,11 +143,13 @@ struct Actions {
   bool cal_close = false;
 
   /* settings panes */
+  bool settings = false;     /* entering SET: engine republishes a fresh view */
   int8_t set_section = -1;   /* SetSection index tapped */
   bool backup_export = false;
   bool backup_restore = false;
   bool restart = false;
-  int8_t detail_feed = -1;   /* feed preview button on DETAIL (node row) */
+  bool pin_submit = false;   /* PIN pad OK: digits via ui::pin_entered() */
+  int8_t detail_feed = -1;   /* feed preview button on DETAIL (M5b) */
 
   void clear() { *this = Actions{}; }
   bool any() const {
@@ -155,8 +157,9 @@ struct Actions {
            pair_select >= 0 || pair_confirm || pair_commit || pair_close ||
            wiz_open || wiz_tz >= 0 || wiz_node >= 0 || wiz_next || wiz_back ||
            wiz_commit || wiz_close || cal_open || cal_test_s >= 0 || cal_run ||
-           cal_next || cal_save || cal_close || set_section >= 0 ||
-           backup_export || backup_restore || restart || detail_feed >= 0;
+           cal_next || cal_save || cal_close || settings || set_section >= 0 ||
+           backup_export || backup_restore || restart || pin_submit ||
+           detail_feed >= 0;
   }
 };
 
