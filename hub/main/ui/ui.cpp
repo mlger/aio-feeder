@@ -2183,7 +2183,8 @@ static void ui_task(void *) {
   uint8_t tap_stage = 0;
   uint32_t slot_start_ms = 0;
   uint32_t tap_throttle = 0;
-  bool tap_marked = false; /* a marker just printed for tap_shot */
+  bool tap_marked = false;      /* a marker just printed for tap_shot */
+  uint32_t tap_marked_at = 0;
   /* section of the last published settings snapshot (255 = none yet) */
   auto tap_section = [&]() -> uint8_t {
     if (!s_set_seq) return 255;
@@ -2242,8 +2243,11 @@ static void ui_task(void *) {
         case 1:
           if (s_nav.cur == nav::SC_DETAIL) { tap_shot = "tap_detail"; tap_stage = 2; }
           break;
-        case 2: /* one marker beat on the detail screen, then home */
-          if (tap_marked) { tap_marked = false; inject_tap(UI_W - 12, UI_H - 13); tap_stage = 3; }
+        case 2: /* one settled marker beat on detail (runner dumps at
+                 * marker+0.8 s — act at +2 s), then home */
+          if (tap_marked && now - tap_marked_at >= 2000) {
+            tap_marked = false; inject_tap(UI_W - 12, UI_H - 13); tap_stage = 3;
+          }
           break;
         case 3:
           if (s_nav.cur == nav::SC_DASH) { inject_tap(UI_W - 20, 18); tap_stage = 4; } /* gear */
@@ -2251,14 +2255,18 @@ static void ui_task(void *) {
         case 4:
           if (s_nav.cur == nav::SC_SET) { tap_shot = "tap_settings"; tap_stage = 5; }
           break;
-        case 5: /* one marker beat on settings, then section row 7 (BACKUP) */
-          if (tap_marked) { tap_marked = false; inject_tap(70, 142); tap_stage = 6; }
+        case 5: /* one settled marker beat on settings, then row 7 (BACKUP) */
+          if (tap_marked && now - tap_marked_at >= 2000) {
+            tap_marked = false; inject_tap(70, 142); tap_stage = 6;
+          }
           break;
         case 6:
           if (tap_section() == SET_SEC_BACKUP) { tap_shot = "tap_backup"; tap_stage = 7; }
           break;
-        case 7: /* one marker beat on BACKUP, then row 5 (SECURITY) */
-          if (tap_marked) { tap_marked = false; inject_tap(70, 114); tap_stage = 8; }
+        case 7: /* one settled marker beat on BACKUP, then row 5 (SECURITY) */
+          if (tap_marked && now - tap_marked_at >= 2000) {
+            tap_marked = false; inject_tap(70, 114); tap_stage = 8;
+          }
           break;
         case 8:
           if (tap_section() == SET_SEC_SECURITY) { tap_shot = "tap_security"; tap_stage = 9; }
@@ -2275,8 +2283,9 @@ static void ui_task(void *) {
      * g_shot_fb after each marker; repeats every 5 s for reliability). The
      * pairing slot reports its current step so the runner grabs one PNG per
      * pairing phase (discover / code / form / done). */
+    const uint32_t marker_min = (loaded == SH_TAP) ? 3000u : 5000u;
     if (now - boot_ms > 6000 && s_last_flush_ms > 0 &&
-        now - s_last_flush_ms > 400 && now - s_last_marker_ms > 5000) {
+        now - s_last_flush_ms > 400 && now - s_last_marker_ms > marker_min) {
       const char *shot_name = "alerts";
       switch (loaded) {
         case SH_DASH: shot_name = "dashboard"; break;
@@ -2331,7 +2340,10 @@ static void ui_task(void *) {
       printf("\nAIO_SHOT %s\n", shot_name);
       fflush(stdout);
       s_last_marker_ms = now;
-      if (loaded == SH_TAP && strcmp(shot_name, tap_shot) == 0) tap_marked = true;
+      if (loaded == SH_TAP && strcmp(shot_name, tap_shot) == 0) {
+        tap_marked = true;
+        tap_marked_at = now;
+      }
     }
 
     vTaskDelay(pdMS_TO_TICKS(10));
