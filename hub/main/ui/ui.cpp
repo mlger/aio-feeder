@@ -2241,7 +2241,10 @@ static void ui_task(void *) {
           }
           break;
         case 1:
-          if (s_nav.cur == nav::SC_DETAIL) { tap_shot = "tap_detail"; tap_stage = 2; }
+          if (s_nav.cur == nav::SC_DETAIL) {
+            tap_shot = "tap_detail"; tap_marked = false; /* no stale beats */
+            tap_stage = 2;
+          }
           break;
         case 2: /* one settled marker beat on detail (runner dumps at
                  * marker+0.8 s — act at +2 s), then home */
@@ -2253,7 +2256,10 @@ static void ui_task(void *) {
           if (s_nav.cur == nav::SC_DASH) { inject_tap(UI_W - 20, 18); tap_stage = 4; } /* gear */
           break;
         case 4:
-          if (s_nav.cur == nav::SC_SET) { tap_shot = "tap_settings"; tap_stage = 5; }
+          if (s_nav.cur == nav::SC_SET) {
+            tap_shot = "tap_settings"; tap_marked = false;
+            tap_stage = 5;
+          }
           break;
         case 5: /* one settled marker beat on settings, then row 7 (BACKUP) */
           if (tap_marked && now - tap_marked_at >= 2000) {
@@ -2261,7 +2267,10 @@ static void ui_task(void *) {
           }
           break;
         case 6:
-          if (tap_section() == SET_SEC_BACKUP) { tap_shot = "tap_backup"; tap_stage = 7; }
+          if (tap_section() == SET_SEC_BACKUP) {
+            tap_shot = "tap_backup"; tap_marked = false;
+            tap_stage = 7;
+          }
           break;
         case 7: /* one settled marker beat on BACKUP, then row 5 (SECURITY) */
           if (tap_marked && now - tap_marked_at >= 2000) {
@@ -2269,7 +2278,10 @@ static void ui_task(void *) {
           }
           break;
         case 8:
-          if (tap_section() == SET_SEC_SECURITY) { tap_shot = "tap_security"; tap_stage = 9; }
+          if (tap_section() == SET_SEC_SECURITY) {
+            tap_shot = "tap_security"; tap_marked = false;
+            tap_stage = 9;
+          }
           break;
         default: break;
       }
