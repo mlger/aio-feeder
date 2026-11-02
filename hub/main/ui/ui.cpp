@@ -266,8 +266,10 @@ struct Card {
 };
 static Card s_cards[HUB_MAX_NODES];
 
-static volatile uint32_t s_last_flush_ms = 0;
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+static volatile uint32_t s_last_flush_ms = 0; /* marker pacing (shot only) */
 static uint32_t s_last_marker_ms = 0;
+#endif
 
 /* --- helpers --------------------------------------------------------------------- */
 
