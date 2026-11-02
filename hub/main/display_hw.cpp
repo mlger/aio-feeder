@@ -174,7 +174,7 @@ static bool panel_init() {
   cfg.timings.vsync_pulse_width = board::VPW;
   cfg.timings.vsync_back_porch = board::VBP;
   cfg.timings.vsync_front_porch = board::VFP;
-  cfg.flags.pclk_active_neg = 1; /* demo: sample on the falling edge */
+  cfg.timings.flags.pclk_active_neg = 1; /* demo: sample on the falling edge */
   cfg.flags.fb_in_psram = 1;
   cfg.flags.refresh_on_demand = 1; /* flush_cb restarts the one-shot DMA */
 
@@ -189,7 +189,7 @@ static bool panel_init() {
   }
 
   /* the panel's one framebuffer — bars and all */
-  void *fb = nullptr;
+  uint8_t *fb = nullptr;
   if (esp_lcd_rgb_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) {
     return false;
   }
@@ -257,10 +257,17 @@ bool init() {
   }
   if (!panel_init()) return false;
 
-  /* GT911 device on the shared bus (esp_lcd panel-IO path) */
-  esp_lcd_panel_io_i2c_config_t io_cfg = ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG();
+  /* GT911 device on the shared bus (esp_lcd panel-IO path). Fields are
+   * assigned, not brace-initialized — the component's
+   * ESP_LCD_TOUCH_IO_I2C_GT911_CONFIG() macro predates the IDF 5.4 struct
+   * field order and fails as a designated initializer in C++. */
+  esp_lcd_panel_io_i2c_config_t io_cfg = {};
   io_cfg.dev_addr = board::GT911_ADDR;
   io_cfg.scl_speed_hz = 400 * 1000;
+  io_cfg.control_phase_bytes = 1;
+  io_cfg.dc_bit_offset = 0;
+  io_cfg.lcd_cmd_bits = 16;
+  io_cfg.flags.disable_control_phase = 1;
   esp_lcd_panel_io_handle_t io = nullptr;
   if (esp_lcd_new_panel_io_i2c(i2c::bus(), &io_cfg, &io) != ESP_OK) {
     ESP_LOGE(TAG, "touch panel-io init failed");
