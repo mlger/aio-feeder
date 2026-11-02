@@ -188,8 +188,8 @@ static bool panel_init() {
     return false;
   }
 
-  /* the panel's one framebuffer — bars and all */
-  uint8_t *fb = nullptr;
+  /* the panel's one framebuffer — bars and all (out params are void*) */
+  void *fb = nullptr;
   if (esp_lcd_rgb_panel_get_frame_buffer(s_panel, 1, &fb) != ESP_OK || !fb) {
     return false;
   }
@@ -224,7 +224,7 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
 static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data) {
   (void)indev;
   uint16_t x[1] = {0}, y[1] = {0};
-  uint16_t n = 0;
+  uint8_t n = 0;
   esp_lcd_touch_read_data(s_touch);
   bool pressed = esp_lcd_touch_get_coordinates(s_touch, x, y, nullptr, &n, 1) && n > 0;
   if (pressed) {
