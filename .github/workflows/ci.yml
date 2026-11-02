@@ -119,6 +119,10 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          # full history so `git describe --tags` yields v0.7.0-N-gSHA (and
+          # the pages build-info.json / manifests carry a real semver)
+          fetch-depth: 0
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
