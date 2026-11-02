@@ -2134,6 +2134,14 @@ static void ui_task(void *) {
   build_tap_targets();
   build_nav_overlay();
   lv_screen_load(s_scr);
+
+  /* the injected-tap indev: the tap slot drives the flow through the real
+   * LVGL input path (hit-test -> callback -> request -> engine) */
+  lv_indev_t *tap_indev = lv_indev_create();
+  lv_indev_set_type(tap_indev, LV_INDEV_TYPE_POINTER);
+  lv_indev_set_read_cb(tap_indev, injected_read_cb);
+  lv_indev_set_display(tap_indev, s_disp);
+
   log_pool();
 
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
