@@ -2174,12 +2174,20 @@ static void ui_task(void *) {
   ShotScreen shot = SH_DASH;
   ShotScreen loaded = SH_DASH;
 
-  /* tap-path driver state: the interactive walk is driven through the real
-   * indev (hit-test → callback → request → engine) so CI proves the touch
-   * wiring end-to-end. Marker name per stage, printed by the marker block
-   * below once the frame settles. */
-  const char *tap_shot = "tap_detail";
+  /* tap-path driver state: closed loop — each tap fires only after the
+   * previous one confirmed (nav state / settings section), and a marker
+   * name is adopted only once its target frame is live, so the runner's
+   * first-dump-per-name always shows the right screen. Pacing is relative
+   * to the slot switch (slot_start_ms), not the boot. */
+  const char *tap_shot = "tap_idle"; /* not in the runner's list */
   uint8_t tap_stage = 0;
+  uint32_t slot_start_ms = 0;
+  uint32_t tap_hold = 0;
+  /* section of the last published settings snapshot (255 = none yet) */
+  auto tap_section = [&]() -> uint8_t {
+    if (!s_set_seq) return 255;
+    return s_set_snap[(s_set_seq - 1) & 1].section;
+  };
 
   for (;;) {
     const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
@@ -2200,40 +2208,49 @@ static void ui_task(void *) {
                                          : s_scr /* SH_TAP rides nav */);
       loaded = shot;
       s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
+      slot_start_ms = now;
       if (shot == SH_TAP) {
         tap_stage = 0;
-        tap_shot = "tap_detail";
+        tap_shot = "tap_idle";
       }
     }
 
-    /* tap-path driver (slot 10): walk dash → detail → home → settings →
-     * BACKUP → SECURITY by tapping the real catchers */
+    /* tap-path driver (slot 10): dash → detail → home → settings → BACKUP
+     * → SECURITY, tapped through the real catchers. Each step confirms on
+     * nav state (or the published settings section) before the next tap;
+     * marker names adopt only when the frame is live, and each pane holds
+     * ≥4.5 s so a marker lands inside it (the runner keeps the FIRST dump
+     * per name). main.cpp opens the §8 gate at slot start (seeded PIN
+     * would otherwise route the gear tap to the PIN pad). */
     if (loaded == SH_TAP) {
-      const uint32_t m = now % SHOT_WINDOW_MS;
+      const uint32_t ms = now - slot_start_ms;
       switch (tap_stage) {
-        case 0:
-          if (m >= 2500) { inject_tap(88, 80); tap_stage = 1; } /* card 1 */
+        case 0: /* card 1 */
+          if (ms >= 1500) { inject_tap(88, 80); tap_stage = 1; }
           break;
         case 1:
-          if (m >= 7000) { inject_tap(UI_W - 12, UI_H - 13); tap_stage = 2; } /* home */
+          if (s_nav.cur == nav::SC_DETAIL) { tap_shot = "tap_detail"; tap_hold = now; tap_stage = 2; }
           break;
-        case 2:
-          if (m >= 9000) { inject_tap(UI_W - 20, 18); tap_stage = 3; } /* gear */
+        case 2: /* hold one marker beat, then home */
+          if (now - tap_hold >= 4500) { inject_tap(UI_W - 12, UI_H - 13); tap_stage = 3; }
           break;
         case 3:
-          if (m >= 11000) { tap_shot = "tap_settings"; tap_stage = 4; }
+          if (s_nav.cur == nav::SC_DASH && ms >= 9000) { inject_tap(UI_W - 20, 18); tap_stage = 4; } /* gear */
           break;
         case 4:
-          if (m >= 13000) { inject_tap(70, 142); tap_stage = 5; } /* row 7 BACKUP */
+          if (s_nav.cur == nav::SC_SET) { tap_shot = "tap_settings"; tap_hold = now; tap_stage = 5; }
           break;
-        case 5:
-          if (m >= 15000) { tap_shot = "tap_backup"; tap_stage = 6; }
+        case 5: /* hold, then section row 7 (BACKUP) */
+          if (now - tap_hold >= 4500) { inject_tap(70, 142); tap_stage = 6; }
           break;
         case 6:
-          if (m >= 17000) { inject_tap(70, 114); tap_stage = 7; } /* row 5 SECURITY */
+          if (tap_section() == SET_SEC_BACKUP) { tap_shot = "tap_backup"; tap_hold = now; tap_stage = 7; }
           break;
-        case 7:
-          if (m >= 19000) { tap_shot = "tap_security"; tap_stage = 8; }
+        case 7: /* hold, then row 5 (SECURITY) */
+          if (now - tap_hold >= 4500) { inject_tap(70, 114); tap_stage = 8; }
+          break;
+        case 8:
+          if (tap_section() == SET_SEC_SECURITY) { tap_shot = "tap_security"; tap_stage = 9; }
           break;
         default: break;
       }
