@@ -1467,6 +1467,18 @@ static void aio_loop_task(void *) {
           wiz_stage = 5;
         }
       }
+      /* tap-path slot (M5, no staged flow of its own): open the §8 gate so
+       * the walk's gear tap reaches settings — the seeded PIN would
+       * otherwise route it to the PIN pad and the lock mirror would bounce
+       * the user back to the dashboard (observed in the first CI run). */
+      if (cyc % 11 == 10) {
+        static uint32_t tap_cycle = UINT32_MAX;
+        if (tap_cycle != cyc) {
+          tap_cycle = cyc;
+          if (g_pin.enabled()) g_pin.unlock("1234", now);
+          aio::ui::nav_sync_lock(false);
+        }
+      }
 #endif /* shot-only sim tick + rotation drivers */
 
       /* dashboard + detail snapshots → UI task every 400 ms (both builds:
