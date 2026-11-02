@@ -914,7 +914,9 @@ static void update_history(const HistoryView &h) {
     if (!h.event_count)
       snprintf(lane, sizeof(lane), "no feeds yet");
     else
-      for (int i = 0; i < h.event_count && off + 36 < sizeof(lane); i++) {
+      /* lane budget: the list starts under the chart — 4 lines clear the
+       * footer (the model keeps 8; the §8.6 list is a recent-events strip) */
+      for (int i = 0; i < h.event_count && i < 4 && off + 36 < sizeof(lane); i++) {
         const HistoryEventRow &ev = h.events[i];
         char age[24];
         fmt_age(age, sizeof(age), ev.age_s);
