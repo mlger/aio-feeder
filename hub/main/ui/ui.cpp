@@ -1868,12 +1868,6 @@ static void open_enc_cb(lv_event_t *e) {
   show(s_nav.open(s, 0));
 }
 
-/* detail-relative opener: user_data = screen, node = the detail node */
-static void det_open_cb(lv_event_t *e) {
-  const auto s = (nav::Screen)(uintptr_t)lv_event_get_user_data(e);
-  show(s_nav.open(s, detail_node()));
-}
-
 /* dashboard card grid: 2 × 170 px cards, SPACE_EVENLY → columns at ~4 and
  * ~178; rows at 36 and 36+94 (build_screen geometry) */
 static void card_tap_cb(lv_event_t *e) {
@@ -2167,8 +2161,11 @@ static const char *pad_title(entry::Target t) {
 }
 
 /* redraw the pad for the current buffer (show/hide + labels) */
+static void build_entry_pad();
+
 static void pad_refresh() {
-  if (!s_pad_root) return;
+  if (!s_pad_root) build_entry_pad(); /* lazy: first open pays the pool */
+  if (!s_pad_root) return;            /* build failed (pool) — stay closed */
   if (!s_pad.is_open()) {
     lv_obj_add_flag(s_pad_root, LV_OBJ_FLAG_HIDDEN);
     return;
@@ -2317,6 +2314,12 @@ static void build_entry_pad() {
   lv_obj_add_flag(s_pad_root, LV_OBJ_FLAG_HIDDEN);
 
   lv_obj_t *panel = new_panel(s_pad_root, 300, 210, C_PANEL);
+  if (!panel) { /* pool exhausted: run pad-less rather than crash */
+    printf("ui: entry pad skipped (LVGL pool)\n");
+    lv_obj_delete(s_pad_root);
+    s_pad_root = nullptr;
+    return;
+  }
   lv_obj_set_pos(panel, 26, 20);
 
   s_pad_title_lbl = new_label(panel, "", &lv_font_montserrat_12, C_MUTED);
@@ -2463,7 +2466,9 @@ static void build_all_screens() {
   build_settings_screen();
   build_pin_screen();
   build_wizard_screen();
-  build_entry_pad(); /* the shared M5b entry modal (top layer, hidden) */
+  /* the shared M5b entry modal builds lazily on first open (pad_refresh):
+   * the QEMU pool is the binding constraint and the shot build never
+   * opens the pad — boot keeps the v0.7.0 footprint */
 }
 
 /* pool pressure at boot (the 64 KiB fixed pool is the binding constraint in

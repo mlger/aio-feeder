@@ -249,6 +249,17 @@ def main() -> int:
                 print(tail)
         except OSError:
             pass
+        # no markers at all usually means the UI task died at boot — show
+        # the head of the serial log (the panic lines live there, the tail
+        # only shows the engine drivers still ticking)
+        try:
+            with open(serial_path, encoding="utf-8", errors="replace") as f:
+                head = "".join(f.readlines()[:80])
+            if head.strip():
+                print("[capture] --- serial.log head (boot) ---")
+                print(head)
+        except OSError:
+            pass
         return 1
     print(f"[capture] done: {', '.join(captured)}")
     return 0
