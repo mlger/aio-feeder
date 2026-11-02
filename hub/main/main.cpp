@@ -37,6 +37,7 @@
 #include <esp_console.h>
 #include <esp_mac.h>
 #include <esp_random.h>
+#include <esp_system.h>
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
 #include <freertos/semphr.h>
@@ -102,9 +103,7 @@ static aio::IBackupStore *g_sd = nullptr; /* SD card / virtual SD (M4b) */
 static char g_sd_note[24] = "no card";
 static char g_backup_last[32] = "";
 static uint8_t g_backup_count = 0;
-#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
-static uint8_t s_set_section = 0; /* active settings pane (shot driver) */
-#endif
+static uint8_t s_set_section = 0; /* active settings pane (driver + taps) */
 static aio::Pcf85063 rtc;
 static aio::PcfI2cIdf rtc_bus;
 static bool rtc_ok = false;
@@ -1258,7 +1257,7 @@ static void aio_loop_task(void *) {
       static uint32_t pair_cycle = UINT32_MAX;
       static uint8_t pair_stage = 0;
       const uint32_t cyc = now / 25000;
-      if (cyc % 7 == 5) {
+      if (cyc % 11 == 5) {
         if (pair_cycle != cyc) {
           pair_cycle = cyc;
           pair_stage = 0;
@@ -1308,7 +1307,7 @@ static void aio_loop_task(void *) {
        * the "calib" marker name; its state is visible in the serial log.) */
       static uint32_t cal_cycle = UINT32_MAX;
       static uint8_t cal_stage = 0;
-      if (cyc % 7 == 6) {
+      if (cyc % 11 == 6) {
         if (cal_cycle != cyc) {
           cal_cycle = cyc;
           cal_stage = 0;
@@ -1359,7 +1358,7 @@ static void aio_loop_task(void *) {
        * "settings_backup" (+17), DANGER [21,25). */
       static uint32_t set_cycle = UINT32_MAX;
       static uint8_t set_stage = 0;
-      if (cyc % 10 == 7) {
+      if (cyc % 11 == 7) {
         if (set_cycle != cyc) {
           set_cycle = cyc;
           set_stage = 0;
@@ -1384,7 +1383,7 @@ static void aio_loop_task(void *) {
        * [14.5,21) → "pin_wrong", correct code [21,25) → "pin_ok". */
       static uint32_t pin_cycle = UINT32_MAX;
       static uint8_t pin_stage = 0;
-      if (cyc % 10 == 8) {
+      if (cyc % 11 == 8) {
         if (pin_cycle != cyc) {
           pin_cycle = cyc;
           pin_stage = 0;
@@ -1423,7 +1422,7 @@ static void aio_loop_task(void *) {
       static uint32_t wiz_cycle = UINT32_MAX;
       static uint8_t wiz_stage = 0;
       static HubSched wiz_saved_sched;
-      if (cyc % 10 == 9) {
+      if (cyc % 11 == 9) {
         if (wiz_cycle != cyc) {
           wiz_cycle = cyc;
           if (wiz_stage == 5) { /* restore what last cycle's commit replaced */
@@ -1468,8 +1467,10 @@ static void aio_loop_task(void *) {
           wiz_stage = 5;
         }
       }
+#endif /* shot-only sim tick + rotation drivers */
 
-      /* dashboard + detail snapshots → UI task every 400 ms */
+      /* dashboard + detail snapshots → UI task every 400 ms (both builds:
+       * the hardware UI and the touch actions need fresh snapshots too) */
       static uint32_t ui_ms = 0;
       if (now - ui_ms >= 400) {
         ui_ms = now;
@@ -1503,8 +1504,114 @@ static void aio_loop_task(void *) {
         sv.section = s_set_section;
         aio::ui::publish_settings(sv);
         aio::ui::publish_wizard(g_wiz.view());
+        /* §8: mirror the lock state so the nav model bounces on expiry */
+        aio::ui::nav_sync_lock(g_pin.blocks_settings());
       }
-#endif
+
+      /* M5 touch: service tap requests (both builds — the shot build's tap
+       * slot drives this same path through inject_tap). Requests come from
+       * the LVGL task as one-shot flags; everything below runs on the
+       * engine task with the state lock held, like the bench CLI. */
+      aio::nav::Actions acts;
+      aio::ui::take_actions(acts);
+      if (acts.any()) {
+        aio::ui::PeerFresh fr[aio::HUB_MAX_NODES];
+        uint8_t fn = 0;
+        for (int i = 0; i < aio::HUB_MAX_NODES && fn < aio::HUB_MAX_NODES; i++) {
+          const aio::HubNode *n = reg.node(i);
+          if (!n || !n->id) continue;
+          const aio::LinkPeer *p = eng.peer_by_node(n->id);
+          fr[fn++] = aio::ui::PeerFresh{n->id, p ? p->last_rx_ms : 0,
+                                        p ? p->last_hb.vin_mv : (uint16_t)0,
+                                        p ? p->last_hb.flags : (uint8_t)0};
+        }
+        const uint32_t un = hub_unix_now();
+        if (acts.detail) {
+          aio::ui::set_detail_node(acts.detail_node);
+          aio::ui::publish_detail(aio::ui::build_node_detail(
+              reg, evlog, acts.detail_node, un, now, fr, fn));
+        }
+        if (acts.editor) {
+          aio::ui::set_detail_node(acts.editor_node);
+          aio::ui::publish_sched_editor(
+              aio::ui::build_sched_editor(reg, acts.editor_node, un));
+        }
+        if (acts.history)
+          aio::ui::publish_history(aio::ui::build_history(reg, evlog, un));
+        if (acts.alerts)
+          aio::ui::publish_alerts(
+              aio::ui::build_alerts(reg, evlog, un, now, fr, fn, g_alerts_ack));
+        if (acts.settings || acts.set_section >= 0) {
+          if (acts.set_section >= 0) s_set_section = (uint8_t)acts.set_section;
+          aio::ui::SettingsView sv = aio::ui::build_settings(
+              reg, g_set, un, g_sd_note, g_backup_count, g_backup_last,
+              g_pin.blocks_settings(), g_pin.unlock_left_s(now));
+          sv.section = s_set_section;
+          aio::ui::publish_settings(sv);
+        }
+        /* PIN pad OK → PinLock verify (§8); the verdict routes the nav */
+        if (acts.pin_submit) {
+          const char *digits = aio::ui::pin_entered();
+          const bool ok = strlen(digits) == 4 && g_pin.unlock(digits, now);
+          aio::ui::pin_note(ok ? "unlocked for 60 s" : "wrong PIN - try again");
+          aio::ui::pin_gate_result(ok);
+          aio::ui::nav_sync_lock(g_pin.blocks_settings());
+        }
+        /* pairing (§6.3): taps drive the same session the bench CLI does */
+        if (acts.pair_cancel || acts.pair_close) g_pair.close();
+        if (acts.pair_open) g_pair.open(now);
+        if (acts.pair_select >= 0) g_pair.select((uint8_t)acts.pair_select);
+        if (acts.pair_confirm) g_pair.confirm_code();
+        if (acts.pair_commit) {
+          pair_accept_payload_t acc{};
+          uint8_t nid = 0;
+          if (g_pair.commit(reg, &acc, &nid) ==
+              aio::PairingSession::PAIR_COMMIT_OK) {
+            const aio::HubNode *nn = reg.by_id(nid);
+            if (nn) pairing_send_accept(nn->mac, acc, now);
+            reg.save(nvs);
+          }
+        }
+        /* setup wizard (§9.13): tz rows + next/back/save/close; name and
+         * capacity keep the session defaults (text entry lands in M5b) */
+        if (acts.wiz_open) g_wiz.open();
+        if (acts.wiz_tz >= 0 && g_wiz.step() == aio::ui::WIZ_TZ)
+          g_wiz.set_tz((uint8_t)acts.wiz_tz, g_set.ntp_on != 0);
+        if (acts.wiz_back) g_wiz.back();
+        if (acts.wiz_next) g_wiz.next();
+        if (acts.wiz_commit) {
+          uint8_t nid = 0;
+          if (g_wiz.commit(reg, g_set, &nid) ==
+              aio::WizardSession::WZ_COMMIT_OK) {
+            settings_persist();
+            reg.save(nvs);
+            aio::HubNode *n = reg.by_id(nid);
+            if (n) {
+              eng.send_schedule_set(nid, n->sched.version, n->sched.entries,
+                                    n->sched.entry_count, n->sched.skip_until,
+                                    n->sched.hold_until, now);
+              eng.send_config(nid, n->profile, 1, now);
+              n->sched.pushed_at = (uint32_t)hub_unix_now();
+              reg.save(nvs);
+            }
+          }
+        }
+        if (acts.wiz_close) g_wiz.close();
+        /* calibration: close/run only — the weigh step needs numeric entry
+         * (M5b); the bench CLI keeps the full flow (docs/bench-m5.md) */
+        if (acts.cal_close) g_calib.close();
+        if (acts.cal_run) calib_run_send(now);
+        /* settings panes: backup/export, restore latest, restart */
+        if (acts.backup_export) backup_op(false);
+        if (acts.backup_restore && g_backup_last[0])
+          backup_restore_op(g_backup_last);
+        if (acts.restart) {
+          printf("restart requested from the settings screen\n");
+          fflush(stdout);
+          vTaskDelay(pdMS_TO_TICKS(200));
+          esp_restart();
+        }
+      }
 
       /* pairing window expiry (§6.3): the shot driver manages its own
        * lifecycle on the rotation grid, so only the non-shot build ticks */

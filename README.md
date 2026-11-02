@@ -116,71 +116,33 @@ built from, so a tagged build displays its own release number.
 
 ## Status
 
-M3 — Hub core (PLAN.md §12) **on pure ESP-IDF** (decision D6 decided: hub =
-ESP-IDF v5.4 + QEMU, nodes stay Arduino/PlatformIO). On top of M1 (bench node)
-and M2 (ESP-NOW link), the hub runs the real core: schedule engine with
-fire-once occurrences across reboots (§12 M3 exit criterion), §9.4 missed-feed
-policy (skip / catch-up once within window, never stack), §9.9 skip/hold gates,
-DST-correct local time (UTC/Manila/EU/US rules), feed_manager as the single
-FEED originator (§7.2 FSM, §6.6 WAL intent → FEED_UNKNOWN on hub death
-mid-feed, §9.5 stagger), CRC'd NVS persistence, PCF85063 RTC fallback + SNTP,
-TIME_SYNC push on drift, and the bench CLI as an `esp_console` REPL.
-Host-tested in CI (97 tests incl. a UDP e2e sim: hub core ↔ fake node over
-real loopback sockets, retry/repeat policy exercised); QEMU boot smoke in CI.
-Hardware verification: `docs/bench-m1.md` (node), `docs/bench-m2.md` (radio),
-`docs/bench-m3.md` (scheduler + reboots), `docs/bench-sim.md` (fake node).
-M4a hub UI screens (LVGL 9 on ESP-IDF, warm dark theme, offscreen RGB565
-framebuffer, host-tested `ui_model` presenters §7.2/§8): **dashboard** (node
-cards, clock, alert footer), **node detail** (state/vin/last-seen, next feed,
-skip/hold gate banner, sorted schedule, recent feeds), **schedule editor**
-(entry list + weekday chips + time/amount draft, pure edit model),
-**history** (7-day bars, per-node totals, recent events) and **alerts**
-(§8.7 active + acknowledged: offline/stale condition rows, failed/rejected/
-unconfirmed/missed feed events, host-tested ack keys) are in, with
-in-firmware sim nodes (two real LinkEngine instances over loopback + one
-silent node) and a seeded week of history driving them under QEMU;
-`tools/qemu/capture.py` dumps the framebuffer per `AIO_SHOT` marker in the
-CI `qemu-hub` job (screenshots uploaded as artifacts). All five M4a screens
-pass the QEMU screenshot run.
+**M5a — display + touch backend (v0.7.0)** on top of M4a/M4b: the Waveshare
+ESP32-S3-Touch-LCD-4.3B hub now drives its ST7262 RGB panel (800×480, plain
+RGB), CH422G expander and GT911 touch (D34) — LVGL at the logical 352×240,
+×2-expanded in flush. All M4a/M4b screens carry tap targets (dashboard
+cards, detail strips, settings rows + action strip, PIN pad, pairing /
+wizard / calibration strips, back/home overlay) wired through the
+host-tested nav model (back stack, §8 PIN gate) to engine-serviced request
+flags; CI screenshots a tap-driven path end-to-end (`inject_tap` → real
+indev → hit-test → request → engine). Display failure runs headless —
+feeding never depends on the UI (§3.3). Remaining for M5 (M5b): numeric /
+text entry on the touchscreen, mixed-type node polish (PLAN §12).
 
-M4b is underway: the **pairing flow** (§6.3/§8.5, D29) runs on the hub —
-60 s "Add node" window, discovery list fed by real `PAIR_REQ`s, 4-digit
-confirmation code, name/mech/capacity form with §9.7 validation, per-node
-key generated and wrapped under the confirmed code, zero-key `PAIR_ACCEPT`,
-registry + link peer + NVS persistence; `pair` bench CLI drives it from
-serial and the LVGL pairing screen (all four steps) is captured in the QEMU
-screenshot run. The **node side** ships too: unpaired nodes beacon
-`PAIR_REQ` (stable persisted nonce), verify the derived code on
-`PAIR_ACCEPT`, and unwrap + store the key on `pairok` — end-to-end OTA
-pairing with the key never in the clear (see `docs/bench-m4b.md`). The
-**calibration wizard** (§8.4/§9.3, D27) is in as well: `CalibSession`
-(host-tested) runs timed test dispenses capped by the node's max on-time,
-takes the weighed result (≥ 5 g, §9.3.3), sanity-ranges the derived rate,
-keeps the median of up to 5 runs and writes it into the profile + pushes
-CONFIG; the `cal` bench CLI and the LVGL calibration screen drive the same
-session, and the QEMU shot run captures `calib` / `calib_weigh` /
-`calib_done`.
+M4b — hub setup workflow (v0.6.0): pairing with confirmation code +
+wrapped key (D29, §6.3), calibration wizard, settings (§8.8), PIN lock
+(§8, D18/D33), backup/export/restore (D31, D32), setup wizard (§9.13) —
+LVGL scenes + host-tested sessions + QEMU screenshots for every screen.
+M4a — hub operate UI (v0.4.0): dashboard, node detail, schedule editor,
+history (7-day chart), alerts.
 
-The **M4b remainder** completes the setup workflow: the **settings screen**
-(§8.8 jump bar — Restart, Display, Time, Network, Remote, Security, Storage,
-Backup, Wizard, Danger) edits a CRC'd settings blob (brightness, screen-off,
-history retention 7/30/90, NTP, Wi-Fi credentials kept on-device); the **PIN
-lock** (§8, FR10) gates settings — and, when the scope says so, manual feeds —
-with a 4-digit salted-hash code, 60 s unlock, schedules never blocked; the
-**backup/export** (§9.12, FR19, D18/D31/D32) writes nodes + schedules +
-settings as JSON to the SD card (per-node link keys included for the
-replaced-hub case; PIN and Wi-Fi/MQTT passwords never leave the hub),
-restores with confirmation while keeping history and secrets, and exports
-the feed history as quoted CSV (time,node,amount,unit,result,source); the
-**setup wizard** (§9.13, FR21) walks six steps — zone+NTP, Wi-Fi, first
-feeder (existing or newly paired), hopper size/level (skipped when pairing
-just asked), first schedule within the per-feed cap, done — with Back at
-every step and nothing written until save. The `set` / `pin` / `backup` /
-`wiz` bench CLIs drive the same sessions, and the QEMU shot run captures
-`settings*` / `pin_*` / `wizard_*` states.
+M3 — hub core on pure ESP-IDF (D6): schedule engine with fire-once
+occurrences across reboots, §9.4 missed-feed policy, §9.9 skip/hold gates,
+DST-correct local time, feed_manager as the single FEED originator (§6.6
+WAL), CRC'd NVS persistence, PCF85063 RTC fallback + SNTP, bench CLI as an
+`esp_console` REPL. M1/M2: bench node + ESP-NOW link (1000-feed loopback).
 
-Releases: **v0.1.0**, **v0.2.0**, **v0.3.0**, **v0.4.0** (M4a hub UI), **v0.5.0**
-(M4b pairing, hub + node), **v0.6.0** (M4b settings, PIN, backup/export,
-wizard). Cut the next one the same way —
-`git tag vX.Y.Z && git push origin vX.Y.Z` — and CI attaches the firmware zips
-to a GitHub Release automatically.
+Host-tested in CI (182 tests incl. the UDP e2e sim); QEMU boot smoke +
+screenshot run in CI. Hardware verification: `docs/bench-m1.md` (node),
+`docs/bench-m2.md` (radio), `docs/bench-m3.md` (scheduler + reboots),
+`docs/bench-m4b.md` (pairing), `docs/bench-m5.md` (display/touch/SD).
+

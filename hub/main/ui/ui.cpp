@@ -1,10 +1,17 @@
 /*
- * AIO Feeder — LVGL dashboard view (PLAN.md §8; M4a phase 1, QEMU shot mode).
+ * AIO Feeder — LVGL dashboard view (PLAN.md §8; M4a scenes, M5 touch wiring).
  *
- * Renders aio::ui::Dashboard snapshots (hub/src/ui_model.h) into a static
- * 384×240 RGB565 framebuffer — same aspect family as the 800×480 panel,
- * sized to internal SRAM because QEMU has no PSRAM. On hardware the same
- * scene code renders at 800×480 once the RGB panel backend lands (M5).
+ * Renders aio::ui::Dashboard / NodeDetail / … snapshots (hub/src/ui_model.h)
+ * at the logical 352×240 — hardware (display_hw.cpp) expands ×2 into the
+ * 704×480 window of the 800×480 ST7262 panel; the QEMU shot build renders
+ * into a static framebuffer sized to internal SRAM (QEMU has no PSRAM).
+ *
+ * M5 touch backend: the screens carry tap targets (cards, settings rows,
+ * PIN keypad, session buttons) that set nav::Actions request flags; the
+ * engine loop services them (hub/src/ui_nav.h) — taps never touch the
+ * registry from the LVGL task. The hardware loop is driven by the GT911
+ * indev; the shot build additionally offers inject_tap() so CI can drive a
+ * real touch path end-to-end (hit-test → callback → request → engine).
  *
  * Screenshot protocol (CONFIG_AIO_UI_SHOT, captured by tools/qemu/
  * capture.py): after the scene settles, the task prints
@@ -17,8 +24,8 @@
  * engine updates and the sim clock is pinned.
  *
  * LVGL 9 notes: single full-size buffer + RENDER_MODE_FULL — every flush
- * redraws the whole screen, so g_shot_fb always holds the complete frame
- * (9.3 removed lv_display_set_full_refresh; FULL mode is the portable way).
+ * redraws the whole screen, so the framebuffer always holds the complete
+ * frame (9.3 removed lv_display_set_full_refresh; FULL mode is portable).
  */
 #include <esp_timer.h>
 #include <freertos/FreeRTOS.h>
@@ -31,24 +38,29 @@
 
 #include "ui.h"
 
+#include "../../src/ui_nav.h"
+#include "../display_hw.h" /* inline no-ops when CONFIG_AIO_HW_DISPLAY is off */
+
 namespace aio {
 namespace ui {
 
-#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
-
 #define UI_W 352
 #define UI_H 240
-/* UI_W is 352, not the panel-proportional 400: the QEMU build has no PSRAM
- * and every static byte lives in internal DRAM — 400-wide overflowed
- * dram0_0_seg by ~14 KB once the fifth screen landed (see tools/qemu/
- * README.md). 384 fit the two-column card grid until v0.6's three extra
- * screens pushed .bss over again; 352 (2 × 170 px cards) frees ~15 KB,
- * which funds the 84 KB LVGL pool the ten screens need. Same scene code
- * renders at 800×480 on hardware. */
+/* Logical resolution on BOTH builds (§7.1 display HAL): the hardware
+ * expands ×2 into the 704×480 window of the 800×480 panel (48 px bars,
+ * display_hw.cpp). 352 rather than the panel-proportional 400 because the
+ * QEMU build has no PSRAM and every static byte lives in internal DRAM —
+ * 400-wide overflowed dram0_0_seg by ~14 KB once the fifth screen landed
+ * (see tools/qemu/README.md); 352 (2 × 170 px cards) funds the LVGL pool
+ * the eleven screens need. */
+
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
 
 /* QEMU pmemsave target — LVGL renders here (single full buffer, FULL mode). */
 extern "C" uint8_t g_shot_fb[UI_W * UI_H * 2];
 uint8_t g_shot_fb[UI_W * UI_H * 2];
+
+#endif /* shot-only framebuffer */
 
 /* --- palette (warm dark theme, §8) ---------------------------------------------- */
 
@@ -1707,7 +1719,402 @@ static void update_wizard(const WizardView &v) {
   }
 }
 
+/* --- M5 touch wiring: navigation, tap targets, engine requests ---------
+ *
+ * The pool discipline (see the statics note) forbids widget-per-button:
+ * every tap target is a transparent CLICKABLE catcher over a fixed zone,
+ * one per screen area at most. Affordance comes from the text lanes
+ * themselves (the "[ 1 ] [ 2 ] …" keypad, the "> " section marker) and
+ * from one static hint lane per session screen. Requests land in
+ * nav::Actions; the engine loop services them (ui_nav.h) — the LVGL task
+ * never touches the registry or the sessions. */
+
+static nav::Nav s_nav;
+static nav::Actions s_acts;
+
+/* engine → ui handshakes (single bytes, last-writer-wins; consumed once
+ * per ui tick): pin verdict from PinLock, and the §8 lock mirror so a
+ * 60 s expiry under the user bounces to the dashboard. */
+static volatile int8_t s_cmd_pin = 0;  /* 0 none · 1 ok · -1 wrong */
+static volatile int8_t s_cmd_lock = 0; /* 0 none · 1 locked · -1 unlocked */
+
+/* tap injector (shot build drives flows through the real indev so CI
+ * exercises hit-test → callback → request → engine end-to-end) */
+static volatile int16_t s_tap_x = 0, s_tap_y = 0;
+static volatile uint8_t s_tap_stage = 0; /* 0 idle · 1 press · 2 release */
+
+void inject_tap(int x, int y) {
+  s_tap_x = (int16_t)x;
+  s_tap_y = (int16_t)y;
+  s_tap_stage = 1;
+}
+
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
+static void injected_read_cb(lv_indev_t *, lv_indev_data_t *data) {
+  switch (s_tap_stage) {
+    case 1:
+      data->point.x = s_tap_x;
+      data->point.y = s_tap_y;
+      data->state = LV_INDEV_STATE_PRESSED;
+      s_tap_stage = 2;
+      break;
+    case 2:
+      data->state = LV_INDEV_STATE_RELEASED;
+      s_tap_stage = 0;
+      break;
+    default:
+      data->state = LV_INDEV_STATE_RELEASED;
+      break;
+  }
+}
+#endif /* shot-only tap injector read cb */
+
+static lv_obj_t *screen_of(nav::Screen s) {
+  switch (s) {
+    case nav::SC_DASH: return s_scr;
+    case nav::SC_DETAIL: return s_det_scr;
+    case nav::SC_EDIT: return s_ed_scr;
+    case nav::SC_HIST: return s_hi_scr;
+    case nav::SC_ALERTS: return s_alr_scr;
+    case nav::SC_PAIR: return s_pair_scr;
+    case nav::SC_CAL: return s_cal_scr;
+    case nav::SC_SET: return s_set_scr;
+    case nav::SC_PIN: return s_pin_scr;
+    case nav::SC_WIZ: return s_wiz_scr;
+    default: return nullptr;
+  }
+}
+
+/* Load a screen and ask the engine for the fresh snapshot it needs. */
+static void show(nav::Screen s) {
+  lv_obj_t *scr = screen_of(s);
+  if (!scr) return;
+  lv_screen_load(scr);
+  switch (s) {
+    case nav::SC_DETAIL:
+      set_detail_node(s_nav.node);
+      s_acts.detail = true;
+      s_acts.detail_node = s_nav.node;
+      break;
+    case nav::SC_EDIT:
+      set_detail_node(s_nav.node);
+      s_acts.editor = true;
+      s_acts.editor_node = s_nav.node;
+      break;
+    case nav::SC_HIST: s_acts.history = true; break;
+    case nav::SC_ALERTS: s_acts.alerts = true; break;
+    case nav::SC_SET: s_acts.settings = true; break;
+    default: break;
+  }
+}
+
+void take_actions(nav::Actions &out) {
+  out = s_acts;
+  s_acts.clear();
+}
+
+void nav_sync_lock(bool locked) { s_cmd_lock = locked ? 1 : -1; }
+void pin_gate_result(bool ok) { s_cmd_pin = ok ? 1 : -1; }
+
+/* consume engine handshakes (ui task only) */
+static void pump_nav_cmds() {
+  const int8_t pin = s_cmd_pin;
+  if (pin) {
+    s_cmd_pin = 0;
+    show(s_nav.pin_result(pin > 0));
+  }
+  const int8_t lk = s_cmd_lock;
+  if (lk) {
+    s_cmd_lock = 0;
+    const nav::Screen before = s_nav.cur;
+    s_nav.set_locked(lk > 0);
+    if (s_nav.cur != before) show(s_nav.cur); /* bounced to the dashboard */
+  }
+}
+
+/* --- tap target callbacks ------------------------------------------------ */
+
+/* fixed-screen opener (user_data = screen enum) */
+static void open_enc_cb(lv_event_t *e) {
+  const auto s = (nav::Screen)(uintptr_t)lv_event_get_user_data(e);
+  show(s_nav.open(s, 0));
+}
+
+/* detail-relative opener: user_data = screen, node = the detail node */
+static void det_open_cb(lv_event_t *e) {
+  const auto s = (nav::Screen)(uintptr_t)lv_event_get_user_data(e);
+  show(s_nav.open(s, detail_node()));
+}
+
+/* dashboard card grid: 2 × 170 px cards, SPACE_EVENLY → columns at ~4 and
+ * ~178; rows at 36 and 36+94 (build_screen geometry) */
+static void card_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  int idx = (p.x >= 176 ? 1 : 0) + (p.y >= 36 + 91 ? 2 : 0);
+  if (idx < 0 || idx > 3) idx = 0;
+  const uint8_t node = (uint8_t)(idx + 1);
+  set_detail_node(node);
+  show(s_nav.open(nav::SC_DETAIL, node));
+}
+
+/* settings section list: one 14 px line per row at (10,38) */
+static void set_section_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  int row = (p.y - 36) / 14;
+  if (row < 0) row = 0;
+  if (row > UI_SET_SECTION_COUNT - 1) row = UI_SET_SECTION_COUNT - 1;
+  s_acts.set_section = (int8_t)row;
+}
+
+/* settings bottom action strip (hint lane: "Restart | Add node | Export |
+ * Restore | Wizard") — five 70 px zones */
+static void set_action_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  const int zone = p.x < 70 ? 0 : p.x < 140 ? 1 : p.x < 210 ? 2 : p.x < 280 ? 3 : 4;
+  switch (zone) {
+    case 0: s_acts.restart = true; break;
+    case 1: s_acts.pair_open = true; show(s_nav.open(nav::SC_PAIR, 0)); break;
+    case 2: s_acts.backup_export = true; break;
+    case 3: s_acts.backup_restore = true; break;
+    case 4: s_acts.wiz_open = true; show(s_nav.open(nav::SC_WIZ, 0)); break;
+  }
+}
+
+/* PIN keypad: the "[ 1 ] …" label lane at (178,38) — 3 columns ~56 px
+ * apart, 4 visual rows ~32 px apart (blank line between), 12 cells:
+ * 1-9, C, 0, OK */
+static void pin_key_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  int col = (p.x - 172) / 56;
+  int row = (p.y - 34) / 32;
+  if (col < 0 || col > 2 || row < 0 || row > 3) return;
+  const char cell = "123456789C0!"[row * 3 + col];
+  if (cell == '!') s_acts.pin_submit = true;
+  else pin_press(cell);
+}
+
+/* pairing: candidate rows (list lane, ≤4 lines at (10,38)) + bottom strip
+ * "Cancel | Confirm | Commit | Close" (4 × 88 px) */
+static void pair_select_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  int row = (p.y - 36) / 14;
+  if (row < 0 || row > 3) return;
+  s_acts.pair_select = (int8_t)row;
+}
+
+static void pair_action_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  const int zone = p.x < 88 ? 0 : p.x < 176 ? 1 : p.x < 264 ? 2 : 3;
+  switch (zone) {
+    case 0: s_acts.pair_cancel = true; break;
+    case 1: s_acts.pair_confirm = true; break;
+    case 2: s_acts.pair_commit = true; break;
+    case 3: s_acts.pair_close = true; break;
+  }
+}
+
+/* calibration: bottom strip "Close | Run test" */
+static void cal_action_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  if (p.x < UI_W / 2) s_acts.cal_close = true;
+  else s_acts.cal_run = true;
+}
+
+/* wizard: tz rows (list lane, ≤4 lines) + bottom strip "Back | Next | Save
+ * | Close" */
+static void wiz_list_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  int row = (p.y - 36) / 14;
+  if (row < 0 || row > 3) return;
+  s_acts.wiz_tz = (int8_t)row;
+}
+
+static void wiz_action_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  const int zone = p.x < 88 ? 0 : p.x < 176 ? 1 : p.x < 264 ? 2 : 3;
+  switch (zone) {
+    case 0: s_acts.wiz_back = true; break;
+    case 1: s_acts.wiz_next = true; break;
+    case 2: s_acts.wiz_commit = true; break;
+    case 3: s_acts.wiz_close = true; break;
+  }
+}
+
+/* transparent clickable catcher (the pool-cheap tap target) */
+static lv_obj_t *new_catcher(lv_obj_t *parent, int x, int y, int w, int h,
+                             lv_event_cb_t cb, void *user_data) {
+  lv_obj_t *o = lv_obj_create(parent);
+  lv_obj_set_pos(o, (lv_coord_t)x, (lv_coord_t)y);
+  lv_obj_set_size(o, (lv_coord_t)w, (lv_coord_t)h);
+  lv_obj_set_style_bg_opa(o, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(o, 0, 0);
+  lv_obj_set_style_radius(o, 0, 0);
+  lv_obj_set_style_pad_all(o, 0, 0);
+  lv_obj_remove_flag(o, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(o, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(o, cb, LV_EVENT_CLICKED, user_data);
+  return o;
+}
+
+static void nav_back_cb(lv_event_t *) { show(s_nav.back()); }
+static void nav_home_cb(lv_event_t *) { show(s_nav.home()); }
+
+/* persistent back/home zones, bottom-right corner of every screen */
+static void build_nav_overlay() {
+  lv_obj_t *layer = lv_layer_top();
+  new_catcher(layer, UI_W - 52, UI_H - 26, 26, 26, nav_back_cb, nullptr);
+  new_catcher(layer, UI_W - 24, UI_H - 26, 24, 26, nav_home_cb, nullptr);
+}
+
+static lv_obj_t *new_hint(lv_obj_t *parent, const char *txt) {
+  lv_obj_t *l = lv_label_create(parent);
+  lv_label_set_text(l, txt);
+  lv_obj_set_style_text_font(l, &lv_font_montserrat_12, 0);
+  lv_obj_set_style_text_color(l, lv_color_hex(C_MUTED), 0);
+  lv_obj_set_pos(l, 10, UI_H - 22);
+  return l;
+}
+
+/* attach the tap targets to the built screens (called once from ui_task,
+ * after build_all_screens) */
+static void build_tap_targets() {
+  /* dashboard: card grid + gear zone top-right */
+  new_catcher(s_scr, 0, 36, UI_W, UI_H - 36 - 24, card_tap_cb, nullptr);
+  new_catcher(s_scr, UI_W - 38, 4, 34, 28, open_enc_cb,
+              (void *)(uintptr_t)nav::SC_SET);
+
+  /* detail: bottom strip = Schedule | History | Alerts (three zones) */
+  new_catcher(s_det_scr, 0, UI_H - 26, 117, 26, det_open_cb,
+              (void *)(uintptr_t)nav::SC_EDIT);
+  new_catcher(s_det_scr, 117, UI_H - 26, 117, 26, det_open_cb,
+              (void *)(uintptr_t)nav::SC_HIST);
+  new_catcher(s_det_scr, 234, UI_H - 26, UI_W - 234, 26, det_open_cb,
+              (void *)(uintptr_t)nav::SC_ALERTS);
+
+  /* settings: section list + bottom action strip + hint lane */
+  new_catcher(s_set_scr, 0, 34, 146, 150, set_section_tap_cb, nullptr);
+  new_hint(s_set_scr, "Restart | Add node | Export | Restore | Wizard");
+  new_catcher(s_set_scr, 0, UI_H - 26, UI_W, 26, set_action_tap_cb, nullptr);
+
+  /* PIN pad */
+  new_catcher(s_pin_scr, 170, 30, UI_W - 172, 174, pin_key_tap_cb, nullptr);
+
+  /* pairing: candidate rows + bottom strip + hint lane */
+  new_catcher(s_pair_scr, 0, 34, UI_W, 64, pair_select_tap_cb, nullptr);
+  new_hint(s_pair_scr, "Cancel | Confirm | Commit | Close");
+  new_catcher(s_pair_scr, 0, UI_H - 26, UI_W, 26, pair_action_tap_cb, nullptr);
+
+  /* calibration: bottom strip + hint lane */
+  new_hint(s_cal_scr, "Close | Run test");
+  new_catcher(s_cal_scr, 0, UI_H - 26, UI_W, 26, cal_action_tap_cb, nullptr);
+
+  /* wizard: tz rows + bottom strip + hint lane */
+  new_catcher(s_wiz_scr, 0, 34, UI_W, 64, wiz_list_tap_cb, nullptr);
+  new_hint(s_wiz_scr, "Back | Next | Save | Close");
+  new_catcher(s_wiz_scr, 0, UI_H - 26, UI_W, 26, wiz_action_tap_cb, nullptr);
+}
+
 /* --- LVGL plumbing ----------------------------------------------------------------- */
+
+/* All screens, built once on the active display (both builds). */
+static void build_all_screens() {
+  build_screen();
+  build_detail_screen();
+  build_edit_screen();
+  build_history_screen();
+  build_alerts_screen();
+  build_pairing_screen();
+  build_calib_screen();
+  build_settings_screen();
+  build_pin_screen();
+  build_wizard_screen();
+}
+
+/* pool pressure at boot (the 64 KiB fixed pool is the binding constraint in
+ * the QEMU build — this line makes the serial log tell us where we are) */
+static void log_pool() {
+  lv_mem_monitor_t mon;
+  lv_mem_monitor(&mon);
+  printf("ui: lv pool total=%u free=%u used=%u%% frag=%u%%\n",
+         (unsigned)mon.total_size, (unsigned)mon.free_size,
+         (unsigned)mon.used_pct, (unsigned)mon.frag_pct);
+}
+
+/* drain snapshot buffers into the widgets (shared by both loops) */
+static void pump_snapshots(bool pin_screen) {
+  const uint32_t s = s_seq;
+  if (s != s_seen) {
+    update_dashboard(s_snap[(s - 1) & 1]);
+    s_seen = s;
+  }
+  const uint32_t ds = s_det_seq;
+  if (ds != s_det_seen) {
+    update_detail(s_det_snap[(ds - 1) & 1]);
+    s_det_seen = ds;
+  }
+  const uint32_t es = s_edit_seq;
+  if (es != s_edit_seen) {
+    update_edit(s_edit_snap[(es - 1) & 1]);
+    s_edit_seen = es;
+  }
+  const uint32_t hs = s_hist_seq;
+  if (hs != s_hist_seen) {
+    update_history(s_hist_snap[(hs - 1) & 1]);
+    s_hist_seen = hs;
+  }
+  const uint32_t as = s_alr_seq;
+  if (as != s_alr_seen) {
+    update_alerts(s_alr_snap[(as - 1) & 1]);
+    s_alr_seen = as;
+  }
+  const uint32_t ps = s_pair_seq;
+  if (ps != s_pair_seen) {
+    update_pairing(s_pair_snap[(ps - 1) & 1]);
+    s_pair_seen = ps;
+  }
+  const uint32_t cs = s_cal_seq;
+  if (cs != s_cal_seen) {
+    update_calib(s_cal_snap[(cs - 1) & 1]);
+    s_cal_seen = cs;
+  }
+  const uint32_t sts = s_set_seq;
+  if (sts != s_set_seen) {
+    update_settings(s_set_snap[(sts - 1) & 1]);
+    s_set_seen = sts;
+  }
+  const uint32_t ws = s_wiz_seq;
+  if (ws != s_wiz_seen) {
+    update_wizard(s_wiz_snap[(ws - 1) & 1]);
+    s_wiz_seen = ws;
+  }
+  if (pin_screen) update_pin_screen(); /* view-side pad state */
+}
+
+static void ui_tick(uint32_t now, uint32_t &last_tick) {
+  lv_tick_inc(now - last_tick);
+  last_tick = now;
+  pump_nav_cmds();
+}
+
+#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
 
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   (void)area;
@@ -1723,25 +2130,11 @@ static void ui_task(void *) {
   lv_display_set_buffers(s_disp, g_shot_fb, nullptr, sizeof(g_shot_fb),
                          LV_DISPLAY_RENDER_MODE_FULL);
 
-  build_screen();
-  build_detail_screen();
-  build_edit_screen();
-  build_history_screen();
-  build_alerts_screen();
-  build_pairing_screen();
-  build_calib_screen();
-  build_settings_screen();
-  build_pin_screen();
-  build_wizard_screen();
+  build_all_screens();
+  build_tap_targets();
+  build_nav_overlay();
   lv_screen_load(s_scr);
-
-  /* pool pressure at boot (the 7-screen QEMU build runs against the 64 KB
-   * default ceiling — this line makes the serial log tell us where we are) */
-  lv_mem_monitor_t mon;
-  lv_mem_monitor(&mon);
-  printf("ui: lv pool total=%u free=%u used=%u%% frag=%u%%\n",
-         (unsigned)mon.total_size, (unsigned)mon.free_size,
-         (unsigned)mon.used_pct, (unsigned)mon.frag_pct);
+  log_pool();
 
   const uint32_t boot_ms = (uint32_t)(esp_timer_get_time() / 1000);
   uint32_t last_tick = boot_ms;
@@ -1750,9 +2143,9 @@ static void ui_task(void *) {
 
   /* deterministic rotation for the QEMU screenshot run: each screen gets a
    * 25 s window, then the cycle repeats (the runner grabs one shot per
-   * screen name). On hardware this is replaced by touch navigation (M5).
-   * Slot drivers in main.cpp mirror the slot index (pairing = 5, calib = 6,
-   * modulus SH_COUNT). */
+   * screen name). Slot drivers in main.cpp mirror the slot index (pairing =
+   * 5, calib = 6, settings = 7, PIN = 8, wizard = 9, tap = 10; modulus
+   * SH_COUNT). */
   enum ShotScreen {
     SH_DASH = 0,
     SH_DETAIL = 1,
@@ -1764,16 +2157,23 @@ static void ui_task(void *) {
     SH_SET = 7,   /* settings driver (main.cpp) */
     SH_PIN = 8,   /* PIN pad driver (main.cpp) */
     SH_WIZ = 9,   /* setup wizard driver (main.cpp) */
+    SH_TAP = 10,  /* tap-path driver: the flow below, driven by inject_tap */
     SH_COUNT
   };
   constexpr uint32_t SHOT_WINDOW_MS = 25000;
   ShotScreen shot = SH_DASH;
   ShotScreen loaded = SH_DASH;
 
+  /* tap-path driver state: the interactive walk is driven through the real
+   * indev (hit-test → callback → request → engine) so CI proves the touch
+   * wiring end-to-end. Marker name per stage, printed by the marker block
+   * below once the frame settles. */
+  const char *tap_shot = "tap_detail";
+  uint8_t tap_stage = 0;
+
   for (;;) {
     const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
-    lv_tick_inc(now - last_tick);
-    last_tick = now;
+    ui_tick(now, last_tick);
 
     shot = (ShotScreen)((now - boot_ms) / SHOT_WINDOW_MS % SH_COUNT);
     if (shot != loaded) {
@@ -1786,57 +2186,50 @@ static void ui_task(void *) {
                      : shot == SH_CAL    ? s_cal_scr
                      : shot == SH_SET    ? s_set_scr
                      : shot == SH_PIN    ? s_pin_scr
-                                         : s_wiz_scr);
+                     : shot == SH_WIZ    ? s_wiz_scr
+                                         : s_scr /* SH_TAP rides nav */);
       loaded = shot;
       s_last_marker_ms = now - 3000; /* next marker 2 s after the switch */
+      if (shot == SH_TAP) {
+        tap_stage = 0;
+        tap_shot = "tap_detail";
+      }
     }
 
-    const uint32_t s = s_seq;
-    if (s != s_seen) {
-      update_dashboard(s_snap[(s - 1) & 1]);
-      s_seen = s;
+    /* tap-path driver (slot 10): walk dash → detail → home → settings →
+     * BACKUP → SECURITY by tapping the real catchers */
+    if (loaded == SH_TAP) {
+      const uint32_t m = now % SHOT_WINDOW_MS;
+      switch (tap_stage) {
+        case 0:
+          if (m >= 2500) { inject_tap(88, 80); tap_stage = 1; } /* card 1 */
+          break;
+        case 1:
+          if (m >= 7000) { inject_tap(UI_W - 12, UI_H - 13); tap_stage = 2; } /* home */
+          break;
+        case 2:
+          if (m >= 9000) { inject_tap(UI_W - 20, 18); tap_stage = 3; } /* gear */
+          break;
+        case 3:
+          if (m >= 11000) { tap_shot = "tap_settings"; tap_stage = 4; }
+          break;
+        case 4:
+          if (m >= 13000) { inject_tap(70, 142); tap_stage = 5; } /* row 7 BACKUP */
+          break;
+        case 5:
+          if (m >= 15000) { tap_shot = "tap_backup"; tap_stage = 6; }
+          break;
+        case 6:
+          if (m >= 17000) { inject_tap(70, 114); tap_stage = 7; } /* row 5 SECURITY */
+          break;
+        case 7:
+          if (m >= 19000) { tap_shot = "tap_security"; tap_stage = 8; }
+          break;
+        default: break;
+      }
     }
-    const uint32_t ds = s_det_seq;
-    if (ds != s_det_seen) {
-      update_detail(s_det_snap[(ds - 1) & 1]);
-      s_det_seen = ds;
-    }
-    const uint32_t es = s_edit_seq;
-    if (es != s_edit_seen) {
-      update_edit(s_edit_snap[(es - 1) & 1]);
-      s_edit_seen = es;
-    }
-    const uint32_t hs = s_hist_seq;
-    if (hs != s_hist_seen) {
-      update_history(s_hist_snap[(hs - 1) & 1]);
-      s_hist_seen = hs;
-    }
-    const uint32_t as = s_alr_seq;
-    if (as != s_alr_seen) {
-      update_alerts(s_alr_snap[(as - 1) & 1]);
-      s_alr_seen = as;
-    }
-    const uint32_t ps = s_pair_seq;
-    if (ps != s_pair_seen) {
-      update_pairing(s_pair_snap[(ps - 1) & 1]);
-      s_pair_seen = ps;
-    }
-    const uint32_t cs = s_cal_seq;
-    if (cs != s_cal_seen) {
-      update_calib(s_cal_snap[(cs - 1) & 1]);
-      s_cal_seen = cs;
-    }
-    const uint32_t sts = s_set_seq;
-    if (sts != s_set_seen) {
-      update_settings(s_set_snap[(sts - 1) & 1]);
-      s_set_seen = sts;
-    }
-    const uint32_t ws = s_wiz_seq;
-    if (ws != s_wiz_seen) {
-      update_wizard(s_wiz_snap[(ws - 1) & 1]);
-      s_wiz_seen = ws;
-    }
-    if (loaded == SH_PIN) update_pin_screen(); /* view-side pad state */
+
+    pump_snapshots(loaded == SH_PIN);
 
     lv_timer_handler();
 
@@ -1894,6 +2287,7 @@ static void ui_task(void *) {
                                             : "wizard";
           break;
         }
+        case SH_TAP: shot_name = tap_shot; break;
         default: break;
       }
       printf("\nAIO_SHOT %s\n", shot_name);
@@ -1909,25 +2303,39 @@ void start() {
   xTaskCreate(ui_task, "aio-ui", 16384, nullptr, 4, nullptr);
 }
 
-#else  /* !CONFIG_AIO_UI_SHOT — hardware build keeps the bench-host behaviour */
+#else  /* !CONFIG_AIO_UI_SHOT — hardware: touch-driven loop */
 
-void start() {}
-void publish(const Dashboard &) {}
-void publish_detail(const NodeDetail &) {}
-void publish_sched_editor(const SchedEditor &) {}
-void publish_history(const HistoryView &) {}
-void publish_alerts(const AlertsView &) {}
-void publish_pairing(const PairingView &) {}
-void publish_calib(const CalibView &) {}
-void publish_settings(const SettingsView &) {}
-void publish_wizard(const WizardView &) {}
-void pin_press(char) {}
-void pin_clear() {}
-uint8_t pin_entered_len() { return 0; }
-const char *pin_entered() { return ""; }
-void pin_note(const char *) {}
-uint8_t detail_node() { return 1; }
-void set_detail_node(uint8_t) {}
+static void ui_task(void *) {
+  lv_init();
+  if (!display_hw::init()) {
+    /* §3.3: feeding never depends on the UI — run headless */
+    printf("ui: display bring-up failed, running headless\n");
+    vTaskDelete(nullptr);
+    return;
+  }
+  s_disp = display_hw::display();
+  build_all_screens();
+  build_tap_targets();
+  build_nav_overlay();
+  lv_screen_load(s_scr);
+  log_pool();
+
+  uint32_t last_tick = (uint32_t)(esp_timer_get_time() / 1000);
+  printf("ui: LVGL %d.%d.%d ready (%dx%d logical on hardware)\n",
+         LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH, UI_W, UI_H);
+
+  for (;;) {
+    const uint32_t now = (uint32_t)(esp_timer_get_time() / 1000);
+    ui_tick(now, last_tick);
+    pump_snapshots(s_nav.cur == nav::SC_PIN);
+    lv_timer_handler();
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+void start() {
+  xTaskCreate(ui_task, "aio-ui", 16384, nullptr, 4, nullptr);
+}
 
 #endif /* CONFIG_AIO_UI_SHOT */
 

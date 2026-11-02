@@ -2,7 +2,7 @@
 # ../src so the host test suites keep compiling it unchanged; lib/proto and
 # link_core are shared with the nodes.
 idf_component_register(
-    SRCS "main.cpp" "ui/ui.cpp"
+    SRCS "main.cpp" "ui/ui.cpp" "display_hw.cpp" "i2c_bus.cpp"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash
@@ -16,6 +16,7 @@ idf_component_register(
         esp_app_format
         fatfs
         sdmmc
+        esp_lcd
 )
 
 target_include_directories(${COMPONENT_LIB} PRIVATE

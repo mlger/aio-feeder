@@ -24,15 +24,18 @@ menu "AIO Feeder hub"
 
     config AIO_SD_CLK
         int "SD card CLK GPIO (SDMMC 1-bit)"
-        default 11
+        default 12
         help
-            Waveshare ESP32-S3-Touch-LCD-4.3B microSD slot: CLK/CMD/D0 on
-            GPIO 11/12/13 (PLAN.md §4.3). Verify against the schematic
-            before relying on it [VERIFY].
+            Waveshare ESP32-S3-Touch-LCD-4.3B microSD slot: the FPC wires
+            card CLK to GPIO12 (labeled SCK in the wiki's SPI table), card
+            CMD to GPIO11 (labeled MOSI) and card DAT0 to GPIO13 (labeled
+            MISO); DAT3/CS rides CH422G EXIO4, held high for SD mode by
+            display_hw.cpp (D35). Verify against the schematic before
+            relying on it [VERIFY].
 
     config AIO_SD_CMD
         int "SD card CMD GPIO"
-        default 12
+        default 11
 
     config AIO_SD_D0
         int "SD card D0 GPIO (1-bit mode)"
@@ -57,5 +60,19 @@ menu "AIO Feeder hub"
             rendering into a static 384x240 framebuffer. tools/qemu/
             capture.py dumps the framebuffer via the QEMU monitor
             'pmemsave' after each "AIO_SHOT" marker and writes PNGs.
+
+    config AIO_HW_DISPLAY
+        bool "Drive the Waveshare 4.3B RGB panel + GT911 touch (hardware UI)"
+        default y
+        depends on !AIO_UI_SHOT
+        help
+            Brings up the ST7262 RGB panel (800x480, plain RGB, 16 MHz
+            PCLK), the CH422G expander (LCD_RST/TP_RST/backlight/SD_CS) and
+            the GT911 touch controller on the shared I2C bus, and feeds the
+            LVGL UI (logical 352x240, 2x expand into the 704x480 window).
+            The QEMU shot build implies this is off (depends on
+            !AIO_UI_SHOT); a display failure is reported and the hub keeps
+            running headless (feeding never depends on the UI, PLAN.md
+            3.3).
 
 endmenu
