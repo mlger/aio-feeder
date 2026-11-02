@@ -1,160 +1,656 @@
 <!doctype html>
 <html lang="en">
-<head>
+<head><script type="application/json" data-od-external-dependencies>["https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"]</script>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>AIO Feeder — Web Flasher</title>
-<meta name="description" content="Flash AIO Feeder hub and node firmware from the browser (ESP Web Tools / Web Serial).">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 96 96%27%3E%3Crect width=%2796%27 height=%2796%27 rx=%2718%27 fill=%27%230d1216%27/%3E%3Cpath d=%27M22 22h52L56 48v14l-16 8V48z%27 fill=%27none%27 stroke=%27%232dd4bf%27 stroke-width=%276%27 stroke-linejoin=%27round%27/%3E%3Ccircle cx=%2748%27 cy=%2780%27 r=%275%27 fill=%27%232dd4bf%27/%3E%3C/svg%3E">
-<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<title>AIO Feeder — Web Flasher, Demo &amp; Guide</title>
+<meta name="description" content="Flash AIO Feeder hub and node firmware from the browser (ESP Web Tools / Web Serial), try the hub interface, and follow the bring-up guide.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns=%27http://www.w3.org/2000/svg%27 viewBox=%270 0 96 96%27%3E%3Crect width=%2796%27 height=%2796%27 rx=%2718%27 fill=%27%2326251e%27/%3E%3Cpath d=%27M22 22h52L56 48v14l-16 8V48z%27 fill=%27none%27 stroke=%27%23f54e00%27 stroke-width=%276%27 stroke-linejoin=%27round%27/%3E%3C/svg%3E">
 <style>
-:root {
-  --bg: #0d1216; --surface: #151c22; --surface-2: #1d2730; --surface-3: #26333e;
-  --line: #2f3d49; --text: #e9eff3; --muted: #a3b3bf;
-  --accent: #2dd4bf; --accent-ink: #04201c; --accent-hover: #5eead4;
-  --ok: #4ade80; --warn: #fbbf24; --warn-ink: #1a1200; --bad: #ff8a80;
-  --fs-cap: 14px; --fs-body: 16px; --fs-lead: 18px; --fs-title: 22px; --fs-big: 30px;
-  --font-ui: "Segoe UI", system-ui, -apple-system, "Helvetica Neue", sans-serif;
-  --font-num: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
-  --s1: 4px; --s2: 8px; --s3: 12px; --s4: 16px; --s5: 24px;
-  --r-sm: 6px; --r-md: 10px; --t-fast: 150ms;
+:root{
+  --bg:#f2f1ed; --surface:#f7f7f4; --surface-3:#ebeae5; --surface-4:#e6e5e0; --surface-5:#e1e0db;
+  --fg:#26251e; --muted:#5f5d52; --border:oklab(0.263 -0.0023 0.0125 / .12); --border-2:oklab(0.263 -0.0023 0.0125 / .22);
+  --accent:#f54e00; --accent-ink:#b93a00; --ok:#1f8a65; --err:#cf2d56; --gold:#c08532;
+  --code-bg:#26251e; --code-fg:#f2f1ed;
+  --font-display:"Helvetica Neue",system-ui,-apple-system,"Segoe UI",sans-serif;
+  --font-body:"Iowan Old Style","Palatino Linotype","URW Palladio L",ui-serif,Georgia,Cambria,serif;
+  --font-ui:system-ui,-apple-system,"Segoe UI","Helvetica Neue",sans-serif;
+  --font-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --shadow-card:0 28px 70px rgba(0,0,0,.14),0 14px 32px rgba(0,0,0,.10),0 0 0 1px var(--border);
+  --wrap:1180px;
 }
-* { box-sizing: border-box; }
-html, body { margin: 0; padding: 0; }
-body {
-  background: var(--bg); color: var(--text); font-family: var(--font-ui);
-  font-size: var(--fs-body); line-height: 1.45;
-  min-height: 100vh; display: flex; flex-direction: column;
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font:400 17px/1.55 var(--font-body)}
+h1,h2,h3,h4,p{margin:0}
+h1,h2,h3,h4{font-family:var(--font-display);font-weight:400;color:var(--fg)}
+a{color:inherit}
+code,.mono{font-family:var(--font-mono);font-size:.86em}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:4px}
+.wrap{max-width:var(--wrap);margin:0 auto;padding:0 28px}
+.eyebrow{font:500 12px/1 var(--font-mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted)}
+.ui{font-family:var(--font-ui)}
+
+/* nav */
+.nav{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+.nav .wrap{display:flex;align-items:center;gap:28px;height:60px}
+.brand{display:flex;align-items:center;gap:10px;font:400 18px/1 var(--font-display);letter-spacing:-.2px;text-decoration:none}
+.brand svg{width:26px;height:26px}
+.nav nav{display:flex;gap:4px;margin-left:auto}
+.nav nav a{font:400 14px/1 var(--font-ui);text-decoration:none;padding:10px 14px;border-radius:8px;color:var(--fg)}
+.nav nav a:hover{background:var(--surface-4)}
+.nav nav a[aria-current="true"]{background:var(--surface-4)}
+
+/* buttons */
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;min-height:44px;padding:0 18px;border-radius:8px;border:1px solid var(--border-2);background:var(--surface-3);color:var(--fg);font:400 14px/1 var(--font-ui);cursor:pointer;text-decoration:none;transition:background .15s,box-shadow .15s}
+.btn:hover{background:var(--surface-5)}
+.btn.primary{background:var(--fg);color:var(--bg);border-color:var(--fg)}
+.btn.primary:hover{background:#3d3b30;color:#fff}
+.btn.primary:disabled{opacity:.45;cursor:not-allowed}
+.btn svg{width:16px;height:16px;flex:none}
+.link{font:500 14px/1.2 var(--font-ui);color:var(--accent-ink);text-underline-offset:3px}
+.link:hover{color:var(--fg)}
+
+/* hero + flasher */
+.hero{padding:64px 0 72px}
+.hero .grid{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:56px;align-items:start}
+h1{font-size:clamp(40px,5.2vw,68px);line-height:1.05;letter-spacing:-.035em;margin:18px 0 20px;text-wrap:balance}
+.lede{font-size:19px;color:var(--muted);max-width:44ch;text-wrap:pretty}
+.support{display:inline-flex;align-items:center;gap:8px;margin-top:28px;padding:8px 12px;border-radius:999px;background:var(--surface-3);font:500 13px/1 var(--font-ui);border:1px solid var(--border)}
+.support i{width:8px;height:8px;border-radius:50%;background:var(--muted)}
+.support.ok i{background:var(--ok)} .support.bad i{background:var(--err)}
+.facts{margin:36px 0 0;padding:0;list-style:none;border-top:1px solid var(--border)}
+.facts li{display:flex;justify-content:space-between;gap:16px;padding:12px 0;border-bottom:1px solid var(--border);font:400 14px/1.4 var(--font-ui)}
+.facts span:first-child{color:var(--muted)}
+
+.card{background:var(--surface);border-radius:14px;box-shadow:var(--shadow-card)}
+.flasher{padding:28px}
+.step{margin-bottom:26px}
+.step-h{display:flex;align-items:baseline;gap:10px;margin-bottom:12px;font:400 20px/1.2 var(--font-display);letter-spacing:-.2px}
+.step-h .n{font:500 12px/1 var(--font-mono);color:var(--muted)}
+.boards{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.boards .board:last-child:nth-child(odd){grid-column:1/-1}
+.board{position:relative;display:block}
+.board input{position:absolute;opacity:0;inset:0;cursor:pointer;width:100%;height:100%;margin:0}
+.board .face{display:flex;flex-direction:column;gap:6px;height:100%;padding:14px 16px;border-radius:10px;border:1px solid var(--border-2);background:var(--bg);font-family:var(--font-ui);transition:background .15s,border-color .15s}
+.board:hover .face{background:var(--surface-3)}
+.board input:checked+.face{border-color:var(--fg);box-shadow:0 0 0 1px var(--fg);background:#fff}
+.board input:focus-visible+.face{outline:2px solid var(--accent);outline-offset:3px}
+.board .role{font:500 11px/1 var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+.board .name{font:400 16px/1.25 var(--font-display);letter-spacing:-.1px}
+.board .chip{font:400 12px/1.3 var(--font-mono);color:var(--muted)}
+.seg{display:inline-flex;padding:3px;border-radius:9px;background:var(--surface-4);gap:2px;font-family:var(--font-ui)}
+.seg button{border:0;background:transparent;min-height:38px;padding:0 14px;border-radius:7px;font:400 14px/1 var(--font-ui);cursor:pointer;color:var(--fg)}
+.seg button:hover{background:var(--surface-5)}
+.seg button[aria-pressed="true"]{background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.src-body{margin-top:14px;font:400 14px/1.5 var(--font-ui);color:var(--muted)}
+.field{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+.field input[type=file]{font:400 13px var(--font-ui);max-width:100%}
+.field select{min-height:40px;padding:0 10px;border-radius:8px;border:1px solid var(--border-2);background:#fff;font:400 14px var(--font-ui);color:var(--fg)}
+.path{margin-top:10px;display:flex;align-items:center;gap:10px;padding:10px 12px;border-radius:8px;background:var(--code-bg);color:var(--code-fg);font:400 12.5px/1.4 var(--font-mono);overflow-wrap:anywhere}
+.fw-status{display:inline-flex;align-items:center;gap:8px;margin-top:10px;font:500 13px/1.3 var(--font-ui)}
+.fw-status i{width:8px;height:8px;border-radius:50%;background:var(--muted);flex:none}
+.fw-status.ok i{background:var(--ok)} .fw-status.warn i{background:var(--gold)}
+.install-row{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding-top:20px;border-top:1px solid var(--border)}
+.install-row .hint{font:400 13px/1.45 var(--font-ui);color:var(--muted);max-width:34ch}
+
+/* sections */
+section.block{padding:84px 0;border-top:1px solid var(--border)}
+.sec-head{display:grid;grid-template-columns:minmax(0,5fr) minmax(0,7fr);gap:56px;margin-bottom:40px;align-items:end}
+h2{font-size:clamp(30px,3.6vw,44px);line-height:1.1;letter-spacing:-.025em;margin-top:14px;text-wrap:balance}
+.sec-head p{color:var(--muted);font-size:18px;max-width:52ch;text-wrap:pretty}
+
+/* demo */
+.demo{display:grid;grid-template-columns:minmax(0,8fr) minmax(0,4fr);gap:40px;align-items:start}
+.bezel{background:#1b1a15;border-radius:22px;padding:18px;box-shadow:var(--shadow-card)}
+.screen{position:relative;aspect-ratio:352/240;border-radius:8px;overflow:hidden;background:#0d1216}
+.screen img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;opacity:0;transition:opacity .45s}
+.screen img.on{opacity:1}
+.bezel-bar{display:flex;justify-content:space-between;align-items:center;margin-top:12px;font:400 12px/1 var(--font-mono);color:#a6a493;padding:0 4px;gap:12px}
+.bezel-bar a{color:#f2f1ed;text-underline-offset:3px}
+.bezel-bar a:hover{color:#fff;text-decoration-color:var(--accent)}
+.demo-dots{display:flex;gap:6px;margin-top:10px;padding:0 4px}
+.demo-dots button{width:26px;height:6px;border-radius:3px;border:0;background:var(--surface-5);cursor:pointer;padding:0}
+.demo-dots button[aria-pressed="true"]{background:var(--accent)}
+.tour{margin:0;padding:0;list-style:none;counter-reset:t;border-top:1px solid var(--border)}
+.tour li{counter-increment:t;display:grid;grid-template-columns:34px 1fr;padding:16px 0;border-bottom:1px solid var(--border)}
+.tour li::before{content:counter(t,decimal-leading-zero);font:500 12px/1.9 var(--font-mono);color:var(--muted)}
+.tour b{display:block;font:400 18px/1.3 var(--font-display);letter-spacing:-.1px;margin-bottom:2px}
+.tour span{font:400 14px/1.5 var(--font-ui);color:var(--muted)}
+
+/* guide */
+.guide{display:grid;grid-template-columns:220px minmax(0,1fr);gap:56px}
+.toc{position:sticky;top:88px;align-self:start;display:flex;flex-direction:column;border-left:1px solid var(--border)}
+.toc a{padding:9px 16px;margin-left:-1px;border-left:2px solid transparent;font:400 14px/1.3 var(--font-ui);text-decoration:none;color:var(--muted)}
+.toc a:hover{color:var(--fg);background:var(--surface-3)}
+.toc a[aria-current="true"]{color:var(--fg);border-left-color:var(--accent);background:var(--surface-3)}
+.chapter{padding-bottom:52px;margin-bottom:52px;border-bottom:1px solid var(--border)}
+.chapter:last-child{border-bottom:0;margin-bottom:0;padding-bottom:0}
+.chapter h3{font-size:30px;letter-spacing:-.02em;line-height:1.15;margin:12px 0 14px}
+.chapter p{color:var(--muted);max-width:62ch;margin-bottom:14px}
+.chapter p b{color:var(--fg);font-weight:600}
+.table-wrap{overflow-x:auto;border:1px solid var(--border-2);border-radius:10px;background:var(--surface)}
+table{width:100%;border-collapse:collapse;font:400 14px/1.45 var(--font-ui);min-width:640px}
+th,td{text-align:left;padding:12px 14px;border-bottom:1px solid var(--border);vertical-align:top}
+tr:last-child td{border-bottom:0}
+th{font:500 11px/1 var(--font-mono);letter-spacing:.05em;text-transform:uppercase;color:var(--muted);background:var(--surface-3)}
+td:first-child{font-weight:600;white-space:nowrap}
+.steps{margin:0;padding:0;list-style:none;counter-reset:s}
+.steps li{counter-increment:s;position:relative;padding:0 0 18px 44px;font:400 15px/1.55 var(--font-ui);color:var(--muted)}
+.steps li::before{content:counter(s);position:absolute;left:0;top:0;width:28px;height:28px;border-radius:50%;background:var(--fg);color:var(--bg);display:grid;place-items:center;font:500 12px/1 var(--font-mono)}
+.steps li b{color:var(--fg);font-weight:600}
+kbd{font:500 12px/1 var(--font-mono);padding:3px 7px;border-radius:5px;background:#fff;border:1px solid var(--border-2);border-bottom-width:2px;color:var(--fg)}
+.tabs{display:flex;gap:2px;margin-bottom:14px;flex-wrap:wrap}
+.tabs button{min-height:40px;padding:0 14px;border-radius:8px 8px 0 0;border:0;border-bottom:2px solid transparent;background:transparent;font:400 14px/1 var(--font-ui);cursor:pointer;color:var(--muted)}
+.tabs button:hover{background:var(--surface-3);color:var(--fg)}
+.tabs button[aria-selected="true"]{color:var(--fg);border-bottom-color:var(--accent);background:var(--surface-3)}
+.code{position:relative;background:var(--code-bg);color:var(--code-fg);border-radius:10px;padding:16px 18px;font:400 13px/1.65 var(--font-mono);overflow-x:auto;white-space:pre;margin:0 0 14px}
+.code .c{color:#a6a493}
+.copy{position:absolute;top:8px;right:8px;min-height:32px;padding:0 10px;border-radius:6px;border:1px solid rgba(242,241,237,.25);background:rgba(242,241,237,.08);color:var(--code-fg);font:400 12px var(--font-ui);cursor:pointer}
+.copy:hover{background:rgba(242,241,237,.2)}
+details{border-bottom:1px solid var(--border)}
+details:first-of-type{border-top:1px solid var(--border)}
+summary{display:flex;justify-content:space-between;gap:16px;align-items:center;min-height:56px;cursor:pointer;list-style:none;font:400 18px/1.3 var(--font-display);letter-spacing:-.1px;padding:8px 0}
+summary::-webkit-details-marker{display:none}
+summary::after{content:"+";font:400 22px/1 var(--font-mono);color:var(--muted)}
+details[open] summary::after{content:"–"}
+summary:hover{color:var(--accent-ink)}
+details .ans{padding:0 0 18px;font:400 15px/1.6 var(--font-ui);color:var(--muted);max-width:68ch}
+details .ans b{color:var(--fg)}
+.diagram{margin:0 0 16px;padding:16px;background:var(--surface);border:1px solid var(--border-2);border-radius:12px}
+.diagram svg{display:block;width:100%;height:auto}
+.diagram figcaption{margin-top:10px;font:400 13px/1.4 var(--font-ui);color:var(--muted)}
+.diagram text{font-family:var(--font-ui);fill:var(--fg)}
+.diagram .sub{font-size:11px;fill:var(--muted)} .diagram .pl{font-family:var(--font-mono);font-size:11.5px;fill:var(--code-fg)}
+.diagram .blk{fill:#fff;stroke:var(--border-2);stroke-width:1.5}
+.diagram .brd{fill:var(--code-bg)}
+.w-sig{stroke:var(--accent);stroke-width:2.5;fill:none} .w-pwr{stroke:var(--fg);stroke-width:2.5;fill:none} .w-gnd{stroke:var(--muted);stroke-width:2;stroke-dasharray:6 5;fill:none}
+.dir{font:500 11px/1 var(--font-mono);color:var(--muted)}
+.note{padding:14px 16px;border-radius:10px;background:var(--surface-3);border:1px solid var(--border);font:400 14px/1.5 var(--font-ui);color:var(--muted);margin-bottom:14px}
+.note b{color:var(--fg)}
+footer{padding:36px 0 56px;border-top:1px solid var(--border);font:400 13px/1.5 var(--font-ui);color:var(--muted)}
+footer .wrap{display:flex;justify-content:space-between;gap:24px;flex-wrap:wrap}
+footer a{color:var(--accent-ink);text-underline-offset:3px}
+
+@media (max-width:980px){
+  .hero .grid,.sec-head,.demo,.guide{grid-template-columns:1fr;gap:32px}
+  .toc{position:static;flex-direction:row;flex-wrap:wrap;border-left:0;gap:6px}
+  .toc a{border:1px solid var(--border-2);border-radius:8px;margin:0}
+  .toc a[aria-current="true"]{border-color:var(--accent)}
 }
-.wrap { width: 100%; max-width: 880px; margin: 0 auto; padding: 0 var(--s4); }
-header { border-bottom: 1px solid var(--line); background: var(--surface); }
-.hrow { display: flex; align-items: center; gap: var(--s3); padding: var(--s4) 0; }
-.hrow img { width: 40px; height: 40px; }
-h1 { font-size: var(--fs-title); font-weight: 700; margin: 0; }
-.sub { color: var(--muted); font-size: var(--fs-cap); margin: 0; }
-main { flex: 1; padding: var(--s5) 0; }
-.banner { display: flex; gap: var(--s3); align-items: flex-start; padding: var(--s3) var(--s4);
-  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--r-md);
-  font-size: var(--fs-cap); color: var(--muted); }
-.banner strong { color: var(--text); }
-.banner .dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--warn); margin-top: 5px; }
-.grid { display: grid; gap: var(--s4); grid-template-columns: 1fr; margin-top: var(--s4); }
-@media (min-width: 720px) { .grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
-.card { display: flex; flex-direction: column; gap: var(--s3); padding: var(--s4);
-  background: var(--surface); border: 1px solid var(--line); border-radius: var(--r-md); min-width: 0; }
-.card h2 { font-size: var(--fs-lead); font-weight: 700; margin: 0; display: flex; align-items: center; gap: var(--s2); }
-.card p { margin: 0; color: var(--muted); font-size: var(--fs-cap); }
-.meta { display: grid; gap: 2px; font-size: var(--fs-cap); color: var(--muted); }
-.meta b { color: var(--text); font-weight: 600; }
-esp-web-install-button { display: block; }
-esp-web-install-button button {
-  display: inline-flex; align-items: center; justify-content: center; gap: var(--s2);
-  width: 100%; min-height: 48px; padding: 0 var(--s4); border-radius: var(--r-md);
-  border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink);
-  font-weight: 700; font-size: var(--fs-body); cursor: pointer;
-  transition: background var(--t-fast); font-family: var(--font-ui); }
-esp-web-install-button button:hover { background: var(--accent-hover); }
-.no-serial { display: none; width: 100%; min-height: 48px; padding: 0 var(--s4);
-  border-radius: var(--r-md); border: 1px solid var(--line); background: var(--surface-2);
-  color: var(--muted); font-weight: 600; font-size: var(--fs-cap); text-align: center; }
-.no-serial.show { display: flex; align-items: center; justify-content: center; }
-.unsupported esp-web-install-button button { display: none; }
-.unsupported .no-serial { display: flex; align-items: center; justify-content: center; }
-.steps { margin-top: var(--s5); padding: var(--s4); background: var(--surface);
-  border: 1px solid var(--line); border-radius: var(--r-md); }
-.steps h2 { font-size: var(--fs-lead); margin: 0 0 var(--s2); }
-.steps ol { margin: 0; padding-left: 20px; display: grid; gap: var(--s2); color: var(--muted); font-size: var(--fs-body); }
-.steps code { font-family: var(--font-num); font-size: var(--fs-cap); background: var(--surface-3);
-  padding: 1px 6px; border-radius: var(--r-sm); color: var(--text); }
-footer { border-top: 1px solid var(--line); background: var(--surface);
-  margin-top: auto; padding: var(--s3) 0; }
-footer .wrap { display: flex; flex-wrap: wrap; gap: var(--s2) var(--s4); align-items: center;
-  color: var(--muted); font-size: var(--fs-cap); }
-footer a { color: var(--accent); text-decoration: none; }
-footer a:hover { color: var(--accent-hover); }
-footer .ver { margin-left: auto; font-family: var(--font-num); }
+@media (max-width:640px){
+  .wrap{padding:0 18px}
+  .nav nav a:not(:last-child){display:none}
+  .boards{grid-template-columns:1fr}
+  .flasher{padding:20px}
+  .hero{padding:40px 0 56px} section.block{padding:60px 0}
+  .bezel{padding:10px;border-radius:14px}
+}
+@media (prefers-reduced-motion:reduce){html{scroll-behavior:auto}*{transition:none!important}}
 </style>
 </head>
 <body>
-<header>
-  <div class="wrap hrow">
-    <img src="assets/logo.svg" alt="" width="40" height="40">
-    <div>
-      <h1>AIO Feeder — Web Flasher</h1>
-      <p class="sub">Flash the hub and node firmware straight from the browser. No IDE, no drivers on Windows/macOS.</p>
-    </div>
+
+<header class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 96 96" aria-hidden="true"><rect width="96" height="96" rx="18" fill="#26251e"/><path d="M22 22h52L56 48v14l-16 8V48z" fill="none" stroke="#f54e00" stroke-width="6" stroke-linejoin="round"/></svg>
+      AIO Feeder
+    </a>
+    <nav aria-label="Sections">
+      <a href="#flash">Flash</a><a href="#demo">Demo</a><a href="#guide">Guide</a><a href="#help">Troubleshooting</a><a href="https://github.com/mlger/aio-feeder" target="_blank" rel="noopener">GitHub</a>
+    </nav>
   </div>
 </header>
 
-<main class="wrap">
-  <div class="banner">
-    <span class="dot" aria-hidden="true"></span>
-    <span><strong>Requirements:</strong> Chrome or Edge on desktop (Web Serial), a USB data cable, and the board in
-    download mode. Close any program holding the serial port (serial monitor, Arduino IDE). Flashing erases the
-    targeted app region — keep the device on stable power until the write finishes.</span>
+<main id="top">
+<!-- ============ HERO + FLASHER ============ -->
+<section class="hero" id="flash">
+  <div class="wrap grid">
+    <div>
+      <span class="eyebrow">Web flasher · no install</span>
+      <h1>Flash your feeder hub and nodes from the browser.</h1>
+      <p class="lede">Plug a board in over USB, pick what it is, and write the latest release straight from Chrome or Edge. Then look at the real hub interface below before you wire anything.</p>
+      <div class="support" id="support" role="status"><i></i><span>Checking browser…</span></div>
+      <ul class="facts">
+        <li><span>Hub</span><span class="mono">ESP32-S3 · Waveshare 4.3B · 800×480</span></li>
+        <li><span>Nodes</span><span class="mono">ESP8266 (ESP-12E) · ESP32-C3 SuperMini</span></li>
+        <li><span>Method</span><span class="mono">Web Serial over USB (ESP Web Tools)</span></li>
+        <li><span>Release</span><span class="mono" id="fw-release">…</span></li>
+      </ul>
+    </div>
+
+    <div class="card flasher">
+      <div class="step">
+        <div class="step-h"><span class="n">01</span>Choose your board</div>
+        <div class="boards" role="radiogroup" aria-label="Board">
+          <label class="board"><input type="radio" name="board" value="hub" checked><span class="face"><span class="role">Hub</span><span class="name">ESP32-S3 Touch LCD 4.3B</span><span class="chip">Waveshare · 4.3″ 800×480 · native USB</span></span></label>
+          <label class="board"><input type="radio" name="board" value="node-esp32c3"><span class="face"><span class="role">Node</span><span class="name">ESP32-C3 Super Mini</span><span class="chip">RISC-V · native USB (CDC)</span></span></label>
+          <label class="board"><input type="radio" name="board" value="node-esp8266"><span class="face"><span class="role">Node</span><span class="name">ESP8266 (ESP-12E)</span><span class="chip">NodeMCU / D1-mini class · UART bridge</span></span></label>
+        </div>
+      </div>
+
+      <div class="step">
+        <div class="step-h"><span class="n">02</span>Pick firmware</div>
+        <div class="seg" role="group" aria-label="Firmware source">
+          <button type="button" id="src-hosted" aria-pressed="true">Latest release</button>
+          <button type="button" id="src-custom" aria-pressed="false">My own .bin</button>
+        </div>
+        <div class="src-body" id="body-hosted">
+          <div class="path mono" id="hosted-path"></div>
+          <div class="fw-status" id="fw-status"><i></i><span>Checking…</span></div>
+        </div>
+        <div class="src-body" id="body-custom" hidden>
+          <div class="field">
+            <input type="file" id="bin-file" accept=".bin" aria-label="Firmware .bin file">
+            <select id="bin-offset" aria-label="Flash offset">
+              <option value="0">Whole image · 0x0</option>
+              <option value="10000">App only · 0x10000</option>
+            </select>
+          </div>
+          <div class="fw-status" id="custom-status"><i></i><span>No file selected</span></div>
+        </div>
+      </div>
+
+      <div class="install-row">
+        <esp-web-install-button id="installer" manifest="hub/manifest.json">
+          <button slot="activate" class="btn primary" id="install-btn">
+            <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2v8M4.5 6.5 8 10l3.5-3.5M3 13h10"/></svg>
+            Connect &amp; install
+          </button>
+          <span slot="unsupported" class="hint">Web Serial isn’t available here. Use Chrome or Edge on desktop.</span>
+          <span slot="not-allowed" class="hint">Web Serial needs HTTPS or localhost.</span>
+        </esp-web-install-button>
+        <p class="hint" id="boot-hint"></p>
+      </div>
+    </div>
   </div>
+</section>
 
-  <div class="grid">
-    <section class="card" aria-labelledby="hub-h">
-      <h2 id="hub-h">Hub</h2>
-      <p>Waveshare ESP32-S3-Touch-LCD-4.3B — schedules, calibration, logs. Hold <b>BOOT</b>, plug USB, release.</p>
-      <div class="meta"><span><b>Chip:</b> ESP32-S3</span><span><b>Manifest:</b> <code>hub/manifest.json</code></span></div>
-      <esp-web-install-button manifest="hub/manifest.json">
-        <button slot="activate">Install hub firmware</button>
-      </esp-web-install-button>
-      <span class="no-serial">Web Serial unavailable — open in desktop Chrome/Edge over HTTPS.</span>
-    </section>
-
-    <section class="card" aria-labelledby="c3-h">
-      <h2 id="c3-h">Node — ESP32-C3</h2>
-      <p>ESP32-C3 SuperMini + DS3231 + relay + 12 V solenoid. Hold <b>BOOT</b>, plug USB, release.</p>
-      <div class="meta"><span><b>Chip:</b> ESP32-C3</span><span><b>Manifest:</b> <code>node-esp32c3/manifest.json</code></span></div>
-      <esp-web-install-button manifest="node-esp32c3/manifest.json">
-        <button slot="activate">Install C3 node firmware</button>
-      </esp-web-install-button>
-      <span class="no-serial">Web Serial unavailable — open in desktop Chrome/Edge over HTTPS.</span>
-    </section>
-
-    <section class="card" aria-labelledby="8266-h">
-      <h2 id="8266-h">Node — ESP8266</h2>
-      <p>ESP-12F class module + DS3231 + relay + 12 V solenoid. Pull <b>GPIO0</b> low while resetting.</p>
-      <div class="meta"><span><b>Chip:</b> ESP8266</span><span><b>Manifest:</b> <code>node-esp8266/manifest.json</code></span></div>
-      <esp-web-install-button manifest="node-esp8266/manifest.json">
-        <button slot="activate">Install ESP8266 node firmware</button>
-      </esp-web-install-button>
-      <span class="no-serial">Web Serial unavailable — open in desktop Chrome/Edge over HTTPS.</span>
-    </section>
+<!-- ============ DEMO ============ -->
+<section class="block" id="demo">
+  <div class="wrap">
+    <div class="sec-head">
+      <div><span class="eyebrow">The real interface</span><h2>This is what the hub screen shows.</h2></div>
+      <p>Captures of the actual LVGL interface (352×240 logical, QEMU screenshot run — the same frames CI checks on every commit). On the 4.3B they are drawn at 2× onto the 800×480 panel.</p>
+    </div>
+    <div class="demo">
+      <div class="bezel">
+        <div class="screen" id="demo-screen" role="img" aria-label="Hub interface screenshot">
+          <img src="assets/screens/dashboard.png" alt="Dashboard" class="on">
+          <img src="assets/screens/node_detail.png" alt="Node detail">
+          <img src="assets/screens/sched_editor.png" alt="Schedule editor">
+          <img src="assets/screens/history.png" alt="History">
+          <img src="assets/screens/alerts.png" alt="Alerts">
+          <img src="assets/screens/settings.png" alt="Settings">
+          <img src="assets/screens/pairing_code.png" alt="Pairing code">
+          <img src="assets/screens/wizard_node.png" alt="Setup wizard">
+        </div>
+        <div class="demo-dots" id="demo-dots" role="group" aria-label="Screenshot picker"></div>
+        <div class="bezel-bar"><span>ESP32-S3 · 352×240 logical · LVGL 9</span><a id="demo-full" href="assets/screens/dashboard.png" target="_blank" rel="noopener">Open full size</a></div>
+      </div>
+      <ol class="tour">
+        <li><div><b>Dashboard</b><span>One card per feeder — online state, next feed, last result.</span></div></li>
+        <li><div><b>Node detail</b><span>Supply voltage, schedule, recent feeds, feed-now / skip / hold.</span></div></li>
+        <li><div><b>Schedule editor</b><span>Per-node times and amounts, weekday masks, skip/hold gates.</span></div></li>
+        <li><div><b>History &amp; alerts</b><span>7-day chart, per-node totals, missed-feed alerts.</span></div></li>
+        <li><div><b>Settings</b><span>PIN-gated: backup/restore on SD, restart, pairing, factory reset.</span></div></li>
+        <li><div><b>Pairing &amp; wizard</b><span>60 s pairing window with a 4-digit confirmation code, guided setup.</span></div></li>
+      </ol>
+    </div>
   </div>
+</section>
 
-  <section class="steps" aria-labelledby="how-h">
-    <h2 id="how-h">How to flash</h2>
-    <ol>
-      <li>Plug the board in with a <b>data</b> USB cable (charge-only cables will not enumerate a serial port).</li>
-      <li>Put the board in download mode: hold <b>BOOT</b> (or tie <code>GPIO0</code> low) while connecting USB.</li>
-      <li>Press the install button for your board, pick its serial port, and follow the prompts.</li>
-      <li>First install or recovery: allow the installer to <b>erase the device</b> when asked.</li>
-      <li>When the write finishes, power-cycle the board — it boots the new firmware.</li>
-    </ol>
-  </section>
+<!-- ============ GUIDE ============ -->
+<section class="block" id="guide">
+  <div class="wrap">
+    <div class="sec-head">
+      <div><span class="eyebrow">Guide</span><h2>From a bare board to a paired node.</h2></div>
+      <p>Six short chapters. Skim the board table first, then follow the steps for the board in your hand.</p>
+    </div>
+    <div class="guide">
+      <nav class="toc" id="toc" aria-label="Guide chapters">
+        <a href="#g-boards">Boards</a><a href="#g-boot">Boot mode</a><a href="#g-build">Build firmware</a><a href="#g-flash">Flash</a><a href="#g-wire">Wire a node</a><a href="#g-pair">Pair a node</a>
+      </nav>
+      <div>
+        <article class="chapter" id="g-boards">
+          <span class="eyebrow">01</span><h3>Know your boards</h3>
+          <p>The hub runs the touch interface, the scheduler and the feed log. Each node drives one actuator and reports back over ESP-NOW.</p>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Board</th><th>Role</th><th>Chip family</th><th>USB</th><th>Manifest</th></tr></thead>
+            <tbody>
+              <tr><td>Waveshare ESP32-S3-Touch-LCD-4.3B</td><td>Hub</td><td class="mono">ESP32-S3</td><td>Native USB-C</td><td class="mono">hub/manifest.json</td></tr>
+              <tr><td>ESP32-C3 Super Mini</td><td>Node</td><td class="mono">ESP32-C3</td><td>Native USB (CDC)</td><td class="mono">node-esp32c3/manifest.json</td></tr>
+              <tr><td>ESP8266 (ESP-12E)</td><td>Node</td><td class="mono">ESP8266</td><td>USB-UART bridge</td><td class="mono">node-esp8266/manifest.json</td></tr>
+            </tbody>
+          </table></div>
+        </article>
+
+        <article class="chapter" id="g-boot">
+          <span class="eyebrow">02</span><h3>Enter download mode</h3>
+          <p>The installer usually resets the board for you. If the port won’t connect, put it in download mode by hand.</p>
+          <div class="tabs" role="tablist" aria-label="Board boot instructions" id="boot-tabs">
+            <button role="tab" aria-selected="true" data-b="hub">Hub 4.3B</button>
+            <button role="tab" aria-selected="false" data-b="node-esp32c3">C3 Super Mini</button>
+            <button role="tab" aria-selected="false" data-b="node-esp8266">ESP8266</button>
+          </div>
+          <ol class="steps" id="boot-steps"></ol>
+        </article>
+
+        <article class="chapter" id="g-build">
+          <span class="eyebrow">03</span><h3>Build a flashable image</h3>
+          <p>The hub is a pure ESP-IDF build (four parts); the C3 node is an Arduino/PlatformIO build (merge into one factory image); the ESP8266 is a single image. Each block below prints the exact commands and offsets the hosted manifests use.</p>
+          <pre class="code"><button class="copy" type="button" data-copy="merge-text">Copy</button><span id="merge-text"></span></pre>
+          <div class="note"><b>Native-USB boards:</b> enable <code>ARDUINO_USB_CDC_ON_BOOT=1</code> (PlatformIO) on the C3 so serial logs come over the same cable you flash with.</div>
+        </article>
+
+        <article class="chapter" id="g-flash">
+          <span class="eyebrow">04</span><h3>Flash</h3>
+          <ol class="steps">
+            <li><b>Use a data cable.</b> Charge-only USB-C cables show no port.</li>
+            <li><b>Open this page in Chrome or Edge</b> on a computer, over HTTPS or <code>localhost</code>.</li>
+            <li><b>Select the board and firmware</b> in the card at the top, then press <kbd>Connect &amp; install</kbd>.</li>
+            <li><b>Pick the serial port</b> in the browser prompt. Keep <b>Erase device</b> ticked on a first install.</li>
+            <li><b>Wait for “Installation complete”</b>, then unplug and replug, or tap <kbd>RST</kbd>.</li>
+          </ol>
+          <div class="note">Only one program can hold the port. Close any serial monitor (Arduino, PlatformIO, PuTTY) before flashing.</div>
+        </article>
+
+        <article class="chapter" id="g-wire">
+          <span class="eyebrow">05</span><h3>Wire a node</h3>
+          <p>Every node switches one actuator (solenoid gate, auger or pump via a 5&nbsp;V relay), keeps its own DS3231 RTC on I²C, and measures its 12&nbsp;V supply so the hub can show voltage. Pick your MCU for the pin map — the same table lives in <code>PLAN.md §4.4/§4.5</code>.</p>
+          <div class="tabs" role="tablist" aria-label="Node wiring" id="wire-tabs">
+            <button role="tab" aria-selected="true" data-b="node-esp32c3">C3 Super Mini</button>
+            <button role="tab" aria-selected="false" data-b="node-esp8266">ESP8266</button>
+          </div>
+          <figure class="diagram"><div id="wire-svg"></div><figcaption>Signal wires in orange, 12&nbsp;V and 5&nbsp;V in dark, ground dashed.</figcaption></figure>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Function</th><th>GPIO</th><th>Board label</th><th>Dir</th><th>Connects to</th></tr></thead>
+            <tbody id="pin-body"></tbody>
+          </table></div>
+          <div class="note" style="margin-top:14px"><b>Default-OFF is hardware, not firmware (SR1):</b> during boot the GPIOs float — an active-low relay module can click on. Pull the relay input to its OFF level with ~10&nbsp;kΩ (pull-up for active-low, pull-down for active-high), and put the solenoid on the <b>NO</b> contact.</div>
+          <div class="note"><b>Before power-up:</b> tie every ground together (MCU, relay, 12&nbsp;V supply, load), add a flyback diode (1N4007) across a bare solenoid, and check the ADC divider output with a meter before the first boot.</div>
+        </article>
+
+        <article class="chapter" id="g-pair">
+          <span class="eyebrow">06</span><h3>Pair a node with the hub</h3>
+          <ol class="steps">
+            <li><b>Power the hub</b> and finish the setup wizard (time zone, Wi-Fi — the nodes follow the hub’s channel).</li>
+            <li>On the hub: <b>Settings → Wizard / Add node</b>. The hub opens a <b>60-second pairing window</b>.</li>
+            <li>Power the node while it is unpaired — it beacons and appears in the hub’s discovery list with its signal.</li>
+            <li><b>Compare the 4-digit code</b> the hub shows with the one the node prints over serial, confirm on both, then fill the form (name, mechanism, hopper size, amount in it now).</li>
+            <li><b>Calibrate</b> on the node page (test runs + weighed amounts), then set a schedule.</li>
+          </ol>
+          <div class="note">The node’s per-feed, hourly and daily caps are enforced on the node itself — the hub is advisory, so a lost link never means runaway feeding (§3.3).</div>
+        </article>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ HELP ============ -->
+<section class="block" id="help">
+  <div class="wrap">
+    <div class="sec-head">
+      <div><span class="eyebrow">Troubleshooting</span><h2>When the port won’t show up.</h2></div>
+      <p>Most failures are a cable, a driver, or a program already holding the port.</p>
+    </div>
+    <div>
+      <details><summary>No serial port appears in the browser prompt</summary><div class="ans">Swap to a known data cable and a different USB port. On ESP32 / ESP8266 boards with a USB-UART bridge, install the <b>CH340 / CP210x</b> driver. The hub and the C3 enumerate natively — if they don’t, they are in a user firmware that crashed the USB stack: enter download mode by hand (chapter 02).</div></details>
+      <details><summary>“Failed to connect to ESP” or a timeout</summary><div class="ans">Hold <kbd>BOOT</kbd>, tap <kbd>RST</kbd>, release <kbd>BOOT</kbd>, then retry. Close any serial monitor first — only one program can hold the port.</div></details>
+      <details><summary>The hosted build says firmware is missing</summary><div class="ans">The Pages site serves the latest CI release. If a target shows “not found”, the release workflow may still be running — check the <a class="link" href="https://github.com/mlger/aio-feeder/releases" target="_blank" rel="noopener">releases page</a>, or flash a local build with <b>My own .bin</b>.</div></details>
+      <details><summary>Flashed, but the hub screen stays black</summary><div class="ans">The panel bring-up is logged on serial — look for <code>aio-display: panel 800x480</code>. A backlit-but-black screen is a timing/pin-map mismatch (constants in <code>hub/main/display_hw.cpp</code>); a dead-dark screen is the backlight (CH422G EXIO2). The hub keeps running headless either way — feeding never depends on the display.</div></details>
+      <details><summary>The C3 reboots in a loop after flashing</summary><div class="ans">Usually an app-only image written at <code>0x0</code> instead of <code>0x10000</code>, or a merged image missing the bootloader. Prefer the hosted build, or re-merge with the command from chapter 03.</div></details>
+      <details><summary>Does anything leave my computer?</summary><div class="ans">No. Hosted builds come straight from this site to the board over Web Serial; a file you pick is read locally and never uploaded. See <a class="link" href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noopener">ESP Web Tools</a>.</div></details>
+    </div>
+  </div>
+</section>
 </main>
 
-<footer>
-  <div class="wrap">
-    <span>AIO Feeder</span>
-    <a href="https://github.com/mlger/aio-feeder">Repository</a>
-    <a href="https://github.com/mlger/aio-feeder/blob/main/PLAN.md">Engineering plan</a>
-    <span class="ver" id="ver"></span>
-  </div>
-</footer>
+<footer><div class="wrap">
+  <span>AIO Feeder · web flasher, demo &amp; guide</span>
+  <span>Flashing uses <a href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noopener">ESP Web Tools</a> · sources on <a href="https://github.com/mlger/aio-feeder" target="_blank" rel="noopener">GitHub</a> · <a href="https://github.com/mlger/aio-feeder/releases" target="_blank" rel="noopener">releases</a></span>
+</div></footer>
 
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
 <script>
-  // Show the unsupported message only when Web Serial is genuinely missing.
-  if (!('serial' in navigator)) {
-    document.querySelectorAll('.card').forEach(function (c) { c.classList.add('unsupported'); });
+(function(){
+  const $ = s => document.querySelector(s), $$ = s => [...document.querySelectorAll(s)];
+
+  /* ---- boards ---------------------------------------------------------- */
+  const BOARDS = {
+    'hub': {
+      name:'Waveshare ESP32-S3-Touch LCD 4.3B', chip:'ESP32-S3',
+      manifest:'hub/manifest.json',
+      boot:[
+        '<b>Unplug</b> the board. Use the <b>USB-C port</b> (the ESP32-S3 enumerates natively).',
+        'Locate the <kbd>BOOT</kbd> button on the board and hold it.',
+        'Plug in USB while holding <kbd>BOOT</kbd>, then release after two seconds.',
+        'The port appears as an <b>ESP32-S3</b> device. Choose it in the prompt.'],
+      hint:'Hold BOOT while plugging in if the port doesn’t connect.',
+      parts:'bootloader 0x0 · partitions 0x8000 · boot_app0 0xe000 · app 0x10000',
+      build:
+`# Hub — pure ESP-IDF (v5.4+), four parts
+git clone https://github.com/mlger/aio-feeder && cd aio-feeder
+idf.py -C hub set-target esp32s3
+idf.py -C hub build
+# parts the manifest flashes (no merge needed, ESP Web Tools writes each):
+#   hub/build/bootloader/bootloader.bin        -> 0x0
+#   hub/build/partition_table/partition-table.bin -> 0x8000
+#   hub/build/aio-feeder-hub.bin               -> 0x10000
+# (a boot_app0.bin part is used automatically when present)`},
+    'node-esp32c3': {
+      name:'ESP32-C3 Super Mini', chip:'ESP32-C3',
+      manifest:'node-esp32c3/manifest.json',
+      boot:[
+        'Hold the <kbd>BOOT</kbd> button (GPIO 9).',
+        'Tap <kbd>RST</kbd> once while still holding <kbd>BOOT</kbd>, or plug in USB.',
+        'Release <kbd>BOOT</kbd>. The board enumerates as a native USB device.',
+        'Choose the new port in the prompt. After flashing, tap <kbd>RST</kbd>.'],
+      hint:'Hold BOOT, tap RST, release BOOT if it won’t connect.',
+      parts:'bootloader 0x0 · partitions 0x8000 · boot_app0 0xe000 · app 0x10000',
+      build:
+`# Node — PlatformIO, Arduino core (merge into one factory image)
+pio run -e node_esp32c3
+cd node/.pio/build/node_esp32c3
+esptool.py --chip esp32c3 merge_bin -o node-c3.factory.bin \\
+  --flash_mode dio 0x0 bootloader.bin 0x8000 partitions.bin \\
+  0xe000 boot_app0.bin 0x10000 firmware.bin
+# flash node-c3.factory.bin whole at 0x0, or the parts individually`},
+    'node-esp8266': {
+      name:'ESP8266 (ESP-12E)', chip:'ESP8266',
+      manifest:'node-esp8266/manifest.json',
+      boot:[
+        'Plug in USB. The board shows as a CH340 or CP210x serial port.',
+        'Start the install. NodeMCU / D1 mini style boards auto-reset.',
+        'If it times out, hold <kbd>FLASH</kbd> (GPIO 0) and tap <kbd>RST</kbd>.',
+        'Release <kbd>FLASH</kbd> once writing begins.'],
+      hint:'Auto-reset works on most boards; otherwise hold FLASH and tap RST.',
+      parts:'single image (eboot embedded) at 0x0',
+      build:
+`# Node — PlatformIO; the ESP8266 firmware is ONE image (eboot embedded)
+pio run -e node_esp8266
+cp node/.pio/build/node_esp8266/firmware.bin node-esp8266.factory.bin
+# flash whole at 0x0`}
+  };
+  let board = 'hub', source = 'hosted', customUrl = null, customManifestUrl = null;
+  const installer = $('#installer');
+
+  /* ---- browser support pill -------------------------------------------- */
+  const sup = $('#support'), ok = 'serial' in navigator;
+  sup.classList.add(ok ? 'ok' : 'bad');
+  sup.querySelector('span').textContent = ok
+    ? 'Web Serial ready — Chrome / Edge detected'
+    : 'Web Serial unavailable — use Chrome or Edge on desktop';
+
+  function setStatus(el, cls, txt){ el.className = 'fw-status ' + cls; el.querySelector('span').textContent = txt; }
+
+  /* ---- hosted build status + release version ---------------------------- */
+  const siteInfo = fetch('build-info.json')
+    .then(r => r.ok ? r.json() : null)
+    .then(d => { if (d && d.version) $('#fw-release').textContent = d.version; return d; })
+    .catch(() => { $('#fw-release').textContent = 'unknown'; return null; });
+
+  async function checkHosted(){
+    const b = BOARDS[board], st = $('#fw-status');
+    $('#hosted-path').textContent = b.manifest + '  →  ' + b.parts;
+    setStatus(st, '', 'Checking…');
+    try {
+      const info = await siteInfo;
+      const r = await fetch(b.manifest, {method:'HEAD'});
+      const v = info && info.version ? ' · ' + info.version : '';
+      r.ok ? setStatus(st, 'ok', 'Firmware found' + v)
+           : setStatus(st, 'warn', 'Manifest not deployed yet — use My own .bin');
+    } catch(e){ setStatus(st, 'warn', 'Can’t check from this context — use My own .bin'); }
   }
-  fetch('build-info.json').then(function (r) { return r.ok ? r.json() : null; })
-    .then(function (j) { if (j && j.version) document.getElementById('ver').textContent = 'firmware ' + j.version; })
-    .catch(function () {});
+
+  /* ---- custom bin → object-URL manifest --------------------------------- */
+  function buildCustomManifest(file){
+    if (customUrl) URL.revokeObjectURL(customUrl);
+    if (customManifestUrl) URL.revokeObjectURL(customManifestUrl);
+    customUrl = URL.createObjectURL(file);
+    const offset = parseInt($('#bin-offset').value, 16);
+    const m = {name:'AIO Feeder — ' + BOARDS[board].name + ' (' + file.name + ')', version:'local',
+      new_install_prompt_erase: true,
+      builds: [{chipFamily: BOARDS[board].chip, parts: [{path: customUrl, offset}]}]};
+    customManifestUrl = URL.createObjectURL(new Blob([JSON.stringify(m)], {type:'application/json'}));
+    installer.manifest = customManifestUrl;
+    setStatus($('#custom-status'), 'ok', file.name + ' · ' + (file.size/1024).toFixed(0) + ' KB · 0x' + $('#bin-offset').value);
+  }
+
+  /* ---- wiring tables + diagram (PLAN.md §4.4 / §4.5) -------------------- */
+  const WIRE = {
+    'node-esp32c3': {svgPins:['GPIO3','GPIO5','GPIO1','5V','GND'], pins:[
+      ['Actuator drive','GPIO3','3','out','Relay IN / MOSFET gate'],
+      ['Gate reed (opt.)','GPIO4','4','in','Switch to GND, internal pull-up'],
+      ['Hopper-low (opt.)','GPIO5','5','in','Switch to GND, internal pull-up (ADC2 — not analog while Wi-Fi is on)'],
+      ['Supply monitor','GPIO1','1 (ADC1)','in','Divider: 12 V → midpoint ≤ 2.5 V (1 % resistors + 100 nF)'],
+      ['I²C SDA / SCL (DS3231)','GPIO6 / GPIO7','6 / 7','bi','RTC module; 4.7 kΩ pull-ups if the module has none'],
+      ['Status LED','GPIO8','8 (on-board)','out','On-board LED; keep externals off it at boot (strapping)'],
+      ['Pairing button','GPIO9','9 (BOOT)','in','On-board BOOT button; holding it at reset = download mode'],
+      ['Debug UART','GPIO20 / GPIO21','20 / 21','bi','Optional; native USB serial/JTAG also available']]},
+    'node-esp8266': {svgPins:['GPIO14','GPIO13','A0','5V','GND'], pins:[
+      ['Actuator drive','GPIO14','D5','out','Relay IN / MOSFET gate (boot-safe)'],
+      ['Gate reed (opt.)','GPIO13','D7','in','Switch to GND, internal pull-up'],
+      ['Hopper-low (opt.)','GPIO16','D0','in','External pull-up (GPIO16 has none) [VERIFY]'],
+      ['Pairing button','GPIO12','D6','in','To GND, internal pull-up (boot-safe)'],
+      ['I²C SDA / SCL (DS3231)','GPIO4 / GPIO5','D2 / D1','bi','RTC module; 4.7 kΩ pull-ups if the module has none'],
+      ['Status LED','GPIO2','D4','out','On-board LED, active-low (boot pin — LED load is fine)'],
+      ['Supply monitor','A0','A0','in','0–1 V bare ADC; D1 mini has an on-board divider [VERIFY]']]}
+  };
+  let wboard = 'node-esp32c3';
+  function wireSvg(w){
+    const P = w.pins;
+    const pin = (y,t) => `<circle cx="210" cy="${y}" r="5" fill="#f2f1ed"/><text class="pl" x="196" y="${y+4}" text-anchor="end">${t}</text>`;
+    const blk = (x,y,w2,h,t,s) => `<rect class="blk" x="${x}" y="${y}" width="${w2}" height="${h}" rx="8"/><text x="${x+14}" y="${y+h/2-3}" font-size="14">${t}</text><text class="sub" x="${x+14}" y="${y+h/2+14}">${s}</text>`;
+    return `<svg viewBox="0 0 760 420" role="img" aria-label="Wiring diagram for ${BOARDS[wboard].name}">
+      <rect class="brd" x="20" y="10" width="190" height="400" rx="12"/>
+      <text x="36" y="36" font-size="14" style="fill:#f2f1ed">${BOARDS[wboard].name}</text>
+      ${pin(70,w.svgPins[0])}${pin(160,w.svgPins[1])}${pin(250,w.svgPins[2])}${pin(330,w.svgPins[3])}${pin(390,w.svgPins[4])}
+      <path class="w-sig" d="M215 70H330"/><path class="w-sig" d="M215 160H330"/><path class="w-sig" d="M215 250H330"/>
+      <path class="w-pwr" d="M215 330H330"/>
+      <path class="w-gnd" d="M215 390H745"/>
+      ${blk(330,38,210,64,'Relay / MOSFET driver','IN ← actuator pin · OFF-level pull resistor')}
+      ${blk(330,128,210,64,'Hopper / gate switch','other leg → GND')}
+      ${blk(330,218,210,64,'Divider to ≤ 2.5 V','12 V → midpoint → ADC')}
+      ${blk(330,298,210,64,'Buck 12 V → 5 V','5 V out → board')}
+      ${blk(600,38,140,64,'Load','solenoid · auger · pump')}
+      <path class="w-pwr" d="M540 70H600"/>
+      <rect class="blk" x="600" y="218" width="140" height="144" rx="8"/>
+      <text x="614" y="284" font-size="14">12 V supply</text><text class="sub" x="614" y="302">+ rail</text>
+      <path class="w-pwr" d="M540 250H600"/><path class="w-pwr" d="M540 330H600"/>
+      <text class="sub" x="330" y="408">Common ground: tie every GND here, including the 12 V supply and load.</text>
+    </svg>`;
+  }
+  function renderWire(){
+    $$('#wire-tabs button').forEach(t => t.setAttribute('aria-selected', t.dataset.b === wboard));
+    const w = WIRE[wboard];
+    $('#wire-svg').innerHTML = wireSvg(w);
+    $('#pin-body').innerHTML = w.pins.map(r =>
+      `<tr><td>${r[0]}</td><td class="mono">${r[1]}</td><td class="mono">${r[2]}</td><td class="dir">${r[3].toUpperCase()}</td><td>${r[4]}</td></tr>`).join('');
+  }
+  $$('#wire-tabs button').forEach(t => t.addEventListener('click', () => { wboard = t.dataset.b; renderWire(); }));
+
+  /* ---- refresh on board/source change ----------------------------------- */
+  function refresh(){
+    if (WIRE[board]) wboard = board;
+    renderWire();
+    const b = BOARDS[board];
+    $('#boot-hint').textContent = b.hint;
+    $('#merge-text').textContent = b.build;
+    $$('#boot-tabs button').forEach(t => t.setAttribute('aria-selected', t.dataset.b === board));
+    $('#boot-steps').innerHTML = b.boot.map(s => '<li>' + s + '</li>').join('');
+    if (source === 'hosted'){ installer.manifest = b.manifest; checkHosted(); }
+    else { const f = $('#bin-file').files[0]; if (f) buildCustomManifest(f); }
+  }
+
+  $$('input[name=board]').forEach(r => r.addEventListener('change', () => { board = r.value; refresh(); }));
+  $$('#boot-tabs button').forEach(t => t.addEventListener('click', () => {
+    board = t.dataset.b; $$('input[name=board]').forEach(r => r.checked = r.value === board); refresh();
+  }));
+
+  function setSource(s){
+    source = s;
+    $('#src-hosted').setAttribute('aria-pressed', s === 'hosted');
+    $('#src-custom').setAttribute('aria-pressed', s === 'custom');
+    $('#body-hosted').hidden = s !== 'hosted';
+    $('#body-custom').hidden = s !== 'custom';
+    $('#install-btn').disabled = s === 'custom' && !$('#bin-file').files[0];
+    refresh();
+  }
+  $('#src-hosted').onclick = () => setSource('hosted');
+  $('#src-custom').onclick = () => setSource('custom');
+  $('#bin-file').addEventListener('change', e => { const f = e.target.files[0]; if (f){ buildCustomManifest(f); $('#install-btn').disabled = false; } });
+  $('#bin-offset').addEventListener('change', () => { const f = $('#bin-file').files[0]; if (f) buildCustomManifest(f); });
+
+  /* ---- copy buttons ------------------------------------------------------ */
+  $$('.copy').forEach(b => b.addEventListener('click', () => {
+    const t = document.getElementById(b.dataset.copy).textContent;
+    (navigator.clipboard ? navigator.clipboard.writeText(t) : Promise.reject())
+      .then(() => { b.textContent = 'Copied'; setTimeout(() => b.textContent = 'Copy', 1400); })
+      .catch(() => { b.textContent = 'Ctrl+C'; setTimeout(() => b.textContent = 'Copy', 1400); });
+  }));
+
+  /* ---- demo screenshot rotator ------------------------------------------- */
+  const shots = $$('#demo-screen img');
+  const dots = $('#demo-dots');
+  let cur = 0, timer = null;
+  const CAPTIONS = ['Dashboard','Node detail','Schedule editor','History','Alerts','Settings','Pairing code','Setup wizard'];
+  shots.forEach((img, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.setAttribute('aria-label', CAPTIONS[i] || ('Shot ' + (i+1)));
+    b.setAttribute('aria-pressed', i === 0);
+    b.addEventListener('click', () => { show(i); restart(); });
+    dots.appendChild(b);
+  });
+  function show(i){
+    cur = (i + shots.length) % shots.length;
+    shots.forEach((im, k) => im.classList.toggle('on', k === cur));
+    [...dots.children].forEach((b, k) => b.setAttribute('aria-pressed', k === cur));
+    $('#demo-full').href = shots[cur].src;
+  }
+  function restart(){
+    if (timer) clearInterval(timer);
+    if (!matchMedia('(prefers-reduced-motion: reduce)').matches)
+      timer = setInterval(() => show(cur + 1), 4200);
+  }
+  $('#demo-screen').addEventListener('click', () => { show(cur + 1); restart(); });
+  restart();
+
+  /* ---- scroll-spy --------------------------------------------------------- */
+  const links = $$('#toc a'), main = $$('.nav nav a');
+  const spy = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) links.forEach(a => a.setAttribute('aria-current', a.getAttribute('href') === '#' + e.target.id));
+  }), {rootMargin:'-30% 0px -60% 0px'});
+  $$('.chapter').forEach(c => spy.observe(c));
+  const spy2 = new IntersectionObserver(es => es.forEach(e => {
+    if (e.isIntersecting) main.forEach(a => a.setAttribute('aria-current', a.getAttribute('href') === '#' + e.target.id));
+  }), {rootMargin:'-40% 0px -55% 0px'});
+  ['flash','demo','guide','help'].forEach(id => spy2.observe(document.getElementById(id)));
+
+  refresh();
+})();
 </script>
 </body>
 </html>
