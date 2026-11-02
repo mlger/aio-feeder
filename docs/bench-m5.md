@@ -42,11 +42,33 @@ Touch walk (each tap target, M4a/M4b screens):
 5. Pairing / wizard / calibration strips per the hint lanes; the flow ends
    on the DONE screens as in `docs/bench-m4b.md`.
 
-Known M5a gaps (M5b): no on-screen text/numeric entry yet — pairing form
-keeps template defaults (gate 1500 g), wizard capacity keeps defaults, the
-calibration weigh step stays on the bench CLI, and the schedule editor is
-view-only. The wizard TZ rows and node picker: TZ works by tap, the node
-picker does not (CLI `wiz ...`).
+Entry pads (M5b): every form field on the session screens opens the shared
+modal pad (numeric keys, or the on-screen keyboard for names/SSIDs):
+
+1. Pairing FORM step: tap the Name row (keyboard), the Type row (cycles
+   gate → auger → pump; caps reset to the template), Full / In it (numeric
+   pad). Commit applies the form exactly like `pair form ...` on the CLI.
+2. Wizard: Wi-Fi row 1 edits the SSID (keyboard), Feeder rows pick a node
+   or "Pair a new feeder" (Next hands over to the pairing window and the
+   wizard resumes when it lands), Hopper rows 1–2 open the numeric pads,
+   Schedule rows: Time (HHMM pad), Days (cycles every day → weekdays →
+   weekends), Amount (numeric pad).
+3. Calibration: WEIGH step → Weigh zone opens the grams pad (one decimal
+   is enough, e.g. `8.25`); Save applies the median and pushes CONFIG —
+   same session the `cal ...` CLI drives.
+4. Schedule editor: tap a row to select, tap below the rows (or New) to
+   draft one; tap time / amount in the edit panel for the pads; the S M T
+   W T F S chips toggle days; Save writes the registry and pushes
+   SCHEDULE_SET; Delete removes the selected row; Pause flips the
+   hub-side enabled gate (not part of SCHEDULE_SET).
+5. Detail footer: Sched | Hist | Alert navigate; Feed now uses the next
+   scheduled amount (or 20 g/ml), PIN-gated per §8 scope; Skip sets
+   skip_until to the next occurrence; Hold sets hold_until = now + 1 h —
+   both push SCHEDULE_SET so the node enforces the gate locally.
+
+Watch the LVGL pool line at boot: the modal pad adds one blocker, one
+panel and two btnmatrix widgets built once — `free=` should still be
+comfortably positive (log it in the notes if it drops below ~10 %).
 
 ## SD slot (D35)
 
@@ -76,6 +98,7 @@ informational until M5b wires brightness; the bench CLI keeps `set ...`.
 ## Serial vs touchscreen scope (D33)
 
 The touchscreen gates what the PIN gates (settings, pairing, manual feeds
-when scoped). The console remains the owner path: no PIN prompt, and it
-keeps the full forms (pair form name/capacity, cal weigh, sched entries,
-set wifi) until M5b lands the on-screen entry.
+when scoped). Since M5b the touchscreen also covers the full forms the CLI
+kept: pair form name/mech/capacity, wizard Wi-Fi/hopper/schedule, the cal
+weigh step and the schedule editor rows. The CLI stays the bench fallback
+and the source of truth for scripted flows.

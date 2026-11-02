@@ -245,6 +245,7 @@ struct NodeDetail {
   uint16_t next_min_of_day = 0;
   int32_t next_in_min = 0;
   uint16_t next_amount = 0;
+  bool unit_ml = false; /* pump profile: amounts show as ml (M5b polish) */
 
   uint8_t event_count = 0; /* newest first */
   DetailEvent events[UI_DETAIL_MAX_EVENTS];
@@ -277,6 +278,7 @@ static inline NodeDetail build_node_detail(const HubRegistry &reg, const EventLo
   }
 
   d.sched_enabled = n->sched.enabled != 0;
+  d.unit_ml = n->profile.unit == UNIT_ML; /* pump: amounts show as ml (M5b) */
   /* entries sorted by min_of_day (insertion sort, capped display list) */
   for (uint8_t i = 0; i < n->sched.entry_count; i++) {
     const sched_entry_t &e = n->sched.entries[i];
@@ -367,6 +369,8 @@ struct SchedEditor {
   bool has_hold = false;
   int32_t gate_left_min = 0;
 
+  bool unit_ml = false; /* pump profile: draft amount shows as ml (M5b) */
+
   char tz[16] = "UTC"; /* daylight-saving rule name (§8.3) */
   char clock[8] = "--:--"; /* HH:MM at snapshot time */
 };
@@ -380,6 +384,7 @@ static inline SchedEditor build_sched_editor(const HubRegistry &reg, uint8_t nod
   const HubNode *n = reg.by_id(node_id);
   if (!n) return e;
   e.found = true;
+  e.unit_ml = n->profile.unit == UNIT_ML; /* pump: draft amount in ml (M5b) */
   e.node_id = node_id;
   e.enabled = n->sched.enabled != 0;
 
@@ -1078,6 +1083,16 @@ static inline const char *wiz_days_preset(uint8_t mask) {
   if (mask == 0x60) return "weekends";
   return "custom";
 }
+
+/* Cycle the three named presets on tap (M5b schedule step): every day →
+ * weekdays → weekends → every day; a custom mask joins at "every day".
+ * Pure so the host tests can pin the wrap. */
+static inline uint8_t wiz_cycle_days_preset(uint8_t mask) {
+  if (mask == 0x7F) return 0x1F; /* every day → weekdays */
+  if (mask == 0x1F) return 0x60; /* weekdays → weekends */
+  return 0x7F;                   /* weekends / custom → every day */
+}
+
 
 
 }  // namespace ui

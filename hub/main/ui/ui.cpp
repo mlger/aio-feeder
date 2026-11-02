@@ -563,16 +563,18 @@ static void build_detail_screen() {
   lv_label_set_long_mode(s_det_ev_lbl, LV_LABEL_LONG_WRAP);
   lv_obj_set_width(s_det_ev_lbl, UI_W - 44);
 
-  /* footer actions (static in the shot build; wired to the engine in M4b) */
-  lv_obj_t *actions = new_panel(s_det_scr, UI_W, 26, C_PANEL);
+  /* footer actions (M5b: wired to the engine — Sched/Hist/Alerts navigate,
+   * Feed/Skip/Hold are engine ops; the right 56 px stay free for the
+   * back/home overlay) */
+  lv_obj_t *actions = new_panel(s_det_scr, UI_W - 56, 26, C_PANEL);
   lv_obj_set_pos(actions, 0, UI_H - 26);
   lv_obj_set_flex_flow(actions, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(actions, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER,
                         LV_FLEX_ALIGN_CENTER);
-  const char *labels[3] = {"Feed now (hold)", "Skip next", "Hold 1 h"};
-  for (int i = 0; i < 3; i++) {
+  const char *labels[6] = {"Sched", "Hist", "Alert", "Feed", "Skip", "Hold"};
+  for (int i = 0; i < 6; i++) {
     lv_obj_t *btn = lv_btn_create(actions);
-    lv_obj_set_size(btn, 118, 20);
+    lv_obj_set_size(btn, 44, 20);
     lv_obj_set_style_bg_color(btn, lv_color_hex(C_CARD), 0);
     new_label(btn, labels[i], &lv_font_montserrat_12, C_TEXT);
   }
@@ -607,9 +609,9 @@ static void update_detail(const NodeDetail &d) {
   lv_obj_set_style_text_color(s_det_status_lbl, lv_color_hex(dotc), 0);
 
   if (d.has_next)
-    snprintf(buf, sizeof(buf), "next %02u:%02u - %u g - %s",
+    snprintf(buf, sizeof(buf), "next %02u:%02u - %u %s - %s",
              (unsigned)(d.next_min_of_day / 60), (unsigned)(d.next_min_of_day % 60),
-             (unsigned)d.next_amount, d.pushed);
+             (unsigned)d.next_amount, d.unit_ml ? "ml" : "g", d.pushed);
   else
     snprintf(buf, sizeof(buf), "no schedule - %s", d.pushed);
   lv_label_set_text(s_det_next_lbl, buf);
@@ -633,10 +635,10 @@ static void update_detail(const NodeDetail &d) {
         char days[24];
         days_text(e.days_mask, days, sizeof(days));
         off += (size_t)snprintf(lane + off, sizeof(lane) - off,
-                                "%02u:%02u  %-9s %u g\n",
+                                "%02u:%02u  %-9s %u %s\n",
                                 (unsigned)(e.min_of_day / 60),
                                 (unsigned)(e.min_of_day % 60), days,
-                                (unsigned)e.amount);
+                                (unsigned)e.amount, d.unit_ml ? "ml" : "g");
       }
     } else {
       snprintf(lane, sizeof(lane), "SCHEDULE%s\n(no entries)",
@@ -656,8 +658,9 @@ static void update_detail(const NodeDetail &d) {
       const DetailEvent &ev = d.events[i];
       char age[24];
       fmt_age(age, sizeof(age), ev.age_s);
-      off += (size_t)snprintf(lane + off, sizeof(lane) - off, "%s - %u g - %s\n",
-                              kind_short(ev.kind), (unsigned)ev.amount, age);
+      off += (size_t)snprintf(lane + off, sizeof(lane) - off, "%s - %u %s - %s\n",
+                              kind_short(ev.kind), (unsigned)ev.amount,
+                              d.unit_ml ? "ml" : "g", age);
     }
     lv_label_set_text(s_det_ev_lbl, lane);
     lv_obj_set_style_text_color(s_det_ev_lbl, lv_color_hex(C_TEXT), 0);
@@ -665,6 +668,10 @@ static void update_detail(const NodeDetail &d) {
 }
 
 /* --- schedule editor screen (§8.3) -------------------------------------------------- */
+
+/* M5b tap callbacks (defined in the touch-wiring section below) */
+static void ed_draft_tap_cb(lv_event_t *e);
+static void ed_day_tap_cb(lv_event_t *e);
 
 static void build_edit_screen() {
   s_ed_scr = lv_obj_create(nullptr);
@@ -717,7 +724,8 @@ static void build_edit_screen() {
   lv_obj_set_flex_flow(edit, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_style_pad_row(edit, 4, 0);
 
-  lv_obj_t *eh = new_label(edit, "EDIT SELECTED", &lv_font_montserrat_12, C_MUTED);
+  lv_obj_t *eh =
+      new_label(edit, "EDIT SELECTED - tap time / amount", &lv_font_montserrat_12, C_MUTED);
   (void)eh;
 
   /* time + amount draft row */
@@ -734,6 +742,10 @@ static void build_edit_screen() {
   lv_obj_t *albl = new_label(ta, "amount", &lv_font_montserrat_12, C_MUTED);
   (void)albl;
   s_ed_amt_lbl = new_label(ta, "40 g", &lv_font_montserrat_14, C_TEXT);
+  /* M5b: the draft row is tappable — left half opens the time pad, right
+   * half the amount pad (zones split at x=112 of the 320 px row) */
+  lv_obj_add_flag(ta, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(ta, ed_draft_tap_cb, LV_EVENT_CLICKED, nullptr);
 
   /* weekday chips */
   lv_obj_t *days = lv_obj_create(edit);
@@ -751,6 +763,8 @@ static void build_edit_screen() {
     s_ed_day_btns[d] = b;
     lv_obj_t *l = new_label(b, DCH[d], &lv_font_montserrat_12, C_MUTED);
     (void)l;
+    /* M5b: weekday chips toggle the draft mask (user_data = wday) */
+    lv_obj_add_event_cb(b, ed_day_tap_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)d);
   }
 
   /* footer: gate state / push freshness */
@@ -776,11 +790,12 @@ static void update_edit(const SchedEditor &e) {
         const DetailSchedEntry &en = e.entries[i];
         char days[24];
         days_text(en.days_mask, days, sizeof(days));
-        off += (size_t)snprintf(lane + off, sizeof(lane) - off, "%s%02u:%02u  %-9s %u g\n",
+        off += (size_t)snprintf(lane + off, sizeof(lane) - off,
+                                "%s%02u:%02u  %-9s %u %s\n",
                                 i == e.selected ? "> " : "   ",
                                 (unsigned)(en.min_of_day / 60),
                                 (unsigned)(en.min_of_day % 60), days,
-                                (unsigned)en.amount);
+                                (unsigned)en.amount, e.unit_ml ? "ml" : "g");
       }
     }
     lv_label_set_text(s_ed_list_lbl, lane);
@@ -792,7 +807,7 @@ static void update_edit(const SchedEditor &e) {
     lv_label_set_text(s_ed_time_lbl, buf);
   }
   if (s_ed_amt_lbl) {
-    snprintf(buf, sizeof(buf), "%u g", (unsigned)e.d_amount);
+    snprintf(buf, sizeof(buf), "%u %s", (unsigned)e.d_amount, e.unit_ml ? "ml" : "g");
     lv_label_set_text(s_ed_amt_lbl, buf);
   }
   for (int d = 0; d < 7; d++) {
@@ -1199,7 +1214,7 @@ static void update_pairing(const PairingView &v) {
         break;
       case PAIR_FORM:
         snprintf(buf, sizeof(buf),
-                 "Name:  %s\nType:  %s (%s)\nFull:  %lu %s\nIn it: %lu %s\n\n%s",
+                 "Name:  %s\nType:  %s (%s)\nFull:  %lu %s\nIn it: %lu %s\n\n%s\nTap a row to edit.",
                  v.name[0] ? v.name : "(default)", pair_mech_name(v.mech_sel),
                  pair_template_unit(v.mech_sel), (unsigned long)v.cap_total,
                  pair_template_unit(v.mech_sel), (unsigned long)v.cap_now,
@@ -1342,7 +1357,7 @@ static void update_calib(const CalibView &v) {
         break;
       case CAL_WEIGH:
         snprintf(buf, sizeof(buf),
-                 "Weigh the food from run %u.\nHow much came out? (min 5 %s)\nOn-time was %lu ms.",
+                 "Weigh the food from run %u.\nHow much came out? (min 5 %s)\nOn-time was %lu ms.\n\nTap 'Weigh' to enter it.",
                  (unsigned)(v.sample_count + 1), cal_unit_label(v.mech_sel),
                  (unsigned long)v.weigh_on_ms);
         break;
@@ -1633,10 +1648,17 @@ static void wiz_list_text(const WizardView &v, char *buf, size_t n) {
                                  : (v.wifi_state == 0 ? v.wifi_note : "untested"));
       break;
     case WIZ_NODE: {
-      for (int i = 0; i < v.node_count && off + 24 < n; i++)
+      /* lane budget: the body lane starts at y=150 — 8 lines max. Show the
+       * first 6 paired nodes + the "pair new" row; the rest surface via the
+       * bench CLI (8-node registries are an edge case). */
+      uint8_t shown = 0;
+      for (int i = 0; i < v.node_count && shown < 6 && off + 24 < n; i++, shown++)
         off += (size_t)snprintf(buf + off, n - off, "%s F%u %s\n",
                                 v.node_sel == (int8_t)v.node_ids[i] ? ">" : " ",
                                 (unsigned)v.node_ids[i], v.node_names[i]);
+      if (v.node_count > shown)
+        off += (size_t)snprintf(buf + off, n - off, "   +%u more (bench CLI)\n",
+                                (unsigned)(v.node_count - shown));
       off += (size_t)snprintf(buf + off, n - off, "%s Pair a new feeder\n",
                               v.node_sel == -2 ? ">" : " ");
       break;
@@ -1733,6 +1755,10 @@ static void update_wizard(const WizardView &v) {
 
 static nav::Nav s_nav;
 static nav::Actions s_acts;
+
+/* M5b entry pad (defined with the pad block below) */
+static void pad_open_num(entry::Target t, uint32_t cur);
+static void pad_open_text(entry::Target t, const char *cur);
 
 /* engine → ui handshakes (single bytes, last-writer-wins; consumed once
  * per ui tick): pin verdict from PinLock, and the §8 lock mirror so a
@@ -1878,7 +1904,9 @@ static void set_action_tap_cb(lv_event_t *e) {
   (void)e;
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
-  const int zone = p.x < 70 ? 0 : p.x < 140 ? 1 : p.x < 210 ? 2 : p.x < 280 ? 3 : 4;
+  /* zone cuts follow the hint-label metrics (Restart | Add node | Export |
+   * Restore | Wizard from x=10) so a tap on a label lands its own zone */
+  const int zone = p.x < 58 ? 0 : p.x < 125 ? 1 : p.x < 168 ? 2 : p.x < 232 ? 3 : 4;
   switch (zone) {
     case 0: s_acts.restart = true; break;
     case 1: s_acts.pair_open = true; show(s_nav.open(nav::SC_PAIR, 0)); break;
@@ -1918,7 +1946,7 @@ static void pair_action_tap_cb(lv_event_t *e) {
   (void)e;
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
-  const int zone = p.x < 88 ? 0 : p.x < 176 ? 1 : p.x < 264 ? 2 : 3;
+  const int zone = p.x < 60 ? 0 : p.x < 122 ? 1 : p.x < 190 ? 2 : 3;
   switch (zone) {
     case 0: s_acts.pair_cancel = true; break;
     case 1: s_acts.pair_confirm = true; break;
@@ -1927,37 +1955,393 @@ static void pair_action_tap_cb(lv_event_t *e) {
   }
 }
 
-/* calibration: bottom strip "Close | Run test" */
+/* calibration: bottom strip "Close | Run test | Weigh | Save" (4 × 88 px;
+ * step validity is guarded — Run only in RUNTIME, Weigh opens the grams pad
+ * only in WEIGH, Save only with samples) */
 static void cal_action_tap_cb(lv_event_t *e) {
   (void)e;
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
-  if (p.x < UI_W / 2) s_acts.cal_close = true;
-  else s_acts.cal_run = true;
+  const int zone = p.x < 50 ? 0 : p.x < 130 ? 1 : p.x < 180 ? 2 : 3;
+  switch (zone) {
+    case 0: s_acts.cal_close = true; break;
+    /* Run only in the runtime step (mark_sent needs it; a stray Run in the
+     * weigh step would send a test FEED the session never watches) */
+    case 1:
+      if (s_cal_snap[(s_cal_seq - 1) & 1].step == CAL_RUNTIME)
+        s_acts.cal_run = true;
+      break;
+    case 2:
+      if (s_cal_snap[(s_cal_seq - 1) & 1].step == CAL_WEIGH)
+        pad_open_num(entry::ENT_CAL_WEIGH, 0);
+      break;
+    case 3: s_acts.cal_save = true; break;
+  }
 }
 
-/* wizard: tz rows (list lane, ≤4 lines) + bottom strip "Back | Next | Save
- * | Close" */
+/* wizard: list lane (tz rows / wifi row / node rows / capacity / sched
+ * fields — step-aware) + bottom strip "Back | Next | Save | Close" */
 static void wiz_list_tap_cb(lv_event_t *e) {
   (void)e;
+  const WizardView &v = s_wiz_snap[(s_wiz_seq - 1) & 1];
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
-  int row = (p.y - 36) / 14;
-  if (row < 0 || row > 3) return;
-  s_acts.wiz_tz = (int8_t)row;
+  const int row = (p.y - 38) / 14;
+  if (row < 0 || row > 7) return;
+  switch (v.step) {
+    case WIZ_TZ:
+      if (row < TZ_RULE_COUNT) s_acts.wiz_tz = (int8_t)row;
+      else if (row == TZ_RULE_COUNT) s_acts.wiz_ntp = true; /* the NTP line */
+      break;
+    case WIZ_WIFI:
+      if (row == 0) pad_open_text(entry::ENT_WIZ_SSID, v.wifi_ssid);
+      break;
+    case WIZ_NODE: {
+      const uint8_t shown = v.node_count < 6 ? v.node_count : 6;
+      if (row < (int)shown && row < v.node_count)
+        s_acts.wiz_node = (int8_t)v.node_ids[row];
+      else if (row == (v.node_count > shown ? shown + 1 : shown))
+        s_acts.wiz_pair_new = true; /* the "Pair a new feeder" row */
+      break;
+    }
+    case WIZ_CAP:
+      if (row == 0) pad_open_num(entry::ENT_WIZ_TOTAL, v.cap_total);
+      else if (row == 1) pad_open_num(entry::ENT_WIZ_NOW, v.cap_now);
+      break;
+    case WIZ_SCHED:
+      if (row == 0) pad_open_num(entry::ENT_WIZ_TIME, v.s_min);
+      else if (row == 1) s_acts.wiz_days = true;
+      else if (row == 2) pad_open_num(entry::ENT_WIZ_AMOUNT, v.s_amount);
+      break;
+    default:
+      break;
+  }
 }
 
 static void wiz_action_tap_cb(lv_event_t *e) {
   (void)e;
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
-  const int zone = p.x < 88 ? 0 : p.x < 176 ? 1 : p.x < 264 ? 2 : 3;
+  const int zone = p.x < 45 ? 0 : p.x < 85 ? 1 : p.x < 125 ? 2 : 3;
+  const WizardView &v = s_wiz_snap[(s_wiz_seq - 1) & 1];
   switch (zone) {
     case 0: s_acts.wiz_back = true; break;
-    case 1: s_acts.wiz_next = true; break;
+    case 1:
+      /* "pair a new feeder" chosen: Next hands over to the pairing window;
+       * the wizard resumes when the commit lands (on_paired) */
+      if (v.step == WIZ_NODE && v.node_sel == -2) {
+        s_acts.pair_open = true;
+        show(s_nav.open(nav::SC_PAIR, 0));
+      } else {
+        s_acts.wiz_next = true;
+      }
+      break;
     case 2: s_acts.wiz_commit = true; break;
     case 3: s_acts.wiz_close = true; break;
   }
+}
+
+/* pairing form rows (M5b): the body label renders "Name/Type/Full/In it"
+ * lines from y=110 — row 0 opens the name pad, 1 cycles the mech template,
+ * 2/3 open the capacity pads */
+static void pair_form_tap_cb(lv_event_t *e) {
+  (void)e;
+  const PairingView &v = s_pair_snap[(s_pair_seq - 1) & 1];
+  if (v.step != PAIR_FORM) return;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  const int row = (p.y - 110) / 14;
+  switch (row) {
+    case 0: pad_open_text(entry::ENT_PAIR_NAME, v.name); break;
+    case 1: s_acts.pair_mech = true; break;
+    case 2: pad_open_num(entry::ENT_PAIR_TOTAL, v.cap_total); break;
+    case 3: pad_open_num(entry::ENT_PAIR_NOW, v.cap_now); break;
+    default: break;
+  }
+}
+
+/* schedule editor: entry-list rows ("ENTRIES" header line at y=36, rows
+ * from y=50, 14 px apart) — tap selects; below the rows drafts a new one */
+static void ed_list_tap_cb(lv_event_t *e) {
+  (void)e;
+  const SchedEditor &ed = s_edit_snap[(s_edit_seq - 1) & 1];
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  if (!ed.found) return;
+  const int row = (p.y - 50) / 14;
+  if (!ed.entry_count || row < 0 || row >= (int)ed.entry_count) {
+    s_acts.ed_new = true; /* below the rows (or empty list) → draft a new row */
+    return;
+  }
+  s_acts.ed_row = (int8_t)row;
+}
+
+/* schedule editor draft row: left half = time pad, right half = amount pad */
+static void ed_draft_tap_cb(lv_event_t *e) {
+  (void)e;
+  const SchedEditor &ed = s_edit_snap[(s_edit_seq - 1) & 1];
+  if (!ed.found) return;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  if (p.x < 112) pad_open_num(entry::ENT_EDIT_TIME, ed.d_min_of_day);
+  else pad_open_num(entry::ENT_EDIT_AMOUNT, ed.d_amount);
+}
+
+/* schedule editor weekday chips (user_data = wday) */
+static void ed_day_tap_cb(lv_event_t *e) {
+  s_acts.ed_day = (uint8_t)(uintptr_t)lv_event_get_user_data(e);
+}
+
+/* schedule editor bottom strip "New | Save | Delete | Pause" */
+static void ed_action_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  const int zone = p.x < 45 ? 0 : p.x < 90 ? 1 : p.x < 138 ? 2 : 3;
+  switch (zone) {
+    case 0: s_acts.ed_new = true; break;
+    case 1: s_acts.ed_apply = true; break;
+    case 2: s_acts.ed_del = true; break;
+    case 3: s_acts.ed_toggle = true; break;
+  }
+}
+
+/* detail footer: 6 zones across the 296 px action panel — Sched | Hist |
+ * Alert | Feed | Skip | Hold (the right 56 px stay with back/home) */
+static void det_footer_tap_cb(lv_event_t *e) {
+  (void)e;
+  lv_point_t p{0, 0};
+  if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
+  const int zone = p.x < 50  ? 0
+                   : p.x < 99  ? 1
+                   : p.x < 148 ? 2
+                   : p.x < 198 ? 3
+                   : p.x < 247 ? 4
+                               : 5;
+  switch (zone) {
+    case 0: show(s_nav.open(nav::SC_EDIT, detail_node())); break;
+    case 1: show(s_nav.open(nav::SC_HIST, 0)); break;
+    case 2: show(s_nav.open(nav::SC_ALERTS, 0)); break;
+    case 3: s_acts.detail_feed = (int8_t)detail_node(); break;
+    case 4: s_acts.detail_skip = true; break;
+    case 5: s_acts.detail_hold = true; break;
+  }
+}
+
+/* --- M5b shared entry pad (numeric + text) ------------------------------
+ *
+ * One modal on the top layer, built once (pool-cheap): a full-screen
+ * blocker, a panel with title + preview, and two lv_btnmatrix keypads —
+ * no per-key widgets, no coordinate math. The pad state lives in the pure
+ * entry::Pad model (hub/src/ui_entry.h); OK submits one nav::Actions
+ * commit with the parsed value, the engine maps it to session calls. */
+
+static entry::Pad s_pad;
+static lv_obj_t *s_pad_root = nullptr;    /* blocker + panel container */
+static lv_obj_t *s_pad_title_lbl = nullptr;
+static lv_obj_t *s_pad_value_lbl = nullptr;
+static lv_obj_t *s_pad_num = nullptr;     /* digits keypad */
+static lv_obj_t *s_pad_txt = nullptr;     /* keyboard */
+
+/* lowercase / uppercase keyboard maps (same button order; ASCII labels so
+ * no font/escape surprises: DEL backspace, ABC case toggle, X cancel) */
+static const char *KB_LOWER[] = {
+    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p",
+    "a", "s", "d", "f", "g", "h", "j", "k", "l", "DEL",
+    "ABC", "z", "x", "c", "v", "b", "n", "m", "-", ".",
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    " ", " ", " ", " ", "OK", "OK", "OK", "X", "X", "X", "",
+};
+static const char *KB_UPPER[] = {
+    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P",
+    "A", "S", "D", "F", "G", "H", "J", "K", "L", "DEL",
+    "abc", "Z", "X", "C", "V", "B", "N", "M", "-", ".",
+    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
+    " ", " ", " ", " ", "OK", "OK", "OK", "X", "X", "X", "",
+};
+static const char *KB_NUM[] = {
+    "1", "2", "3", "DEL",
+    "4", "5", "6", "C",
+    "7", "8", "9", ".",
+    "0", "OK", "", "",
+};
+
+/* pad titles (context line; units live in the screen labels) */
+static const char *pad_title(entry::Target t) {
+  switch (t) {
+    case entry::ENT_PAIR_NAME: return "Feeder name";
+    case entry::ENT_PAIR_TOTAL: return "Full capacity";
+    case entry::ENT_PAIR_NOW: return "In it now";
+    case entry::ENT_WIZ_SSID: return "Wi-Fi network name";
+    case entry::ENT_WIZ_TOTAL: return "Hopper size";
+    case entry::ENT_WIZ_NOW: return "In it now";
+    case entry::ENT_WIZ_TIME: return "Feed time";
+    case entry::ENT_WIZ_AMOUNT: return "Feed amount";
+    case entry::ENT_CAL_WEIGH: return "Weighed amount";
+    case entry::ENT_EDIT_TIME: return "Feed time";
+    case entry::ENT_EDIT_AMOUNT: return "Feed amount";
+    default: return "";
+  }
+}
+
+/* redraw the pad for the current buffer (show/hide + labels) */
+static void pad_refresh() {
+  if (!s_pad_root) return;
+  if (!s_pad.is_open()) {
+    lv_obj_add_flag(s_pad_root, LV_OBJ_FLAG_HIDDEN);
+    return;
+  }
+  lv_obj_remove_flag(s_pad_root, LV_OBJ_FLAG_HIDDEN);
+  const bool txt = entry::kind_of(s_pad.tgt) == entry::K_TEXT;
+  if (s_pad_num && s_pad_txt) {
+    if (txt) {
+      lv_obj_add_flag(s_pad_num, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_remove_flag(s_pad_txt, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_remove_flag(s_pad_num, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(s_pad_txt, LV_OBJ_FLAG_HIDDEN);
+    }
+  }
+  if (s_pad_title_lbl) lv_label_set_text(s_pad_title_lbl, pad_title(s_pad.tgt));
+  if (s_pad_value_lbl) {
+    char pv[48];
+    s_pad.preview(pv, sizeof(pv));
+    lv_label_set_text(s_pad_value_lbl, pv[0] ? pv : " ");
+  }
+}
+
+static void pad_open_num(entry::Target t, uint32_t cur) {
+  char seed[12];
+  seed[0] = '\0';
+  switch (entry::kind_of(t)) {
+    case entry::K_TIME:
+      snprintf(seed, sizeof(seed), "%02lu%02lu", (unsigned long)(cur / 60),
+               (unsigned long)(cur % 60));
+      break;
+    case entry::K_UINT:
+      if (cur) snprintf(seed, sizeof(seed), "%lu", (unsigned long)cur);
+      break;
+    default: /* K_X100: fresh entry (you weigh, then type) */
+      break;
+  }
+  s_pad.open(t, nullptr, seed);
+  if (s_pad_num) {
+    /* '.' only makes sense for the weigh pad */
+    if (entry::kind_of(t) != entry::K_X100)
+      lv_btnmatrix_set_btn_ctrl(s_pad_num, 11, LV_BTNMATRIX_CTRL_HIDDEN);
+    else
+      lv_btnmatrix_clear_btn_ctrl(s_pad_num, 11, LV_BTNMATRIX_CTRL_HIDDEN);
+  }
+  pad_refresh();
+}
+
+static void pad_open_text(entry::Target t, const char *cur) {
+  s_pad.open(t, cur ? cur : "", nullptr);
+  pad_refresh();
+}
+
+static void pad_close_view() {
+  s_pad.close();
+  pad_refresh();
+}
+
+/* OK submits the parsed value as one engine request; X just closes. */
+static void pad_commit() {
+  s_acts.entry_tgt = s_pad.tgt;
+  s_acts.entry_text[0] = '\0';
+  s_acts.entry_u32 = 0;
+  if (entry::kind_of(s_pad.tgt) == entry::K_TEXT) {
+    strncpy(s_acts.entry_text, s_pad.text, sizeof(s_acts.entry_text) - 1);
+    s_acts.entry_text[sizeof(s_acts.entry_text) - 1] = '\0';
+  } else if (entry::kind_of(s_pad.tgt) == entry::K_TIME) {
+    s_acts.entry_u32 = s_pad.time_value();
+  } else {
+    s_acts.entry_u32 = s_pad.value();
+  }
+  s_acts.entry_commit = true;
+  pad_close_view();
+}
+
+static void pad_key_cb(lv_event_t *e) {
+  /* the matrix rides in user_data (lv_event_get_target is void* in v9) */
+  lv_obj_t *m = (lv_obj_t *)lv_event_get_user_data(e);
+  if (!m) return;
+  const uint32_t id = lv_btnmatrix_get_selected_btn(m);
+  const char *txt = lv_btnmatrix_get_btn_text(m, id);
+  if (!txt || !txt[0]) return; /* hidden filler buttons */
+  if (!strcmp(txt, "OK")) {
+    pad_commit();
+    return;
+  }
+  if (!strcmp(txt, "X")) {
+    pad_close_view();
+    return;
+  }
+  if (!strcmp(txt, "DEL")) {
+    s_pad.backspace();
+    pad_refresh();
+    return;
+  }
+  if (!strcmp(txt, "C")) {
+    s_pad.clear_all();
+    pad_refresh();
+    return;
+  }
+  if (!strcmp(txt, "ABC") || !strcmp(txt, "abc")) {
+    s_pad.shift ^= 1;
+    lv_btnmatrix_set_map(s_pad_txt, s_pad.shift ? KB_UPPER : KB_LOWER);
+    pad_refresh();
+    return;
+  }
+  s_pad.push_char(txt[0]);
+  pad_refresh();
+}
+
+/* the modal pad itself — one blocker + panel + 2 btnmatrix, built once */
+static void build_entry_pad() {
+  s_pad_root = lv_obj_create(lv_layer_top());
+  lv_obj_set_pos(s_pad_root, 0, 0);
+  lv_obj_set_size(s_pad_root, UI_W, UI_H);
+  lv_obj_set_style_bg_color(s_pad_root, lv_color_hex(0x000000), 0);
+  lv_obj_set_style_bg_opa(s_pad_root, LV_OPA_60, 0);
+  lv_obj_set_style_border_width(s_pad_root, 0, 0);
+  lv_obj_set_style_radius(s_pad_root, 0, 0);
+  lv_obj_set_style_pad_all(s_pad_root, 0, 0);
+  lv_obj_remove_flag(s_pad_root, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_flag(s_pad_root, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_flag(s_pad_root, LV_OBJ_FLAG_HIDDEN);
+
+  lv_obj_t *panel = new_panel(s_pad_root, 300, 196, C_PANEL);
+  lv_obj_set_pos(panel, 26, 20);
+
+  s_pad_title_lbl = new_label(panel, "", &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_pos(s_pad_title_lbl, 10, 6);
+  s_pad_value_lbl = new_label(panel, "", &lv_font_montserrat_16, C_TEXT);
+  lv_obj_set_pos(s_pad_value_lbl, 10, 22);
+
+  s_pad_num = lv_btnmatrix_create(panel);
+  lv_btnmatrix_set_map(s_pad_num, KB_NUM);
+  lv_obj_set_pos(s_pad_num, 10, 44);
+  lv_obj_set_size(s_pad_num, 130, 140);
+  lv_obj_set_style_bg_color(s_pad_num, lv_color_hex(C_PANEL), 0);
+  lv_obj_set_style_border_width(s_pad_num, 0, 0);
+  lv_obj_set_style_pad_all(s_pad_num, 2, 0);
+  lv_obj_set_style_bg_color(s_pad_num, lv_color_hex(C_CARD), LV_PART_ITEMS);
+  lv_obj_set_style_text_color(s_pad_num, lv_color_hex(C_TEXT), LV_PART_ITEMS);
+  lv_obj_add_event_cb(s_pad_num, pad_key_cb, LV_EVENT_VALUE_CHANGED, s_pad_num);
+  lv_obj_add_flag(s_pad_num, LV_OBJ_FLAG_HIDDEN);
+
+  s_pad_txt = lv_btnmatrix_create(panel);
+  lv_btnmatrix_set_map(s_pad_txt, KB_LOWER);
+  lv_obj_set_pos(s_pad_txt, 10, 44);
+  lv_obj_set_size(s_pad_txt, 280, 140);
+  lv_obj_set_style_bg_color(s_pad_txt, lv_color_hex(C_PANEL), 0);
+  lv_obj_set_style_border_width(s_pad_txt, 0, 0);
+  lv_obj_set_style_pad_all(s_pad_txt, 2, 0);
+  lv_obj_set_style_bg_color(s_pad_txt, lv_color_hex(C_CARD), LV_PART_ITEMS);
+  lv_obj_set_style_text_color(s_pad_txt, lv_color_hex(C_TEXT), LV_PART_ITEMS);
+  lv_obj_add_event_cb(s_pad_txt, pad_key_cb, LV_EVENT_VALUE_CHANGED, s_pad_txt);
+  lv_obj_add_flag(s_pad_txt, LV_OBJ_FLAG_HIDDEN);
 }
 
 /* transparent clickable catcher (the pool-cheap tap target) */
@@ -2003,13 +2387,9 @@ static void build_tap_targets() {
   new_catcher(s_scr, UI_W - 38, 4, 34, 28, open_enc_cb,
               (void *)(uintptr_t)nav::SC_SET);
 
-  /* detail: bottom strip = Schedule | History | Alerts (three zones) */
-  new_catcher(s_det_scr, 0, UI_H - 26, 117, 26, det_open_cb,
-              (void *)(uintptr_t)nav::SC_EDIT);
-  new_catcher(s_det_scr, 117, UI_H - 26, 117, 26, det_open_cb,
-              (void *)(uintptr_t)nav::SC_HIST);
-  new_catcher(s_det_scr, 234, UI_H - 26, UI_W - 234, 26, det_open_cb,
-              (void *)(uintptr_t)nav::SC_ALERTS);
+  /* detail: bottom strip, 6 zones (Sched | Hist | Alert | Feed | Skip |
+   * Hold) across the 296 px action panel; back/home keep the right 56 px */
+  new_catcher(s_det_scr, 0, UI_H - 26, UI_W - 56, 26, det_footer_tap_cb, nullptr);
 
   /* settings: section list + bottom action strip + hint lane */
   new_catcher(s_set_scr, 0, 34, 146, 150, set_section_tap_cb, nullptr);
@@ -2019,19 +2399,27 @@ static void build_tap_targets() {
   /* PIN pad */
   new_catcher(s_pin_scr, 170, 30, UI_W - 172, 174, pin_key_tap_cb, nullptr);
 
-  /* pairing: candidate rows + bottom strip + hint lane */
+  /* pairing: candidate rows + form rows + bottom strip + hint lane */
   new_catcher(s_pair_scr, 0, 34, UI_W, 64, pair_select_tap_cb, nullptr);
+  new_catcher(s_pair_scr, 0, 110, UI_W, 60, pair_form_tap_cb, nullptr);
   new_hint(s_pair_scr, "Cancel | Confirm | Commit | Close");
   new_catcher(s_pair_scr, 0, UI_H - 26, UI_W, 26, pair_action_tap_cb, nullptr);
 
-  /* calibration: bottom strip + hint lane */
-  new_hint(s_cal_scr, "Close | Run test");
+  /* calibration: 4-zone strip + hint lane */
+  new_hint(s_cal_scr, "Close | Run test | Weigh | Save");
   new_catcher(s_cal_scr, 0, UI_H - 26, UI_W, 26, cal_action_tap_cb, nullptr);
 
-  /* wizard: tz rows + bottom strip + hint lane */
-  new_catcher(s_wiz_scr, 0, 34, UI_W, 64, wiz_list_tap_cb, nullptr);
+  /* wizard: list lane (tz / wifi / nodes / cap / sched, step-aware) +
+   * bottom strip + hint lane */
+  new_catcher(s_wiz_scr, 0, 34, UI_W, 108, wiz_list_tap_cb, nullptr);
   new_hint(s_wiz_scr, "Back | Next | Save | Close");
   new_catcher(s_wiz_scr, 0, UI_H - 26, UI_W, 26, wiz_action_tap_cb, nullptr);
+
+  /* schedule editor (M5b): entry rows + draft row + day chips (their own
+   * buttons) + bottom strip + hint lane */
+  new_catcher(s_ed_scr, 0, 32, UI_W, 104, ed_list_tap_cb, nullptr);
+  new_hint(s_ed_scr, "New | Save | Delete | Pause");
+  new_catcher(s_ed_scr, 0, UI_H - 26, UI_W, 26, ed_action_tap_cb, nullptr);
 }
 
 /* --- LVGL plumbing ----------------------------------------------------------------- */
@@ -2048,6 +2436,7 @@ static void build_all_screens() {
   build_settings_screen();
   build_pin_screen();
   build_wizard_screen();
+  build_entry_pad(); /* the shared M5b entry modal (top layer, hidden) */
 }
 
 /* pool pressure at boot (the 64 KiB fixed pool is the binding constraint in
