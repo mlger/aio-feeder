@@ -2130,43 +2130,25 @@ static void det_footer_tap_cb(lv_event_t *e) {
 
 /* --- M5b shared entry pad (numeric + text) ------------------------------
  *
- * One modal on the top layer, built once (pool-cheap): a full-screen
- * blocker, a panel with title + preview, and two lv_btnmatrix keypads —
- * no per-key widgets, no coordinate math. The pad state lives in the pure
- * entry::Pad model (hub/src/ui_entry.h); OK submits one nav::Actions
- * commit with the parsed value, the engine maps it to session calls. */
+ * One modal on the top layer, built once. The QEMU pool forbids btnmatrix
+ * keypads (the first PIN pad died mid-draw in the mask allocations — see
+ * sdkconfig.qemu.defaults) and it also forbids betting on glyph metrics:
+ * every key is its own clickable LABEL at a fixed (x, y) cell, so the hit
+ * test never depends on text advance widths. The numeric keypad covers
+ * all the numeric targets (capacities, HHMM time, amounts, the weighed
+ * grams); text (feeder name, SSID) uses a char wheel — names are typed
+ * once per feeder, so tap count beats pixel-perfect keyboards here. The
+ * pad state lives in the pure entry::Pad model (hub/src/ui_entry.h); OK
+ * submits one nav::Actions commit with the parsed value and the engine
+ * maps it to session calls. */
 
 static entry::Pad s_pad;
-static lv_obj_t *s_pad_root = nullptr;    /* blocker + panel container */
+static lv_obj_t *s_pad_root = nullptr;   /* blocker + panel container */
 static lv_obj_t *s_pad_title_lbl = nullptr;
 static lv_obj_t *s_pad_value_lbl = nullptr;
-static lv_obj_t *s_pad_num = nullptr;     /* digits keypad */
-static lv_obj_t *s_pad_txt = nullptr;     /* keyboard */
+static lv_obj_t *s_pad_num_box = nullptr;  /* numeric keypad container */
+static lv_obj_t *s_pad_txt_box = nullptr;  /* char-wheel container */
 
-/* lowercase / uppercase keyboard maps (same button order; ASCII labels so
- * no font/escape surprises: DEL backspace, ABC case toggle, X cancel) */
-static const char *KB_LOWER[] = {
-    "q", "w", "e", "r", "t", "y", "u", "i", "o", "p",
-    "a", "s", "d", "f", "g", "h", "j", "k", "l", "DEL",
-    "ABC", "z", "x", "c", "v", "b", "n", "m", "-", ".",
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-    " ", " ", " ", " ", "OK", "OK", "OK", "X", "X", "X", "",
-};
-static const char *KB_UPPER[] = {
-    "Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P",
-    "A", "S", "D", "F", "G", "H", "J", "K", "L", "DEL",
-    "abc", "Z", "X", "C", "V", "B", "N", "M", "-", ".",
-    "1", "2", "3", "4", "5", "6", "7", "8", "9", "0",
-    " ", " ", " ", " ", "OK", "OK", "OK", "X", "X", "X", "",
-};
-static const char *KB_NUM[] = {
-    "1", "2", "3", "DEL",
-    "4", "5", "6", "C",
-    "7", "8", "9", ".",
-    "0", "OK", "", "",
-};
-
-/* pad titles (context line; units live in the screen labels) */
 static const char *pad_title(entry::Target t) {
   switch (t) {
     case entry::ENT_PAIR_NAME: return "Feeder name";
@@ -2175,10 +2157,10 @@ static const char *pad_title(entry::Target t) {
     case entry::ENT_WIZ_SSID: return "Wi-Fi network name";
     case entry::ENT_WIZ_TOTAL: return "Hopper size";
     case entry::ENT_WIZ_NOW: return "In it now";
-    case entry::ENT_WIZ_TIME: return "Feed time";
+    case entry::ENT_WIZ_TIME: return "Feed time (HHMM)";
     case entry::ENT_WIZ_AMOUNT: return "Feed amount";
     case entry::ENT_CAL_WEIGH: return "Weighed amount";
-    case entry::ENT_EDIT_TIME: return "Feed time";
+    case entry::ENT_EDIT_TIME: return "Feed time (HHMM)";
     case entry::ENT_EDIT_AMOUNT: return "Feed amount";
     default: return "";
   }
@@ -2193,13 +2175,13 @@ static void pad_refresh() {
   }
   lv_obj_remove_flag(s_pad_root, LV_OBJ_FLAG_HIDDEN);
   const bool txt = entry::kind_of(s_pad.tgt) == entry::K_TEXT;
-  if (s_pad_num && s_pad_txt) {
+  if (s_pad_num_box && s_pad_txt_box) {
     if (txt) {
-      lv_obj_add_flag(s_pad_num, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_remove_flag(s_pad_txt, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(s_pad_num_box, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_remove_flag(s_pad_txt_box, LV_OBJ_FLAG_HIDDEN);
     } else {
-      lv_obj_remove_flag(s_pad_num, LV_OBJ_FLAG_HIDDEN);
-      lv_obj_add_flag(s_pad_txt, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_remove_flag(s_pad_num_box, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(s_pad_txt_box, LV_OBJ_FLAG_HIDDEN);
     }
   }
   if (s_pad_title_lbl) lv_label_set_text(s_pad_title_lbl, pad_title(s_pad.tgt));
@@ -2225,13 +2207,6 @@ static void pad_open_num(entry::Target t, uint32_t cur) {
       break;
   }
   s_pad.open(t, nullptr, seed);
-  if (s_pad_num) {
-    /* '.' only makes sense for the weigh pad */
-    if (entry::kind_of(t) != entry::K_X100)
-      lv_btnmatrix_set_btn_ctrl(s_pad_num, 11, LV_BTNMATRIX_CTRL_HIDDEN);
-    else
-      lv_btnmatrix_clear_btn_ctrl(s_pad_num, 11, LV_BTNMATRIX_CTRL_HIDDEN);
-  }
   pad_refresh();
 }
 
@@ -2262,42 +2237,72 @@ static void pad_commit() {
   pad_close_view();
 }
 
+/* the wheel's charset (v steps back, ^ steps forward, wraps) */
+static const char WHEEL_CHARS[] = "abcdefghijklmnopqrstuvwxyz0123456789 -._";
+
+/* one key press; keys ride in user_data (see the builders below) */
 static void pad_key_cb(lv_event_t *e) {
-  /* the matrix rides in user_data (lv_event_get_target is void* in v9) */
-  lv_obj_t *m = (lv_obj_t *)lv_event_get_user_data(e);
-  if (!m) return;
-  const uint32_t id = lv_btnmatrix_get_selected_btn(m);
-  const char *txt = lv_btnmatrix_get_btn_text(m, id);
-  if (!txt || !txt[0]) return; /* hidden filler buttons */
-  if (!strcmp(txt, "OK")) {
-    pad_commit();
-    return;
+  const char k = (char)(uintptr_t)lv_event_get_user_data(e);
+  switch (k) {
+    case 'D': /* DEL */
+      s_pad.backspace();
+      pad_refresh();
+      return;
+    case 'C':
+      s_pad.clear_all();
+      pad_refresh();
+      return;
+    case 'O': /* OK */
+      pad_commit();
+      return;
+    case 'X':
+      pad_close_view();
+      return;
+    case '^': { /* wheel: append the next char (an empty name starts at 'a') */
+      const size_t n = sizeof(WHEEL_CHARS) - 1;
+      size_t i = (size_t)-1; /* -1 + 1 = 0 → 'a' */
+      const size_t len = strlen(s_pad.text);
+      if (len) {
+        const char *at = strchr(WHEEL_CHARS, s_pad.text[len - 1]);
+        if (at) i = (size_t)(at - WHEEL_CHARS);
+      }
+      s_pad.push_char(WHEEL_CHARS[(i + 1) % n]);
+      pad_refresh();
+      return;
+    }
+    case 'v': { /* wheel: append the previous char */
+      const size_t n = sizeof(WHEEL_CHARS) - 1;
+      size_t i = 0;
+      const size_t len = strlen(s_pad.text);
+      if (len) {
+        const char *at = strchr(WHEEL_CHARS, s_pad.text[len - 1]);
+        if (at) i = (size_t)(at - WHEEL_CHARS);
+      }
+      s_pad.push_char(WHEEL_CHARS[(i + n - 1) % n]);
+      pad_refresh();
+      return;
+    }
+    default:
+      s_pad.push_char(k);
+      pad_refresh();
+      return;
   }
-  if (!strcmp(txt, "X")) {
-    pad_close_view();
-    return;
-  }
-  if (!strcmp(txt, "DEL")) {
-    s_pad.backspace();
-    pad_refresh();
-    return;
-  }
-  if (!strcmp(txt, "C")) {
-    s_pad.clear_all();
-    pad_refresh();
-    return;
-  }
-  if (!strcmp(txt, "ABC") || !strcmp(txt, "abc")) {
-    s_pad.shift ^= 1;
-    lv_btnmatrix_set_map(s_pad_txt, s_pad.shift ? KB_UPPER : KB_LOWER);
-    pad_refresh();
-    return;
-  }
-  s_pad.push_char(txt[0]);
-  pad_refresh();
 }
 
-/* the modal pad itself — one blocker + panel + 2 btnmatrix, built once */
+/* a tappable key label at a fixed cell (metric-free hit target) */
+static lv_obj_t *new_key(lv_obj_t *parent, int x, int y, int w, int h,
+                         const char *txt, char key) {
+  lv_obj_t *l = lv_label_create(parent);
+  lv_label_set_text(l, txt);
+  lv_obj_set_pos(l, (lv_coord_t)x, (lv_coord_t)y);
+  lv_obj_set_size(l, (lv_coord_t)w, (lv_coord_t)h);
+  lv_obj_set_style_text_align(l, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_add_flag(l, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(l, pad_key_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)key);
+  return l;
+}
+
+/* the modal pad itself — blocker + panel + two key groups, built once */
 static void build_entry_pad() {
   s_pad_root = lv_obj_create(lv_layer_top());
   lv_obj_set_pos(s_pad_root, 0, 0);
@@ -2311,37 +2316,59 @@ static void build_entry_pad() {
   lv_obj_add_flag(s_pad_root, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_flag(s_pad_root, LV_OBJ_FLAG_HIDDEN);
 
-  lv_obj_t *panel = new_panel(s_pad_root, 300, 196, C_PANEL);
+  lv_obj_t *panel = new_panel(s_pad_root, 300, 210, C_PANEL);
   lv_obj_set_pos(panel, 26, 20);
 
   s_pad_title_lbl = new_label(panel, "", &lv_font_montserrat_12, C_MUTED);
-  lv_obj_set_pos(s_pad_title_lbl, 10, 6);
-  s_pad_value_lbl = new_label(panel, "", &lv_font_montserrat_16, C_TEXT);
-  lv_obj_set_pos(s_pad_value_lbl, 10, 22);
+  lv_obj_set_pos(s_pad_title_lbl, 16, 6);
+  s_pad_value_lbl = new_label(panel, "", &lv_font_montserrat_14, C_TEXT);
+  lv_obj_set_pos(s_pad_value_lbl, 16, 24);
 
-  s_pad_num = lv_btnmatrix_create(panel);
-  lv_btnmatrix_set_map(s_pad_num, KB_NUM);
-  lv_obj_set_pos(s_pad_num, 10, 44);
-  lv_obj_set_size(s_pad_num, 130, 140);
-  lv_obj_set_style_bg_color(s_pad_num, lv_color_hex(C_PANEL), 0);
-  lv_obj_set_style_border_width(s_pad_num, 0, 0);
-  lv_obj_set_style_pad_all(s_pad_num, 2, 0);
-  lv_obj_set_style_bg_color(s_pad_num, lv_color_hex(C_CARD), LV_PART_ITEMS);
-  lv_obj_set_style_text_color(s_pad_num, lv_color_hex(C_TEXT), LV_PART_ITEMS);
-  lv_obj_add_event_cb(s_pad_num, pad_key_cb, LV_EVENT_VALUE_CHANGED, s_pad_num);
-  lv_obj_add_flag(s_pad_num, LV_OBJ_FLAG_HIDDEN);
+  /* numeric keypad: 4 x 4 cells of 64x26 (x0 16, dx 68; y0 48, dy 32) */
+  s_pad_num_box = lv_obj_create(panel);
+  lv_obj_set_pos(s_pad_num_box, 0, 0);
+  lv_obj_set_size(s_pad_num_box, 300, 210);
+  lv_obj_set_style_bg_opa(s_pad_num_box, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(s_pad_num_box, 0, 0);
+  lv_obj_set_style_pad_all(s_pad_num_box, 0, 0);
+  lv_obj_remove_flag(s_pad_num_box, LV_OBJ_FLAG_SCROLLABLE);
+  static const char *const NUM_KEYS[4][4] = {
+      {"1", "2", "3", "DEL"},
+      {"4", "5", "6", "C"},
+      {"7", "8", "9", "."},
+      {"0", "", "OK", ""},
+  };
+  static const char NUM_IDS[4][4] = {
+      {'1', '2', '3', 'D'},
+      {'4', '5', '6', 'C'},
+      {'7', '8', '9', '.'},
+      {'0', 0, 'O', 0},
+  };
+  for (int r = 0; r < 4; r++)
+    for (int c = 0; c < 4; c++)
+      if (NUM_IDS[r][c])
+        new_key(s_pad_num_box, 16 + c * 68, 48 + r * 32, 64, 26, NUM_KEYS[r][c],
+                NUM_IDS[r][c]);
+  lv_obj_add_flag(s_pad_num_box, LV_OBJ_FLAG_HIDDEN);
 
-  s_pad_txt = lv_btnmatrix_create(panel);
-  lv_btnmatrix_set_map(s_pad_txt, KB_LOWER);
-  lv_obj_set_pos(s_pad_txt, 10, 44);
-  lv_obj_set_size(s_pad_txt, 280, 140);
-  lv_obj_set_style_bg_color(s_pad_txt, lv_color_hex(C_PANEL), 0);
-  lv_obj_set_style_border_width(s_pad_txt, 0, 0);
-  lv_obj_set_style_pad_all(s_pad_txt, 2, 0);
-  lv_obj_set_style_bg_color(s_pad_txt, lv_color_hex(C_CARD), LV_PART_ITEMS);
-  lv_obj_set_style_text_color(s_pad_txt, lv_color_hex(C_TEXT), LV_PART_ITEMS);
-  lv_obj_add_event_cb(s_pad_txt, pad_key_cb, LV_EVENT_VALUE_CHANGED, s_pad_txt);
-  lv_obj_add_flag(s_pad_txt, LV_OBJ_FLAG_HIDDEN);
+  /* char wheel for text targets: wide 92 px zones, typed once per feeder */
+  s_pad_txt_box = lv_obj_create(panel);
+  lv_obj_set_pos(s_pad_txt_box, 0, 0);
+  lv_obj_set_size(s_pad_txt_box, 300, 210);
+  lv_obj_set_style_bg_opa(s_pad_txt_box, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(s_pad_txt_box, 0, 0);
+  lv_obj_set_style_pad_all(s_pad_txt_box, 0, 0);
+  lv_obj_remove_flag(s_pad_txt_box, LV_OBJ_FLAG_SCROLLABLE);
+  new_key(s_pad_txt_box, 16, 62, 92, 30, "^", '^');
+  new_key(s_pad_txt_box, 108, 62, 92, 30, "v", 'v');
+  new_key(s_pad_txt_box, 200, 62, 92, 30, "sp", ' ');
+  new_key(s_pad_txt_box, 16, 102, 92, 30, "DEL", 'D');
+  new_key(s_pad_txt_box, 108, 102, 92, 30, "OK", 'O');
+  new_key(s_pad_txt_box, 200, 102, 92, 30, "X", 'X');
+  lv_obj_t *wh = new_label(s_pad_txt_box, "^ adds the next letter, v the previous\nsp adds a space, DEL erases the last one",
+                           &lv_font_montserrat_12, C_MUTED);
+  lv_obj_set_pos(wh, 16, 146);
+  lv_obj_add_flag(s_pad_txt_box, LV_OBJ_FLAG_HIDDEN);
 }
 
 /* transparent clickable catcher (the pool-cheap tap target) */

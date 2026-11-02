@@ -43,16 +43,19 @@ Touch walk (each tap target, M4a/M4b screens):
    on the DONE screens as in `docs/bench-m4b.md`.
 
 Entry pads (M5b): every form field on the session screens opens the shared
-modal pad (numeric keys, or the on-screen keyboard for names/SSIDs):
+modal pad — a fixed-cell numeric keypad, or a char wheel for names/SSIDs
+(“^” steps the alphabet forward, “v” back; names are typed once per
+feeder, so tap count beats a pixel-perfect keyboard — and the QEMU pool
+forbids btnmatrix keypads, see sdkconfig.qemu.defaults):
 
-1. Pairing FORM step: tap the Name row (keyboard), the Type row (cycles
+1. Pairing FORM step: tap the Name row (char wheel), the Type row (cycles
    gate → auger → pump; caps reset to the template), Full / In it (numeric
    pad). Commit applies the form exactly like `pair form ...` on the CLI.
-2. Wizard: Wi-Fi row 1 edits the SSID (keyboard), Feeder rows pick a node
-   or "Pair a new feeder" (Next hands over to the pairing window and the
-   wizard resumes when it lands), Hopper rows 1–2 open the numeric pads,
-   Schedule rows: Time (HHMM pad), Days (cycles every day → weekdays →
-   weekends), Amount (numeric pad).
+2. Wizard: Wi-Fi row 1 edits the SSID (char wheel), Feeder rows pick a
+   node or "Pair a new feeder" (Next hands over to the pairing window and
+   the wizard resumes when it lands), Hopper rows 1–2 open the numeric
+   pads, Schedule rows: Time (HHMM pad), Days (cycles every day →
+   weekdays → weekends), Amount (numeric pad).
 3. Calibration: WEIGH step → Weigh zone opens the grams pad (one decimal
    is enough, e.g. `8.25`); Save applies the median and pushes CONFIG —
    same session the `cal ...` CLI drives.
