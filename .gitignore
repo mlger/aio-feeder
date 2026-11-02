@@ -18,7 +18,7 @@ tools/qemu/flash_image.bin
 tools/qemu/efuse.bin
 tools/qemu/screenshot-*.png
 serial.log
-screens/
+tools/qemu/screens/
 
 # ESP-IDF build artifacts (hub)
 hub/build/
