@@ -476,6 +476,38 @@ static void sched_push(uint8_t node_id) {
                      : "send failed");
 }
 
+/* --- M5b: touchscreen schedule editor ---------------------------------- *
+ * The engine owns the editor draft: the 400 ms snapshot publishes would
+ * otherwise clobber view-side edits (§8.3 drafts are session-like state).
+ * Taps mutate the draft through the pure ui_model editors; Save/Delete
+ * sync it back into the registry and push SCHEDULE_SET. */
+static aio::ui::SchedEditor s_ed_draft;
+
+static void ed_publish() { aio::ui::publish_sched_editor(s_ed_draft); }
+
+static void ed_rebuild(uint8_t node_id) {
+  s_ed_draft = aio::ui::build_sched_editor(reg, node_id, hub_unix_now());
+  ed_publish();
+}
+
+/* Copy the draft rows into the node's schedule (version + save + push). */
+static void ed_sync_registry(uint8_t node_id) {
+  aio::HubNode *n = reg.by_id(node_id);
+  if (!n || !s_ed_draft.found || s_ed_draft.node_id != node_id) return;
+  uint8_t k = s_ed_draft.entry_count;
+  if (k > aio::HUB_SCHED_MAX_ENTRIES) k = aio::HUB_SCHED_MAX_ENTRIES;
+  for (uint8_t i = 0; i < k; i++) {
+    n->sched.entries[i].min_of_day = s_ed_draft.entries[i].min_of_day;
+    n->sched.entries[i].days_mask = s_ed_draft.entries[i].days_mask;
+    n->sched.entries[i].amount = s_ed_draft.entries[i].amount;
+  }
+  n->sched.entry_count = k;
+  n->sched.version = ++reg.data().sched_version;
+  n->sched.pushed_at = (uint32_t)hub_unix_now();
+  reg.save(nvs);
+  sched_push(node_id);
+}
+
 static int cmd_info(int argc, char **argv) {
   (void)argc; (void)argv;
   StateLock lock;
@@ -1501,8 +1533,11 @@ static void aio_loop_task(void *) {
         const uint8_t dn = aio::ui::detail_node();
         aio::ui::publish_detail(
             aio::ui::build_node_detail(reg, evlog, dn, hub_unix_now(), now, fr, fn));
-        aio::ui::publish_sched_editor(
-            aio::ui::build_sched_editor(reg, dn, hub_unix_now()));
+        /* M5b: the engine-owned draft survives the periodic publish; it is
+         * only rebuilt when it goes stale (boot, node switch, wipe) */
+        if (!s_ed_draft.found || s_ed_draft.node_id != dn)
+          s_ed_draft = aio::ui::build_sched_editor(reg, dn, hub_unix_now());
+        aio::ui::publish_sched_editor(s_ed_draft);
         aio::ui::publish_history(aio::ui::build_history(reg, evlog, hub_unix_now()));
         aio::ui::publish_alerts(
             aio::ui::build_alerts(reg, evlog, hub_unix_now(), now, fr, fn, g_alerts_ack));
@@ -1546,8 +1581,7 @@ static void aio_loop_task(void *) {
         }
         if (acts.editor) {
           aio::ui::set_detail_node(acts.editor_node);
-          aio::ui::publish_sched_editor(
-              aio::ui::build_sched_editor(reg, acts.editor_node, un));
+          ed_rebuild(acts.editor_node);
         }
         if (acts.history)
           aio::ui::publish_history(aio::ui::build_history(reg, evlog, un));
@@ -1583,13 +1617,97 @@ static void aio_loop_task(void *) {
             const aio::HubNode *nn = reg.by_id(nid);
             if (nn) pairing_send_accept(nn->mac, acc, now);
             reg.save(nvs);
+            /* wizard "pair a new feeder" flow: the wizard resumes with the
+             * capacity step skipped (§9.13) */
+            if (g_wiz.is_open() && g_wiz.step() == aio::ui::WIZ_NODE)
+              g_wiz.on_paired(nid);
           }
         }
-        /* setup wizard (§9.13): tz rows + next/back/save/close; name and
-         * capacity keep the session defaults (text entry lands in M5b) */
+        /* M5b entry pad: one commit per OK, mapped by target (ui_entry.h) */
+        if (acts.entry_commit) {
+          const entry::Target t = acts.entry_tgt;
+          const aio::ui::PairingView pv =
+              g_pair.is_open() ? g_pair.view(now) : aio::ui::PairingView{};
+          const aio::ui::WizardView wv = g_wiz.view();
+          switch (t) {
+            case entry::ENT_PAIR_NAME:
+              g_pair.set_form(acts.entry_text, pv.mech_sel, pv.cap_total, pv.cap_now);
+              break;
+            case entry::ENT_PAIR_TOTAL:
+              g_pair.set_form(pv.name, pv.mech_sel, acts.entry_u32, pv.cap_now);
+              break;
+            case entry::ENT_PAIR_NOW:
+              g_pair.set_form(pv.name, pv.mech_sel, pv.cap_total, acts.entry_u32);
+              break;
+            case entry::ENT_WIZ_SSID:
+              if (g_wiz.step() == aio::ui::WIZ_WIFI) g_wiz.set_wifi_ssid(acts.entry_text);
+              break;
+            case entry::ENT_WIZ_TOTAL:
+              if (g_wiz.step() == aio::ui::WIZ_CAP)
+                g_wiz.set_capacity(acts.entry_u32, wv.cap_now);
+              break;
+            case entry::ENT_WIZ_NOW:
+              if (g_wiz.step() == aio::ui::WIZ_CAP)
+                g_wiz.set_capacity(wv.cap_total, acts.entry_u32);
+              break;
+            case entry::ENT_WIZ_TIME:
+              if (g_wiz.step() == aio::ui::WIZ_SCHED)
+                g_wiz.set_schedule((uint16_t)acts.entry_u32, wv.s_days, wv.s_amount);
+              break;
+            case entry::ENT_WIZ_AMOUNT:
+              if (g_wiz.step() == aio::ui::WIZ_SCHED)
+                g_wiz.set_schedule(wv.s_min, wv.s_days, (uint16_t)acts.entry_u32);
+              break;
+            case entry::ENT_CAL_WEIGH:
+              g_calib.set_weigh_grams_x100(acts.entry_u32);
+              break;
+            case entry::ENT_EDIT_TIME:
+              aio::ui::editor_set_time(s_ed_draft, (uint16_t)acts.entry_u32);
+              ed_publish();
+              break;
+            case entry::ENT_EDIT_AMOUNT:
+              aio::ui::editor_set_amount(s_ed_draft, (uint16_t)acts.entry_u32);
+              ed_publish();
+              break;
+            default:
+              break;
+          }
+          /* instant feedback on the session screens (the 400 ms publish
+           * also refreshes; this keeps the pads feeling live) */
+          if (t >= entry::ENT_PAIR_NAME && t <= entry::ENT_PAIR_NOW)
+            aio::ui::publish_pairing(g_pair.view(now));
+          if (t >= entry::ENT_WIZ_SSID && t <= entry::ENT_WIZ_AMOUNT)
+            aio::ui::publish_wizard(g_wiz.view());
+          if (t == entry::ENT_CAL_WEIGH) aio::ui::publish_calib(g_calib.view(now));
+        }
+        /* pairing form: mech chip cycles the template (§8.5 — caps reset to
+         * the template defaults on a mech change) */
+        if (acts.pair_mech && g_pair.is_open()) {
+          const aio::ui::PairingView pv2 = g_pair.view(now);
+          const uint8_t m = (uint8_t)((pv2.mech_sel + 1) % 3);
+          g_pair.set_form(pv2.name, m, aio::ui::pair_template_capacity(m), 0);
+          aio::ui::publish_pairing(g_pair.view(now));
+        }
+        /* setup wizard (§9.13): tz rows + next/back/save/close; the name,
+         * capacity and schedule fields arrive through the entry pad */
         if (acts.wiz_open) g_wiz.open();
         if (acts.wiz_tz >= 0 && g_wiz.step() == aio::ui::WIZ_TZ)
           g_wiz.set_tz((uint8_t)acts.wiz_tz, g_set.ntp_on != 0);
+        /* M5b wizard extras: node-picker rows, pair-new, NTP toggle, days
+         * preset cycle (view() carries the drafts these mutate) */
+        if (acts.wiz_node >= 0 && g_wiz.step() == aio::ui::WIZ_NODE)
+          g_wiz.choose_existing((uint8_t)acts.wiz_node);
+        if (acts.wiz_pair_new && g_wiz.step() == aio::ui::WIZ_NODE)
+          g_wiz.choose_pair_new();
+        if (acts.wiz_ntp && g_wiz.step() == aio::ui::WIZ_TZ) {
+          const aio::ui::WizardView wv2 = g_wiz.view();
+          g_wiz.set_tz(wv2.tz_rule, !wv2.ntp_on);
+        }
+        if (acts.wiz_days && g_wiz.step() == aio::ui::WIZ_SCHED) {
+          const aio::ui::WizardView wv3 = g_wiz.view();
+          g_wiz.set_schedule(wv3.s_min, aio::ui::wiz_cycle_days_preset(wv3.s_days),
+                             wv3.s_amount);
+        }
         if (acts.wiz_back) g_wiz.back();
         if (acts.wiz_next) g_wiz.next();
         if (acts.wiz_commit) {
@@ -1610,10 +1728,109 @@ static void aio_loop_task(void *) {
           }
         }
         if (acts.wiz_close) g_wiz.close();
-        /* calibration: close/run only — the weigh step needs numeric entry
-         * (M5b); the bench CLI keeps the full flow (docs/bench-m5.md) */
+        /* calibration: close/run/weigh-entry/save — the weigh pad commits
+         * through entry_commit above; the bench CLI keeps its flow too */
         if (acts.cal_close) g_calib.close();
         if (acts.cal_run) calib_run_send(now);
+        if (acts.cal_save) {
+          const uint8_t cnid = g_calib.node_id();
+          node_profile_t np{};
+          if (cnid && g_calib.apply(&np)) {
+            aio::HubNode *cn = reg.by_id(cnid);
+            if (cn) {
+              cn->profile = np; /* median + re-CRC'd (apply) */
+              reg.save(nvs);
+              eng.send_config(cnid, cn->profile, 1, now);
+              g_calib.mark_saved();
+              printf("cal: median saved for F%u and pushed\n", (unsigned)cnid);
+            }
+          }
+        }
+        /* detail ops (M4b affordances wired in M5b): Feed now / Skip next /
+         * Hold 1 h — the PIN scope guards manual feeds (§8) */
+        if (acts.detail_feed >= 0) {
+          const uint8_t fid = (uint8_t)acts.detail_feed;
+          if (g_pin.blocks_manual_feed()) {
+            printf("feed now: PIN required (scope covers manual feeds)\n");
+          } else {
+            const aio::HubNode *n = reg.by_id(fid);
+            if (n) {
+              uint16_t amt = 20; /* preview default when nothing is scheduled */
+              uint16_t nmin = 0, namt = 0;
+              int32_t nin = 0;
+              const aio::LocalTime lt =
+                  time_valid()
+                      ? aio::local_from_unix(hub_unix_now(), reg.data().tz_rule)
+                      : aio::LocalTime{};
+              if (time_valid() &&
+                  aio::ui::next_occurrence(*n, lt.min_of_day, lt.wday, &nmin, &nin,
+                                           &namt))
+                amt = namt;
+              if (!core.request_manual(fid, amt, now,
+                                       time_valid() ? hub_unix_now() : 0))
+                printf("feed now: refused (busy / no node)\n");
+            }
+          }
+        }
+        if (acts.detail_skip || acts.detail_hold) {
+          aio::HubNode *n = reg.by_id(aio::ui::detail_node());
+          if (n && time_valid()) {
+            if (acts.detail_hold) {
+              n->sched.hold_until = (uint32_t)hub_unix_now() + 3600;
+            } else {
+              uint16_t nmin = 0, namt = 0;
+              int32_t nin = 0;
+              const aio::LocalTime lt =
+                  aio::local_from_unix(hub_unix_now(), reg.data().tz_rule);
+              if (aio::ui::next_occurrence(*n, lt.min_of_day, lt.wday, &nmin, &nin,
+                                           &namt))
+                n->sched.skip_until =
+                    (uint32_t)((hub_unix_now() / 60) * 60 + (int64_t)nin * 60);
+              else
+                n->sched.skip_until = (uint32_t)hub_unix_now() + 86400;
+            }
+            reg.save(nvs);
+            sched_push(n->id);
+          }
+        }
+        /* schedule editor taps (M5b): the engine-owned draft (§8.3) */
+        if (acts.ed_row != -2) {
+          if (acts.ed_row < 0)
+            s_ed_draft.selected = -1;
+          else
+            aio::ui::editor_select(s_ed_draft, acts.ed_row);
+          ed_publish();
+        }
+        if (acts.ed_new) {
+          s_ed_draft.selected = -1; /* draft a fresh row from the current values */
+          ed_publish();
+        }
+        if (acts.ed_day != 255) {
+          aio::ui::editor_toggle_day(s_ed_draft, acts.ed_day);
+          ed_publish();
+        }
+        if (acts.ed_apply) {
+          const uint8_t nid = s_ed_draft.node_id;
+          if (aio::ui::editor_apply_draft(s_ed_draft)) {
+            ed_sync_registry(nid);
+            ed_rebuild(nid); /* canonical copy back from the registry */
+          }
+        }
+        if (acts.ed_del) {
+          const uint8_t nid = s_ed_draft.node_id;
+          aio::ui::editor_remove_selected(s_ed_draft);
+          ed_sync_registry(nid);
+          ed_rebuild(nid);
+        }
+        if (acts.ed_toggle) {
+          aio::HubNode *n = reg.by_id(s_ed_draft.node_id);
+          if (n) {
+            n->sched.enabled = n->sched.enabled ? 0 : 1;
+            reg.save(nvs); /* hub-side gate: enabled is not part of SCHEDULE_SET */
+            s_ed_draft.enabled = n->sched.enabled != 0;
+            ed_publish();
+          }
+        }
         /* settings panes: backup/export, restore latest, restart */
         if (acts.backup_export) backup_op(false);
         if (acts.backup_restore && g_backup_last[0])

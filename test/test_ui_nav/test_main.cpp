@@ -152,6 +152,72 @@ static void test_actions_negative_sentinels_report_idle(void) {
   TEST_ASSERT_TRUE(a.any());
 }
 
+/* --- M5b actions --------------------------------------------------------- */
+
+static void test_m5b_actions_default_idle(void) {
+  Actions a;
+  /* entry pad, pairing form, wizard extras, editor drafts, detail ops */
+  TEST_ASSERT_EQUAL(-1, a.detail_feed);
+  TEST_ASSERT_EQUAL(-2, a.ed_row);
+  TEST_ASSERT_EQUAL(255, a.ed_day);
+  TEST_ASSERT_EQUAL(entry::ENT_NONE, a.entry_tgt);
+  TEST_ASSERT_FALSE(a.any());
+  /* each group flips any() on its own */
+  a.entry_commit = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.pair_mech = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.wiz_node = 3;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.wiz_pair_new = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.wiz_ntp = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.wiz_days = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.ed_row = 0;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.ed_day = 4;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.ed_apply = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.ed_del = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.ed_toggle = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.detail_feed = 2;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.detail_skip = true;
+  TEST_ASSERT_TRUE(a.any());
+  a.clear();
+  a.detail_hold = true;
+  TEST_ASSERT_TRUE(a.any());
+}
+
+static void test_m5b_entry_commit_payload_survives_copy(void) {
+  Actions a;
+  a.entry_commit = true;
+  a.entry_tgt = entry::ENT_CAL_WEIGH;
+  a.entry_u32 = 825;
+  strcpy(a.entry_text, "kit");
+  Actions b = a;
+  TEST_ASSERT_EQUAL(entry::ENT_CAL_WEIGH, b.entry_tgt);
+  TEST_ASSERT_EQUAL_UINT32(825, b.entry_u32);
+  TEST_ASSERT_EQUAL_STRING("kit", b.entry_text);
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_dashboard_opens_detail_with_node);
@@ -170,5 +236,7 @@ int main(void) {
   RUN_TEST(test_lock_engaged_on_pin_bounces_to_dash);
   RUN_TEST(test_actions_any_and_clear);
   RUN_TEST(test_actions_negative_sentinels_report_idle);
+  RUN_TEST(test_m5b_actions_default_idle);
+  RUN_TEST(test_m5b_entry_commit_payload_survives_copy);
   return UNITY_END();
 }

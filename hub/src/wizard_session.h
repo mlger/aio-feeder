@@ -81,6 +81,18 @@ class WizardSession {
     return true;
   }
 
+  /* Touch entry (M5b): edit only the network name, keep the password. */
+  bool set_wifi_ssid(const char *ssid) {
+    if (phase_ != ui::WIZ_WIFI) return false;
+    if (!ssid || !ssid[0] || strlen(ssid) >= sizeof(wifi_ssid_)) {
+      snprintf(note_, sizeof(note_), "network name is required");
+      return false;
+    }
+    snprintf(wifi_ssid_, sizeof(wifi_ssid_), "%s", ssid);
+    note_[0] = '\0';
+    return true;
+  }
+
   /* Connection test outcome (radio bring-up on hardware; the QEMU shot
    * build reports "no radio" and the wizard continues anyway). */
   void wifi_test_result(bool ok, const char *note) {

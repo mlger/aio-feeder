@@ -18,6 +18,8 @@
 
 #include <stdint.h>
 
+#include "ui_entry.h"
+
 namespace aio {
 namespace nav {
 
@@ -149,7 +151,32 @@ struct Actions {
   bool backup_restore = false;
   bool restart = false;
   bool pin_submit = false;   /* PIN pad OK: digits via ui::pin_entered() */
-  int8_t detail_feed = -1;   /* feed preview button on DETAIL (M5b) */
+  int8_t detail_feed = -1;   /* feed now button on DETAIL (M5b) */
+  bool detail_skip = false;  /* skip next occurrence (M5b) */
+  bool detail_hold = false;  /* hold 1 h (M5b) */
+
+  /* --- M5b: shared entry pad (pad open/cancel are view-side; the commit
+   * carries the parsed value — hub/src/ui_entry.h) */
+  bool entry_commit = false;
+  entry::Target entry_tgt = entry::ENT_NONE;
+  uint32_t entry_u32 = 0;            /* parsed numeric / min-of-day / ×100 */
+  char entry_text[33] = "";          /* parsed text (name, SSID) */
+
+  /* pairing form (§8.5) */
+  bool pair_mech = false;            /* cycle the mech template */
+
+  /* wizard extras */
+  bool wiz_pair_new = false;         /* "pair a new feeder" row */
+  bool wiz_ntp = false;              /* toggle the NTP line */
+  bool wiz_days = false;             /* cycle the days preset */
+
+  /* schedule editor (§8.3): the engine owns the draft between publishes */
+  int8_t ed_row = -2;                /* -2 none · -1 new row · 0..N select */
+  uint8_t ed_day = 255;              /* 0..6 weekday toggle, 255 = none */
+  bool ed_new = false;               /* draft a fresh row */
+  bool ed_apply = false;             /* save draft → registry + push */
+  bool ed_del = false;               /* delete the selected row */
+  bool ed_toggle = false;            /* pause / resume the schedule */
 
   void clear() { *this = Actions{}; }
   bool any() const {
@@ -159,7 +186,9 @@ struct Actions {
            wiz_commit || wiz_close || cal_open || cal_test_s >= 0 || cal_run ||
            cal_next || cal_save || cal_close || settings || set_section >= 0 ||
            backup_export || backup_restore || restart || pin_submit ||
-           detail_feed >= 0;
+           detail_feed >= 0 || detail_skip || detail_hold || entry_commit ||
+           pair_mech || wiz_pair_new || wiz_ntp || wiz_days || ed_row != -2 ||
+           ed_day != 255 || ed_new || ed_apply || ed_del || ed_toggle;
   }
 };
 
