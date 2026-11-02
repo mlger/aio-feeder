@@ -17,6 +17,7 @@
 #ifndef AIO_UI_ENTRY_H
 #define AIO_UI_ENTRY_H
 
+#include <stdio.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <string.h>
