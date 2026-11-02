@@ -1477,6 +1477,7 @@ static void aio_loop_task(void *) {
           tap_cycle = cyc;
           if (g_pin.enabled()) g_pin.unlock("1234", now);
           aio::ui::nav_sync_lock(false);
+          s_set_section = 0; /* the walk's settings beats start at RESTART */
         }
       }
 #endif /* shot-only sim tick + rotation drivers */
