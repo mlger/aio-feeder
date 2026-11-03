@@ -67,6 +67,7 @@
 #include "pairing_session.h"
 #include "pcf85063.h"
 #include "pcf85063_idf.h"
+#include "ota_service.h"
 #include "ui/ui.h"
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
@@ -527,6 +528,7 @@ static void hub_help() {
   printf("      ntp <0|1> | wifi <ssid> [pass] | factoryreset RESET\n");
   printf("  pin status | set <cur> <new> | off <cur> | scope <0|1>\n");
   printf("  backup now | ls | restore <name> | csv\n");
+  printf("  ota status | url <u> | start [u] | apply | factory\n");
   printf("  wiz start | tz <0-3> | ntp <0|1> | wifi <ssid> [pass]\n");
   printf("      node <id|new> | cap <total> <now> | sched <min> <days> <amt>\n");
   printf("      next | back | save\n");
@@ -1146,6 +1148,83 @@ static void set_remote_view(aio::ui::SettingsView &sv) {
   sv.mqtt_on = g_rset.mqtt_on != 0;
   snprintf(sv.mqtt_state, sizeof(sv.mqtt_state), "%s", remote_net_mqtt_state());
   snprintf(sv.remote_ip, sizeof(sv.remote_ip), "%s", remote_net_ip());
+  /* M8a firmware pane: slot+version line and the live OTA phase */
+  aio::OtaBrief ob;
+  aio::ota::brief(&ob);
+  snprintf(sv.fw_slot_ver, sizeof(sv.fw_slot_ver), "%s %s", ob.slot, ob.ver);
+  if (ob.phase == aio::OTA_FAIL)
+    snprintf(sv.fw_state, sizeof(sv.fw_state), "%s (%s)",
+             aio::ota_phase_name(ob.phase), aio::ota_err_name(ob.err));
+  else if (ob.phase == aio::OTA_DOWNLOAD && ob.pct)
+    snprintf(sv.fw_state, sizeof(sv.fw_state), "%s %u%%",
+             aio::ota_phase_name(ob.phase), (unsigned)ob.pct);
+  else if (ob.target[0] && ob.phase != aio::OTA_IDLE)
+    snprintf(sv.fw_state, sizeof(sv.fw_state), "%s → %s",
+             aio::ota_phase_name(ob.phase), ob.target);
+  else
+    snprintf(sv.fw_state, sizeof(sv.fw_state), "%s",
+             aio::ota_phase_name(ob.phase));
+}
+
+/* firmware update from the bench console (M8a; the touchscreen Firmware
+ * pane and POST /api/ota share these paths). The URL persists in NVS
+ * ("ourl"); downloads run on their own task — feeding never waits. */
+static int cmd_ota(int argc, char **argv) {
+  StateLock lock;
+  if (argc >= 2 && !strcmp(argv[1], "url")) {
+    if (argc < 3) {
+      printf("usage: ota url <http(s)://...>\n");
+      return 1;
+    }
+    printf("%s\n", aio::ota::url_save(argv[2]) ? "url saved" : "invalid url");
+    return 0;
+  }
+  if (argc >= 2 && !strcmp(argv[1], "start")) {
+    char url[aio::OTA_URL_LEN];
+    if (argc >= 3) {
+      if (!aio::ota::url_save(argv[2])) {
+        printf("invalid url\n");
+        return 1;
+      }
+    }
+    aio::ota::url_get(url, sizeof(url));
+    printf("ota: pulling %s\n", url);
+    printf("%s\n", aio::ota::start(url) ? "download started" : "start rejected");
+    return 0;
+  }
+  if (argc >= 2 && !strcmp(argv[1], "apply")) {
+    aio::ota::reboot_staged();
+    printf("nothing staged (need-reboot phase only)\n");
+    return 0;
+  }
+  if (argc >= 2 && !strcmp(argv[1], "factory")) {
+    printf("%s\n", aio::ota::boot_factory() ? "rebooting to factory"
+                                            : "no factory partition");
+    return 0;
+  }
+  aio::OtaBrief ob;
+  aio::ota::brief(&ob);
+  printf("running %s %s\nstate: %s", ob.slot, ob.ver,
+         aio::ota_phase_name(ob.phase));
+  if (ob.phase == aio::OTA_DOWNLOAD && ob.pct) printf(" %u%%", (unsigned)ob.pct);
+  if (ob.phase == aio::OTA_FAIL) printf(" (%s)", aio::ota_err_name(ob.err));
+  printf("\n");
+  if (ob.target[0]) printf("staged target: %s\n", ob.target);
+  aio::OtaStatus st;
+  if (aio::ota::last_status(&st) && st.last_result != aio::OTA_RES_NONE) {
+    printf("last: %s%s%s @ %lu\n",
+           st.last_result == aio::OTA_RES_OK ? "ok" : "error",
+           st.last_result == aio::OTA_RES_ERR ? " (" : "",
+           st.last_result == aio::OTA_RES_ERR
+               ? aio::ota_err_name(st.last_err)
+               : "",
+           (unsigned long)st.last_unix);
+    if (st.last_ver[0]) printf("last version: %s\n", st.last_ver);
+  }
+  char url[aio::OTA_URL_LEN];
+  aio::ota::url_get(url, sizeof(url));
+  printf("url: %s\n", url);
+  return 0;
 }
 
 static int cmd_remote(int argc, char **argv) {
@@ -1386,6 +1465,8 @@ static void register_commands() {
           cmd_pin);
   add_cmd("backup", "backup/restore/CSV (§9.12)", "now|ls|restore <name>|csv",
           cmd_backup);
+  add_cmd("ota", "firmware update (§7.6)", "status|url <u>|start [url]|apply|factory",
+          cmd_ota);
   add_cmd("wiz", "setup wizard (§9.13)",
           "start|tz|ntp|wifi|node|cap|sched|next|back|save", cmd_wiz);
   add_cmd("remote", "web + MQTT status (§6.7)", "", cmd_remote);
@@ -1969,6 +2050,19 @@ static void aio_loop_task(void *) {
         if (acts.backup_export) backup_op(false);
         if (acts.backup_restore && g_backup_last[0])
           backup_restore_op(g_backup_last);
+        /* firmware pane (M8a): start/apply/escape — same ota_* paths as
+         * the REPL and POST /api/ota, under the same state lock */
+        if (acts.fw_start) {
+          char url[aio::OTA_URL_LEN];
+          aio::ota::url_get(url, sizeof(url));
+          if (!aio::ota::start(url)) {
+            aio::OtaBrief ob;
+            aio::ota::brief(&ob);
+            printf("ota: start rejected (%s)\n", aio::ota_err_name(ob.err));
+          }
+        }
+        if (acts.fw_reboot) aio::ota::reboot_staged();
+        if (acts.fw_factory) aio::ota::boot_factory();
         if (acts.restart) {
           printf("restart requested from the settings screen\n");
           fflush(stdout);
@@ -1987,6 +2081,8 @@ static void aio_loop_task(void *) {
       g_calib.tick(now);
       /* §8: the PIN unlock window auto re-locks after 60 s */
       g_pin.tick(now);
+      /* M8a: OTA health confirm + staged state (cheap when idle) */
+      aio::ota::tick(now);
       /* §7.5 retention: prune the RAM ring once a minute (feeding never
        * waits for this — the ring self-evicts at CAP anyway) */
       {
@@ -2033,6 +2129,9 @@ extern "C" void app_main(void) {
   g_state_mu = xSemaphoreCreateMutex();
 
   if (!nvs.begin()) printf("NVS init FAILED (persistence off)\n");
+  /* M8a: OTA boot-side check (selftest walk under CONFIG_AIO_OTA_SELFTEST;
+   * PENDING_VERIFY detection) — before anything else touches partitions */
+  aio::ota::begin(&nvs, hub_unix_now);
   if (!reg.load(nvs)) {
     printf("registry: fresh (no valid blob)\n");
     reg.reset();

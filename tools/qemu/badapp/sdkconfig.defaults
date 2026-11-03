@@ -1,0 +1,2 @@
+# badapp — S3 target (QEMU xtensa machine), silent boot, no flash extras.
+CONFIG_IDF_TARGET="esp32s3"

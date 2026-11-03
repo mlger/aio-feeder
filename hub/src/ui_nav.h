@@ -151,6 +151,12 @@ struct Actions {
   bool backup_restore = false;
   bool restart = false;
   bool pin_submit = false;   /* PIN pad OK: digits via ui::pin_entered() */
+
+  /* firmware pane (M8a): the URL itself enters via web/CLI (D37 — the pad
+   * buffer is 33 chars, URLs don't fit); the pane drives the flow */
+  bool fw_start = false;     /* begin the download from the stored URL */
+  bool fw_reboot = false;    /* reboot into the staged slot */
+  bool fw_factory = false;   /* escape hatch: next boot = factory */
   int8_t detail_feed = -1;   /* feed now button on DETAIL (M5b) */
   bool detail_skip = false;  /* skip next occurrence (M5b) */
   bool detail_hold = false;  /* hold 1 h (M5b) */
@@ -186,6 +192,7 @@ struct Actions {
            wiz_commit || wiz_close || cal_open || cal_test_s >= 0 || cal_run ||
            cal_next || cal_save || cal_close || settings || set_section >= 0 ||
            backup_export || backup_restore || restart || pin_submit ||
+           fw_start || fw_reboot || fw_factory ||
            detail_feed >= 0 || detail_skip || detail_hold || entry_commit ||
            pair_mech || wiz_pair_new || wiz_ntp || wiz_days || ed_row != -2 ||
            ed_day != 255 || ed_new || ed_apply || ed_del || ed_toggle;

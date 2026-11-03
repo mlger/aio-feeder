@@ -18,6 +18,7 @@ flashes as one image at 0x0.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 import sys
@@ -124,6 +125,24 @@ def main() -> int:
             if (out_dir / n).is_file()
         ]
         (out_dir / "manifest.json").write_text(json.dumps(manifest, indent=2) + "\n")
+        # M8a: OTA descriptor next to the image — the hub (and later the
+        # nodes) fetch this, then the .bin, and pin the download to the
+        # digest so a truncated/proxied fetch fails before it flashes.
+        firmware = env_dir / "firmware.bin"
+        if firmware.is_file():
+            digest = hashlib.sha256(firmware.read_bytes()).hexdigest()
+            (out_dir / "ota.json").write_text(
+                json.dumps(
+                    {
+                        "version": args.version,
+                        "file": "firmware.bin",
+                        "sha256": digest,
+                        "size": firmware.stat().st_size,
+                    },
+                    indent=2,
+                )
+                + "\n"
+            )
         print(f"{env}: {out_dir / 'manifest.json'} ({len(manifest['builds'][0]['parts'])} parts)")
 
     (args.out / "build-info.json").write_text(json.dumps({"version": args.version}) + "\n")

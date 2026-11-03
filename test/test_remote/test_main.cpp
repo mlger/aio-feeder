@@ -245,6 +245,26 @@ static void test_mqtt_topic_parse(void) {
   TEST_ASSERT_EQUAL_UINT8(0, mqtt_feed_topic_parse(nullptr));
 }
 
+/* M8a: POST /api/ota — {"url":…} or {"factory":1}, never both-required */
+static void test_ota_parse(void) {
+  char url[OTA_URL_LEN];
+  bool factory = false;
+  TEST_ASSERT_TRUE(remote_ota_parse("{\"url\":\"http://10.0.2.2:8000/firmware.bin\"}",
+                                    url, sizeof(url), &factory));
+  TEST_ASSERT_FALSE(factory);
+  TEST_ASSERT_EQUAL_STRING("http://10.0.2.2:8000/firmware.bin", url);
+  TEST_ASSERT_TRUE(remote_ota_parse("{\"factory\":1}", url, sizeof(url), &factory));
+  TEST_ASSERT_TRUE(factory);
+  /* factory without the flag out: url-only body still parses */
+  TEST_ASSERT_TRUE(remote_ota_parse("{\"url\":\"https://h/f.bin\"}", url, sizeof(url)));
+  TEST_ASSERT_FALSE(remote_ota_parse("{\"url\":\"ftp://h/f.bin\"}", url, sizeof(url)));
+  TEST_ASSERT_FALSE(remote_ota_parse("{}", url, sizeof(url)));       /* nothing given */
+  TEST_ASSERT_FALSE(remote_ota_parse("{\"factory\":2}", url, sizeof(url), &factory));
+  TEST_ASSERT_FALSE(remote_ota_parse("{\"url\":\"http://h/f\",\"junk\":1}",
+                                     url, sizeof(url)));
+  TEST_ASSERT_FALSE(remote_ota_parse("not json", url, sizeof(url)));
+}
+
 static void test_settings_patch(void) {
   RemoteSettings s = remote_defaults();
   TEST_ASSERT_TRUE(remote_settings_patch("{\"mqtt_on\":1,\"mqtt_url\":\"b:1883\"}", &s));
@@ -418,6 +438,7 @@ int main(void) {
   RUN_TEST(test_auth);
   RUN_TEST(test_feed_parse);
   RUN_TEST(test_mqtt_topic_parse);
+  RUN_TEST(test_ota_parse);
   RUN_TEST(test_settings_patch);
   RUN_TEST(test_node_state_json);
   RUN_TEST(test_node_config_json);

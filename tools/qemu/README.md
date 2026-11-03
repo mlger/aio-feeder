@@ -57,3 +57,21 @@ fits by demand control instead: the PIN pad is a styled multi-line LABEL
 (a lv_btnmatrix drew 12 rounded cells whose mask allocations exhausted
 the pool mid-draw — buttons progressively vanished frame by frame).
 `tools/qemu/capture.py` carries the same FB_W/FB_H constants.
+
+M8a additions (v0.11):
+
+- The tap walk gained a stage: dash → detail → home → settings → BACKUP →
+  SECURITY → **FIRMWARE** (`tap_firmware.png`), exercising the settings
+  action-strip remap on the new pane.
+- **OTA selftest** (`ci.yml` job `ota-selftest`): a second hub build with
+  `sdkconfig.qemu.ota.defaults` (AIO_NO_RADIO, no UI, 5 s confirm window,
+  `CONFIG_AIO_OTA_SELFTEST`) boots beside `tools/qemu/badapp` (a
+  deliberately non-confirming image merged into the `badapp` data
+  partition at 0xFA0000). The walk is five real guest reboots in one QEMU
+  process — `tools/qemu/ota_run.py` omits capture.py's `-no-reboot` for
+  exactly that reason — and asserts the marker order: stage0 staged
+  (running image copied into ota_0 through the full esp_ota_ops path) →
+  PENDING_VERIFY → health confirm → stage2 staged (badapp → ota_1) →
+  badapp runs and never confirms → bootloader invalidates ota_1 and falls
+  back (`rollback VERIFIED`). A boot counter in NVS aborts the walk if it
+  ever loops past 14 boots.

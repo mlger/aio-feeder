@@ -51,7 +51,7 @@ jobs:
             --qemu "$QEMU_BIN" \
             --flash hub/build/flash.img \
             --elf hub/build/aio-feeder-hub.elf \
-            --screens dashboard,node_detail,sched_editor,history,alerts,pairing,pairing_code,pairing_form,pairing_done,calib,calib_weigh,calib_done,settings,settings_security,settings_backup,pin_entry,pin_typing,pin_wrong,pin_ok,wizard,wizard_node,wizard_cap,wizard_sched,wizard_done,tap_detail,tap_settings,tap_backup,tap_security --out screens --timeout 560
+            --screens dashboard,node_detail,sched_editor,history,alerts,pairing,pairing_code,pairing_form,pairing_done,calib,calib_weigh,calib_done,settings,settings_security,settings_backup,pin_entry,pin_typing,pin_wrong,pin_ok,wizard,wizard_node,wizard_cap,wizard_sched,wizard_done,tap_detail,tap_settings,tap_backup,tap_security,tap_firmware --out screens --timeout 560
       - name: Serial log tail (diagnosis)
         if: failure()
         run: tail -120 serial.log || true
@@ -97,6 +97,7 @@ jobs:
           test -f screens/tap_settings.png
           test -f screens/tap_backup.png
           test -f screens/tap_security.png
+          test -f screens/tap_firmware.png
       - name: Upload UI screenshots
         uses: actions/upload-artifact@v4
         with:
@@ -104,6 +105,49 @@ jobs:
           path: screens
           retention-days: 30
           if-no-files-found: error
+
+  ota-selftest:
+    name: QEMU OTA selftest (stage → confirm → rollback)
+    runs-on: ubuntu-latest
+    container:
+      image: espressif/idf:v5.4
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build badapp (the deliberately non-confirming image)
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py -C tools/qemu/badapp set-target esp32s3
+          idf.py -C tools/qemu/badapp build
+      - name: Build hub (OTA selftest overlay — no UI, no radio, 5 s window)
+        run: |
+          . $IDF_PATH/export.sh
+          idf.py -C hub -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu.ota.defaults" set-target esp32s3
+          idf.py -C hub -D "SDKCONFIG_DEFAULTS=sdkconfig.defaults;sdkconfig.qemu.ota.defaults" build
+      - name: Merge flash image (badapp into its data partition)
+        run: |
+          . $IDF_PATH/export.sh
+          esptool.py --chip esp32s3 merge_bin -o hub/build/flash.img \
+            --fill-flash-size 16MB \
+            0x0 hub/build/bootloader/bootloader.bin \
+            0x8000 hub/build/partition_table/partition-table.bin \
+            0x10000 hub/build/aio-feeder-hub.bin \
+            0xFA0000 tools/qemu/badapp/build/badapp.bin
+      - name: Run the boot walk in QEMU
+        run: |
+          (sudo apt-get update -qq && sudo apt-get install -y -qq \
+             libglib2.0-0 libpixman-1-0 >/dev/null 2>&1) || true
+          curl -sL -o /tmp/qemu.tar.xz \
+            https://github.com/espressif/qemu/releases/download/esp-develop-9.2.2-20260417/qemu-xtensa-softmmu-esp_develop_9.2.2_20260417-x86_64-linux-gnu.tar.xz
+          mkdir -p /tmp/qemu && tar -xf /tmp/qemu.tar.xz -C /tmp/qemu
+          QEMU_BIN=$(find /tmp/qemu -name qemu-system-xtensa -type f | head -1)
+          echo "qemu binary: $QEMU_BIN"
+          python3 tools/qemu/ota_run.py \
+            --qemu "$QEMU_BIN" \
+            --flash hub/build/flash.img \
+            --timeout 300
+      - name: Serial log tail (diagnosis)
+        if: failure()
+        run: tail -160 ota_selftest.log || true
 
   pages:
     name: Deploy web flasher to GitHub Pages
