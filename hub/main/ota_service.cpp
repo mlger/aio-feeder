@@ -273,7 +273,9 @@ static void download_task(void *arg) {
       }
       esp_app_desc_t desc = {};
       if (ok && esp_ota_get_partition_description(update, &desc) == ESP_OK) {
-        snprintf(s_target, sizeof(s_target), "%s", desc.version);
+        /* %.23s: desc.version is 32 B, s_target 24 — a hard cap keeps
+         * -Wformat-truncation quiet; semver fits easily */
+        snprintf(s_target, sizeof(s_target), "%.23s", desc.version);
       }
       if (ok && esp_ota_set_boot_partition(update) != ESP_OK) {
         ok = false;
@@ -433,8 +435,10 @@ void begin(IHubStore *store, int64_t (*unix_fn)(void)) {
   s_store = store;
   s_unix = unix_fn;
   const esp_partition_t *run = esp_ota_get_running_partition();
-  snprintf(s_slot, sizeof(s_slot), "%s", run->label);
-  snprintf(s_ver, sizeof(s_ver), "%s", esp_app_get_description()->version);
+  /* %.9s: partition labels are 16 B max, slots here are factory/ota_0/ota_1 */
+  snprintf(s_slot, sizeof(s_slot), "%.9s", run->label);
+  /* %.23s: app version field is 32 B, s_ver 24 */
+  snprintf(s_ver, sizeof(s_ver), "%.23s", esp_app_get_description()->version);
 
 #if defined(CONFIG_AIO_OTA_SELFTEST) && CONFIG_AIO_OTA_SELFTEST
   selftest_boot(run);
