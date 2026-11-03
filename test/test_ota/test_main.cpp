@@ -18,8 +18,8 @@
 
 using namespace aio;
 
-static void setUp(void) {}
-static void tearDown(void) {}
+void setUp(void) {}
+void tearDown(void) {}
 
 struct RamStore : IHubStore {
   std::map<std::string, std::vector<uint8_t>> m;
