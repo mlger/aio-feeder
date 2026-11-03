@@ -23,6 +23,10 @@ jobs:
     permissions:
       contents: write
     steps:
+      # ota_json.py (M8a) lives in the repo — this job never had a checkout
+      # before M8a (gh worked with GH_REPO alone); the script needs the tree
+      - name: Checkout (tools/flasher/ota_json.py)
+        uses: actions/checkout@v4
       - name: Download firmware artifacts
         uses: actions/download-artifact@v4
         with:
