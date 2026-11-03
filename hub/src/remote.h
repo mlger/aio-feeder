@@ -40,10 +40,11 @@
 #include "hub_time.h"
 #include "settings_store.h"
 #include "ui_model.h" /* NodeState, state_of, next_occurrence, is_alert_kind */
+#include "unpair_queue.h"
 
 namespace aio {
 
-#define RMT_VERSION 1
+#define RMT_VERSION 2 /* v2 (M7): + notify trigger switches, §9.11 */
 constexpr char RMT_STORE_KEY[] = "rmt";
 
 constexpr uint16_t RMT_WEB_PORT_DEF = 80;
@@ -60,6 +61,27 @@ struct RemoteSettings {
   char mqtt_url[96];       /* mqtt[s]://host[:port] or bare host[:port] */
   char mqtt_user[33];      /* "" = anonymous */
   char mqtt_pass[65];      /* never backed up, never echoed back */
+  /* v2 (M7): switchable notify triggers (§9.11) — master + per trigger. */
+  uint8_t notify_master;
+  uint8_t notify_offline;  /* node offline transitions */
+  uint8_t notify_fault;    /* feed fail / reject / unknown */
+  uint8_t notify_missed;   /* missed feeds (§9.4) */
+  uint8_t notify_stock;    /* low stock estimate */
+  uint8_t notify_sensor;   /* hopper-low (FMEA #8) */
+};
+
+/* v1 layout = v2 without the trailing trigger switches (strict prefix), so
+ * a v1 blob can be migrated field-for-field (D36: upgrades never wipe). */
+struct RemoteSettingsV1 {
+  uint16_t version;
+  uint8_t web_on;
+  uint8_t web_auth;
+  uint16_t web_port;
+  uint8_t mqtt_on;
+  uint8_t mqtt_disc;
+  char mqtt_url[96];
+  char mqtt_user[33];
+  char mqtt_pass[65];
 };
 
 static inline RemoteSettings remote_defaults() {
@@ -71,16 +93,35 @@ static inline RemoteSettings remote_defaults() {
   s.web_port = RMT_WEB_PORT_DEF;
   s.mqtt_on = 0;
   s.mqtt_disc = 1;
+  s.notify_master = 1;
+  s.notify_offline = 1;
+  s.notify_fault = 1;
+  s.notify_missed = 1;
+  s.notify_stock = 1;
+  s.notify_sensor = 1;
   return s;
 }
 
 static inline bool remote_load(IHubStore &st, RemoteSettings *out) {
   RemoteSettings s;
-  if (store_get(st, RMT_STORE_KEY, RMT_VERSION, &s, sizeof(s)) != (int)sizeof(s))
-    return false;
-  if (s.web_port == 0) return false;
-  *out = s;
-  return true;
+  if (store_get(st, RMT_STORE_KEY, RMT_VERSION, &s, sizeof(s)) == (int)sizeof(s)) {
+    if (s.web_port == 0) return false;
+    *out = s;
+    return true;
+  }
+  /* v1 → v2 migration: prefix copy keeps web + MQTT fields (D36). */
+  RemoteSettingsV1 v1;
+  if (store_get(st, RMT_STORE_KEY, 1, &v1, sizeof(v1)) == (int)sizeof(v1) &&
+      v1.web_port != 0) {
+    static_assert(sizeof(RemoteSettingsV1) < sizeof(RemoteSettings),
+                  "v1 must be a strict prefix of v2");
+    RemoteSettings v2 = remote_defaults();
+    memcpy(&v2, &v1, sizeof(v1));
+    v2.version = RMT_VERSION;
+    *out = v2;
+    return true;
+  }
+  return false;
 }
 
 static inline bool remote_save(IHubStore &st, const RemoteSettings &s) {
@@ -250,7 +291,8 @@ static inline size_t remote_status_json(const HubRegistry &reg, const EventLog &
                                         const RemoteSettings &rset, bool mqtt_up,
                                         const RemoteNodeLive *live, const char *fw,
                                         const LocalTime &now, int64_t unix_now,
-                                        char *out, size_t cap) {
+                                        char *out, size_t cap,
+                                        const UnpairQueue *unpair = nullptr) {
   uint8_t online = 0;
   bool has_alert = false;
   uint8_t alert_node = 0;
@@ -282,6 +324,24 @@ static inline size_t remote_status_json(const HubRegistry &reg, const EventLog &
   if (has_alert) {
     o += (size_t)snprintf(out + o, cap - o, ",\"alert\":{\"node\":%u,\"kind\":\"%s\"}",
                           (unsigned)alert_node, csv_result_text(alert_kind, 0));
+    if (o >= cap) return 0;
+  }
+  if (unpair && unpair->count()) {
+    /* FMEA #15: nodes removed while offline — UNPAIR still pending. */
+    o += (size_t)snprintf(out + o, cap - o, ",\"unpair\":[");
+    if (o >= cap) return 0;
+    for (uint8_t i = 0; i < unpair->count(); i++) {
+      const PendingUnpair *q = unpair->at(i);
+      if (!q) continue;
+      o += (size_t)snprintf(out + o, cap - o,
+                            "%s{\"id\":%u,\"mac\":\"%02X%02X%02X%02X%02X%02X\","
+                            "\"sends\":%u}",
+                            i ? "," : "", (unsigned)q->id, q->mac[0], q->mac[1],
+                            q->mac[2], q->mac[3], q->mac[4], q->mac[5],
+                            (unsigned)q->sends);
+      if (o >= cap) return 0;
+    }
+    o += (size_t)snprintf(out + o, cap - o, "]");
     if (o >= cap) return 0;
   }
   o += (size_t)snprintf(out + o, cap - o, ",\"n\":[");
@@ -450,6 +510,18 @@ static inline bool remote_settings_patch(const char *body, RemoteSettings *s) {
       uint32_t v;
       if (!json_parse_uint(&p, &v) || v == 0 || v > RMT_WEB_PORT_MAX) return false;
       s->web_port = (uint16_t)v;
+    } else if (!strcmp(key, "notify_master") || !strcmp(key, "notify_offline") ||
+               !strcmp(key, "notify_fault") || !strcmp(key, "notify_missed") ||
+               !strcmp(key, "notify_stock") || !strcmp(key, "notify_sensor")) {
+      uint32_t v;
+      if (!json_parse_uint(&p, &v)) return false;
+      if (v > 1) return false;
+      if (!strcmp(key, "notify_master")) s->notify_master = (uint8_t)v;
+      else if (!strcmp(key, "notify_offline")) s->notify_offline = (uint8_t)v;
+      else if (!strcmp(key, "notify_fault")) s->notify_fault = (uint8_t)v;
+      else if (!strcmp(key, "notify_missed")) s->notify_missed = (uint8_t)v;
+      else if (!strcmp(key, "notify_stock")) s->notify_stock = (uint8_t)v;
+      else s->notify_sensor = (uint8_t)v;
     } else if (!strcmp(key, "mqtt_url")) {
       char u[sizeof(s->mqtt_url)];
       if (!json_parse_string(&p, u, sizeof(u))) return false;
@@ -547,6 +619,26 @@ static inline bool mqtt_discovery_entity(const HubNode &n, uint8_t idx, char *to
 
 /* --- notify texts (FR20 §9.11) -------------------------------------------------------- */
 
+/* Sentinels for notifies that do not ride the event log. */
+constexpr uint8_t RMT_NOTIFY_OFFLINE = 0xFE;
+constexpr uint8_t RMT_NOTIFY_STOCK = 0xFD;
+
+/* §9.11: a master switch plus one switch per trigger. Administrative rows
+ * (UNPAIR_PENDING) always notify — they are rare and actionable. */
+static inline bool notify_switch_allows(const RemoteSettings &s, uint8_t kind) {
+  if (!s.notify_master) return false;
+  switch (kind) {
+    case RMT_NOTIFY_OFFLINE: return s.notify_offline != 0;
+    case RMT_NOTIFY_STOCK: return s.notify_stock != 0;
+    case EV_FEED_FAIL:
+    case EV_FEED_REJ:
+    case EV_FEED_UNKNOWN: return s.notify_fault != 0;
+    case EV_SKIPPED_MISSED: return s.notify_missed != 0;
+    case EV_HOPPER_LOW: return s.notify_sensor != 0;
+    default: return true;
+  }
+}
+
 /* One short line per alert-worthy event. Returns false for kinds that do
  * not notify (user-initiated skips, plain OK feeds — those ride the state
  * topic instead). */
@@ -567,6 +659,13 @@ static inline bool remote_notify_text(uint8_t kind, uint8_t node_id,
       return true;
     case EV_SKIPPED_MISSED:
       snprintf(out, cap, "%d missed feed%s on %s", (int)aux, aux == 1 ? "" : "s",
+               name ? name : "?");
+      return true;
+    case EV_HOPPER_LOW:
+      snprintf(out, cap, "hopper low on %s", name ? name : "?");
+      return true;
+    case EV_UNPAIR_PENDING:
+      snprintf(out, cap, "%s removed — will unpair when it checks in",
                name ? name : "?");
       return true;
     default:

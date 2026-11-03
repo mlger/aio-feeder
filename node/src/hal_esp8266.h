@@ -20,6 +20,10 @@
 #define HAL_LED_PIN 2       /* D4, onboard, active-low */
 #define HAL_VIN_ADC_MAX 1023.0
 #define HAL_VIN_REF_MV 3300.0 /* D1 mini divider tops at 3.3 V [VERIFY] */
+/* M7 optional inputs (FMEA #2/#8/#17; PLAN §4.2, SR9). All [VERIFY] vs rig. */
+#define HAL_STOP_PIN 12     /* D6 — SR9 physical stop switch, pullup, active-low */
+#define HAL_HOPPER_PIN 13   /* D7 — hopper-low sensor, pullup, active-low */
+#define HAL_GATE_PIN 16     /* D0 — gate reed to GND w/ external pullup: LOW = closed */
 
 static volatile bool g_relay_off_fired = false;
 
@@ -39,6 +43,9 @@ struct Hal {
     relay(false);
     pinMode(HAL_LED_PIN, OUTPUT);
     led(false);
+    pinMode(HAL_STOP_PIN, INPUT_PULLUP);
+    pinMode(HAL_HOPPER_PIN, INPUT_PULLUP);
+    pinMode(HAL_GATE_PIN, INPUT); /* GPIO16: external pullup — 8266 has none */
     EEPROM.begin(kStorageRegion);
     Wire.begin(HAL_SDA_PIN, HAL_SCL_PIN);
     timer1_isr_init();
@@ -64,6 +71,11 @@ struct Hal {
   uint32_t random32() { return ESP.random(); }
 
   void led(bool on) { digitalWrite(HAL_LED_PIN, on ? LOW : HIGH); } /* active-low */
+
+  /* M7 inputs: stop switch (SR9), hopper-low sensor (§4.2), gate reed (FMEA #2). */
+  bool stop_active() { return digitalRead(HAL_STOP_PIN) == LOW; }
+  bool hopper_low() { return digitalRead(HAL_HOPPER_PIN) == LOW; }
+  bool gate_closed() { return digitalRead(HAL_GATE_PIN) == LOW; }
 
   /* Supply monitor: returns millivolts at the ADC pin, or 0 when unplugged. */
   uint16_t vin_mv() {

@@ -9,6 +9,7 @@
 #include "feed_journal.h"
 #include "time_validity.h"
 #include "actuator.h"
+#include "local_sched.h"
 
 using namespace aio;
 
@@ -339,6 +340,153 @@ void test_actuator_pulses_mode(void) {
   TEST_ASSERT_EQUAL_UINT32(3, ons + 1);
 }
 
+/* ---- local fallback schedule (§9.6, §12 M7) -------------------------------- */
+
+/* Manila (TZ_MANILA, UTC+8 no DST): local 08:30 on day 19679
+ * (2023-11-18, a Saturday) is unix 19679*86400 + 1800. */
+static const int64_t kDay = 19679;
+static const int64_t kUnix0830 = kDay * 86400 + 1800;
+
+static sched_entry_t one_entry(uint16_t min_of_day, uint8_t mask, uint16_t amount) {
+  sched_entry_t e{};
+  e.min_of_day = min_of_day;
+  e.days_mask = mask;
+  e.amount = amount;
+  return e;
+}
+
+void test_local_sched_due_exact_minute(void) {
+  sched_entry_t e = one_entry(510, SCHED_ALL_DAYS, 30);
+  LocalDue out{};
+  LocalSchedState st = local_sched_poll(&e, 1, TZ_MANILA, kUnix0830 - 3600, 0, 0,
+                                        true, true, kUnix0830 + 30, &out);
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::Run, (int)st);
+  TEST_ASSERT_EQUAL_UINT8(0, out.entry);
+  TEST_ASSERT_EQUAL_UINT16(30, out.amount);
+  /* id is journal-stable: same occurrence → same id */
+  LocalDue out2;
+  (void)local_sched_poll(&e, 1, TZ_MANILA, kUnix0830 - 3600, 0, 0, true, true,
+                         kUnix0830 + 59, &out2);
+  TEST_ASSERT_EQUAL_UINT32(out.feed_id, out2.feed_id);
+  TEST_ASSERT_TRUE(out.feed_id & LOCAL_FEED_ID_MARK);
+}
+
+void test_local_sched_no_catchup_next_minute(void) {
+  sched_entry_t e = one_entry(510, SCHED_ALL_DAYS, 30);
+  LocalDue out{};
+  /* the 08:30 occurrence is gone at 08:31 — the hub reconciles it (§9.4) */
+  LocalSchedState st = local_sched_poll(&e, 1, TZ_MANILA, kUnix0830 - 3600, 0, 0,
+                                        true, true, kUnix0830 + 90, &out);
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::Idle, (int)st);
+}
+
+void test_local_sched_day_mask(void) {
+  const uint8_t wday = wday_from_days(kDay); /* Saturday = 6 */
+  sched_entry_t e = one_entry(510, (uint8_t)(1u << ((wday + 1) % 7)), 30);
+  LocalDue out{};
+  LocalSchedState st = local_sched_poll(&e, 1, TZ_MANILA, kUnix0830 - 3600, 0, 0,
+                                        true, true, kUnix0830, &out);
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::Idle, (int)st);
+  e.days_mask = (uint8_t)(1u << wday);
+  st = local_sched_poll(&e, 1, TZ_MANILA, kUnix0830 - 3600, 0, 0, true, true,
+                        kUnix0830, &out);
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::Run, (int)st);
+}
+
+void test_local_sched_freshness_window(void) {
+  sched_entry_t e = one_entry(510, SCHED_ALL_DAYS, 30);
+  LocalDue out{};
+  /* never dated → refuse (§9.6 anchor is set at push time) */
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::NotFresh,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA, 0, 0, 0, true, true,
+                                              kUnix0830, &out));
+  /* 8 days old → expired (window is 7) */
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::NotFresh,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 - 8u * 86400u), 0, 0,
+                                              true, true, kUnix0830, &out));
+  /* 6 days old → still runs */
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::Run,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 - 6u * 86400u), 0, 0,
+                                              true, true, kUnix0830, &out));
+  /* pushed "in the future" (clock skew) → refuse */
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::NotFresh,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 + 3600), 0, 0, true,
+                                              true, kUnix0830, &out));
+}
+
+void test_local_sched_skip_hold_gates(void) {
+  sched_entry_t e = one_entry(510, SCHED_ALL_DAYS, 30);
+  LocalDue out{};
+  const int64_t occ_est = kUnix0830; /* local-space occurrence maps back to the real unix */
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::SkippedUser,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 - 3600),
+                                              (uint32_t)(occ_est + 60), 0, true, true,
+                                              kUnix0830, &out));
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::SkippedHold,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 - 3600), 0,
+                                              (uint32_t)(occ_est + 60), true, true,
+                                              kUnix0830, &out));
+  /* hold wins over skip (hub parity, schedule_gate) */
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::SkippedHold,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 - 3600),
+                                              (uint32_t)(occ_est + 60),
+                                              (uint32_t)(occ_est + 60), true, true,
+                                              kUnix0830, &out));
+  /* expired windows → runs */
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::Run,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 - 3600),
+                                              (uint32_t)(occ_est - 60),
+                                              (uint32_t)(occ_est - 60), true, true,
+                                              kUnix0830, &out));
+}
+
+void test_local_sched_unpaired_or_no_time(void) {
+  sched_entry_t e = one_entry(510, SCHED_ALL_DAYS, 30);
+  LocalDue out{};
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::NotTrusted,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 - 3600), 0, 0, false,
+                                              true, kUnix0830, &out));
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::NotTrusted,
+                        (int)local_sched_poll(&e, 1, TZ_MANILA,
+                                              (uint32_t)(kUnix0830 - 3600), 0, 0, true,
+                                              false, kUnix0830, &out));
+}
+
+void test_local_sched_dst_day_us_eastern(void) {
+  /* 2023-03-12: US DST starts 07:00 UTC. Local 08:30 (EDT, after the jump)
+   * = 12:30 UTC. The entry must fire in local terms. */
+  const int64_t day = days_from_civil(2023, 3, 12);
+  const int64_t unix_occ = day * 86400 + (510 + 240) * 60; /* EDT = UTC−4 → 12:30 UTC */
+  sched_entry_t e = one_entry(510, SCHED_ALL_DAYS, 15);
+  LocalDue out{};
+  LocalSchedState st = local_sched_poll(&e, 1, TZ_US_EASTERN,
+                                        (uint32_t)(unix_occ - 3600), 0, 0, true, true,
+                                        unix_occ + 15, &out);
+  TEST_ASSERT_EQUAL_INT((int)LocalSchedState::Run, (int)st);
+  TEST_ASSERT_EQUAL_UINT16(15, out.amount);
+}
+
+void test_local_sched_feed_id_ranges_disjoint(void) {
+  /* node-originated ids never collide with the sequential hub range */
+  const uint32_t a = local_sched_feed_id(kDay * 86400, 510, 0);
+  const uint32_t b = local_sched_feed_id((kDay + 1) * 86400, 510, 0);
+  const uint32_t c = local_sched_feed_id(kDay * 86400, 511, 0);
+  const uint32_t d = local_sched_feed_id(kDay * 86400, 510, 1);
+  TEST_ASSERT_TRUE(a & LOCAL_FEED_ID_MARK);
+  TEST_ASSERT_NOT_EQUAL(a, b);
+  TEST_ASSERT_NOT_EQUAL(a, c);
+  TEST_ASSERT_NOT_EQUAL(a, d);
+  TEST_ASSERT_TRUE(a < 0x80000000u + 0x40000000u); /* stays inside the mark space */
+}
+
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_crc16_known_vector);
@@ -358,5 +506,13 @@ int main(void) {
   RUN_TEST(test_actuator_abort_counts_partial);
   RUN_TEST(test_actuator_hard_timer_backstop_latches_fault);
   RUN_TEST(test_actuator_pulses_mode);
+  RUN_TEST(test_local_sched_due_exact_minute);
+  RUN_TEST(test_local_sched_no_catchup_next_minute);
+  RUN_TEST(test_local_sched_day_mask);
+  RUN_TEST(test_local_sched_freshness_window);
+  RUN_TEST(test_local_sched_skip_hold_gates);
+  RUN_TEST(test_local_sched_unpaired_or_no_time);
+  RUN_TEST(test_local_sched_dst_day_us_eastern);
+  RUN_TEST(test_local_sched_feed_id_ranges_disjoint);
   return UNITY_END();
 }

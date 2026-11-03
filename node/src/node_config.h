@@ -20,7 +20,10 @@
 #include "../../node_core/time_validity.h"
 
 #define CONFIG_SLOT_SIZE 512
-#define CONFIG_MAGIC 0xA10FEED2u
+/* v3 (v0.10, M7): + tz_rule — the node needs the hub's tz rule id to evaluate
+ * its fallback schedule in local time (§9.6). Bench nodes re-default on
+ * first boot after upgrade (journal/counters reset). */
+#define CONFIG_MAGIC 0xA10FEED3u
 
 /* Node-side store cap: a 7-day schedule needs ≤ 32 entries; frames may carry
  * more (SCHEDULE_MAX_ENTRIES) but a node refuses the overflow. */
@@ -35,6 +38,8 @@ struct NodeConfig {
   uint8_t booted;              /* 0xFF on first ever boot */
   uint32_t feed_id_seq;        /* monotonic generator for CLI/bench feeds */
   int64_t sync_unix;           /* last hub time sync (SR7 RTC path) */
+  uint8_t tz_rule;             /* hub tz rule id (TIME_SYNC.tz_rule, §9.6) */
+  uint8_t reserved1[3];
   node_profile_t profile;
   aio::UsageCounters counters;
   aio::JournalEntry journal[AIO_JOURNAL_SIZE];

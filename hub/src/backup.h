@@ -800,6 +800,8 @@ static inline const char *csv_result_text(uint8_t kind, uint8_t result) {
     case EV_SKIPPED_HOLD: return "SKIP-HOLD";
     case EV_SKIPPED_MISSED: return "MISSED";
     case EV_CATCHUP: return "CATCHUP";
+    case EV_HOPPER_LOW: return "HOPPER-LOW";
+    case EV_UNPAIR_PENDING: return "UNPAIR-PEND";
     default: return "?";
   }
 }

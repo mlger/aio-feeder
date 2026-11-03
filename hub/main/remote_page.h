@@ -57,6 +57,12 @@ a{color:#8c8}
 <label>MQTT user</label><input type=text id=mqtt_user>
 <label>MQTT password</label><input type=password id=mqtt_pass placeholder="(unchanged if empty)">
 <label>HA discovery</label><input type=text id=mqtt_disc placeholder="1 = on, 0 = off">
+<label>Notify: master switch</label><input type=text id=notify_master placeholder="1 = on, 0 = off">
+<label>Notify: offline</label><input type=text id=notify_offline placeholder="1 = on, 0 = off">
+<label>Notify: feed faults</label><input type=text id=notify_fault placeholder="1 = on, 0 = off">
+<label>Notify: missed feeds</label><input type=text id=notify_missed placeholder="1 = on, 0 = off">
+<label>Notify: low stock</label><input type=text id=notify_stock placeholder="1 = on, 0 = off">
+<label>Notify: hopper sensor</label><input type=text id=notify_sensor placeholder="1 = on, 0 = off">
 <div class=row><button onclick=save()>Save</button></div><div id=msg></div>
 </details>
 <p class=small>Topics: aio/hub/status &middot; aio/hub/notify &middot; aio/node/&lt;id&gt;/{state,cmd/feed,event/feed_result,config}</p>
@@ -113,6 +119,12 @@ function save(){
   if(g('mqtt_user')!=''||st&&st.mqtt!='off')b.mqtt_user=g('mqtt_user');
   if(g('mqtt_pass'))b.mqtt_pass=g('mqtt_pass');
   if(g('mqtt_disc')!='')b.mqtt_disc=+g('mqtt_disc');
+  if(g('notify_master')!='')b.notify_master=+g('notify_master');
+  if(g('notify_offline')!='')b.notify_offline=+g('notify_offline');
+  if(g('notify_fault')!='')b.notify_fault=+g('notify_fault');
+  if(g('notify_missed')!='')b.notify_missed=+g('notify_missed');
+  if(g('notify_stock')!='')b.notify_stock=+g('notify_stock');
+  if(g('notify_sensor')!='')b.notify_sensor=+g('notify_sensor');
   api('/api/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})
     .then(r=>r.json()).then(j=>{if(j.ok){note('saved');setTimeout(()=>location.reload(),800)}else note('rejected',true)})
     .catch(e=>{if(e.message!='pin')note('save failed: '+e.message,true)});

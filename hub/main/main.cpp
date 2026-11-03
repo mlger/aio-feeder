@@ -60,6 +60,7 @@
 #include "remote.h"
 #include "remote_net.h"
 #include "settings_store.h"
+#include "unpair_queue.h"
 #include "wizard_session.h"
 #include "now_espnow.h"
 #include "nvs_store.h"
@@ -100,6 +101,8 @@ static aio::PairingSession g_pair; /* §6.3 pairing window (M4b) */
 static aio::CalibSession g_calib;  /* §9.3 calibration wizard (M4b) */
 static aio::HubSettings g_set;     /* §8.8 settings blob (M4b) */
 static aio::RemoteSettings g_rset; /* §6.7 remote settings blob (M6) */
+static aio::UnpairQueue g_unpair;  /* FMEA #15: keyed UNPAIR pending per node */
+static bool g_hopper_alerted[aio::HUB_MAX_NODES] = {}; /* FMEA #8 edge latch */
 static aio::PinLock g_pin;         /* §8 PIN lock (M4b, RAM) */
 static aio::WizardSession g_wiz;   /* §9.13 setup wizard (M4b) */
 static aio::IBackupStore *g_sd = nullptr; /* SD card / virtual SD (M4b) */
@@ -177,12 +180,50 @@ static void time_begin() {
   /* SNTP is enabled by the radio bring-up when CONFIG_AIO_WIFI_SSID is set */
 }
 
+/* --- unpair queue (M7, FMEA #15) -------------------------------------------------- */
+
+/* Retry the keyed UNPAIR for one queued node. Keeps/rebuilds the engine peer
+ * (the node is still paired — heartbeats are keyed) so retries survive hub
+ * reboots; the seq lives in the queue entry, persisted on every send. */
+static void unpair_send_one(const uint8_t mac[6], uint32_t now) {
+  aio::PendingUnpair *q = g_unpair.find(mac);
+  if (!q) return;
+  if (!eng.peer_by_mac(mac)) eng.add_peer(mac, q->id, q->key, q->key_len);
+  if (eng.send_unpair(mac, q->key, q->key_len, q->id, q->tx_seq, now)) {
+    q->tx_seq++;
+    q->sends++;
+    g_unpair.save(nvs);
+  }
+}
+
+/* Park a node for unpair + best-effort send + history row. The registry node
+ * is still present here; the caller removes it and KEEPS the engine peer
+ * while the entry is queued (heartbeats drive the retry). */
+static bool unpair_park(aio::HubNode *n) {
+  aio::LinkPeer *p = eng.peer_by_mac(n->mac);
+  if (!g_unpair.add(n->id, n->mac, n->key, n->key_len, n->channel,
+                    p ? p->tx_seq : 0, hub_unix_now()))
+    return false;
+  unpair_send_one(n->mac, ms_now());
+  evlog.push((uint32_t)hub_unix_now(), n->id, aio::EV_UNPAIR_PENDING, 0, 0, 0, 0);
+  printf("unpair pending node=%u (UNPAIR retried on check-in)\n", n->id);
+  return true;
+}
+
 /* --- engine callbacks ----------------------------------------------------------- */
 
 static void cb_hello(const uint8_t mac[6], const hello_payload_t &pl, int8_t rssi) {
   printf("HELLO from %02X:%02X:%02X:%02X:%02X:%02X fw=%u state=%u rssi=%d%s\n", mac[0],
          mac[1], mac[2], mac[3], mac[4], mac[5], pl.fw_ver, pl.state, rssi,
          pl.state == 0 ? " (unpaired: peer add this mac)" : "");
+  /* FMEA #15: an unpaired beacon from a queued node = the UNPAIR landed. */
+  if (pl.state == 0 && g_unpair.drop(mac)) {
+    g_unpair.save(nvs);
+    eng.remove_peer(mac);
+    printf("unpair confirmed (node re-beaconed unpaired)\n");
+  } else if (pl.state == 1 && g_unpair.find(mac)) {
+    unpair_send_one(mac, ms_now()); /* still paired → retry now */
+  }
 }
 
 static void cb_feed_ack(uint8_t node_id, const feed_ack_payload_t &a) {
@@ -204,6 +245,7 @@ static void cb_feed_result(uint8_t node_id, const feed_result_payload_t &r) {
 #endif
   printf("FEED_RESULT node=%u id=%u status=%u on_ms=%u pulses=%u t=%u\n", node_id,
          (unsigned)r.feed_id, r.status, r.actual_on_ms, r.pulses, (unsigned)r.t_unix);
+  if (r.feed_id & 0x80000000u) core.note_local_result(node_id); /* D37 guard */
   g_calib.on_result(r.feed_id, r.status, r.actual_on_ms); /* §9.3 wizard routing */
   core.on_feed_result(node_id, r, (uint32_t)hub_unix_now());
 }
@@ -224,9 +266,27 @@ static void cb_heartbeat(uint8_t node_id, const heartbeat_payload_t &hb, int8_t 
     const time_sync_payload_t t{(uint32_t)hub_unix_now(), reg.data().tz_rule};
     eng.send_time_sync(node_id, t, now);
   }
+  /* FMEA #15: the node is still paired — retry the UNPAIR on every beat. */
+  if (p && g_unpair.find(p->mac)) unpair_send_one(p->mac, now);
+  /* FMEA #8: hopper-low edge → alert row (notify rides the event observer). */
+  if (node_id < aio::HUB_MAX_NODES) {
+    if (hb.hopper_low && !g_hopper_alerted[node_id]) {
+      g_hopper_alerted[node_id] = true;
+      evlog.push((uint32_t)hub_unix_now(), node_id, aio::EV_HOPPER_LOW, 0, 0, 0, 0);
+    } else if (!hb.hopper_low && g_hopper_alerted[node_id]) {
+      g_hopper_alerted[node_id] = false;
+    }
+  }
 }
 
 static void cb_pair_req(const uint8_t mac[6], const pair_req_payload_t &pr, int8_t rssi) {
+  /* A PAIR_REQ means the node is unpaired — a queued entry is resolved
+   * (either the UNPAIR landed or the node factory-reset; either way done). */
+  if (g_unpair.drop(mac)) {
+    g_unpair.save(nvs);
+    eng.remove_peer(mac);
+    printf("PAIR_REQ from a queued node — unpair resolved\n");
+  }
   const bool added = g_pair.on_pair_req(mac, pr, rssi, ms_now(), &reg);
   if (added) /* repeats refresh RSSI only — printing them floods the UART */
     printf("PAIR_REQ from %02X:%02X:%02X:%02X:%02X:%02X fw=%u rssi=%d (candidate)\n",
@@ -438,7 +498,8 @@ static const char *ev_kind_name(uint8_t k) {
   static const char *names[aio::EV_KIND_COUNT] = {"FEED_OK", "FEED_FAIL", "FEED_REJ",
                                                   "FEED_UNKNOWN", "SKIP_USER",
                                                   "SKIP_HOLD", "SKIP_MISSED",
-                                                  "CATCHUP"};
+                                                  "CATCHUP", "HOPPER_LOW",
+                                                  "UNPAIR_PEND"};
   return k < aio::EV_KIND_COUNT ? names[k] : "?";
 }
 
@@ -565,11 +626,15 @@ static int cmd_peer(int argc, char **argv) {
     StateLock lock;
     aio::HubNode *n = reg.by_id(id);
     if (!n) { printf("no such node\n"); return 1; }
-    eng.remove_peer(n->mac);
+    /* FMEA #15: park the keyed UNPAIR first; while queued, the engine peer
+     * stays so heartbeats drive the retry until the node confirms. */
+    const bool parked = unpair_park(n);
+    if (!parked) eng.remove_peer(n->mac);
     reg.remove(id);
     nvs.del(aio::FeedManager::pend_key_for(id));
     reg.save(nvs);
-    printf("peer removed\n");
+    printf("%s\n", parked ? "peer removed (unpair pending until it checks in)"
+                          : "peer removed (unpair queue full — node stays paired!)");
     return 0;
   }
   printf("usage: peer add <mac> <id> <keyhex> | peer del <id>\n");
@@ -2046,6 +2111,16 @@ extern "C" void app_main(void) {
     eng.add_peer(n->mac, n->id, n->key, n->key_len);
   }
 
+  /* M7: pending unpairs — peers back so heartbeat retries work (FMEA #15) */
+  if (g_unpair.load(nvs)) {
+    for (uint8_t i = 0; i < g_unpair.count(); i++) {
+      const aio::PendingUnpair *q = g_unpair.at(i);
+      if (q) eng.add_peer(q->mac, q->id, q->key, q->key_len);
+    }
+    if (g_unpair.count())
+      printf("pending unpairs: %u (UNPAIR retried on check-in)\n", g_unpair.count());
+  }
+
   {
     StateLock lock;
     printf("registry nodes=%u tz=%u stagger=%u feed_id_seq=%lu\n", reg.count(),
@@ -2056,7 +2131,8 @@ extern "C" void app_main(void) {
   /* M6 remote: web dashboard + MQTT (no-op under AIO_NO_RADIO) */
   {
     RemoteNetCtx rctx{&reg,      &evlog, &core, &g_set, &g_rset,
-                      &nvs,       &eng,   esp_app_get_description()->version,
+                      &nvs,       &eng,   &g_unpair,
+                      esp_app_get_description()->version,
                       ms_now,     hub_unix_now, g_state_mu};
     remote_net_init(&rctx);
     remote_net_apply();
