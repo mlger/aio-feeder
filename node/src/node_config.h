@@ -20,14 +20,23 @@
 #include "../../node_core/time_validity.h"
 
 #define CONFIG_SLOT_SIZE 512
-/* v3 (v0.10, M7): + tz_rule — the node needs the hub's tz rule id to evaluate
- * its fallback schedule in local time (§9.6). Bench nodes re-default on
- * first boot after upgrade (journal/counters reset). */
-#define CONFIG_MAGIC 0xA10FEED3u
+/* v4 (v0.12, M8b): + ota_from_ver/ota_lock/ota_stage — the actuator lock
+ * (FMEA #11, SR2 parity) must survive the OTA reboot. Bench nodes re-default
+ * on first boot after upgrade (journal/counters reset). */
+#define CONFIG_MAGIC 0xA10FEED4u
 
 /* Node-side store cap: a 7-day schedule needs ≤ 32 entries; frames may carry
  * more (SCHEDULE_MAX_ENTRIES) but a node refuses the overflow. */
 #define SCHEDULE_STORE_MAX 32
+
+/* OTA lock lifecycle (D40): ARMED is persisted before the node leaves the
+ * radio; DONE is persisted after the image hash-verified and flashed. At
+ * boot the lock clears only when a DIFFERENT image (rel_ver) runs with
+ * stage DONE — an old image back from rollback (or a crashed flash) stays
+ * locked and waits for a hub retry or the serial escape hatch. */
+#define OTA_STAGE_NONE 0
+#define OTA_STAGE_ARMED 1
+#define OTA_STAGE_DONE 2
 
 struct NodeConfig {
   uint32_t write_seq;          /* slot_select() recency (first 4 bytes) */
@@ -57,6 +66,12 @@ struct NodeConfig {
   uint8_t pair_nonce[8];
   uint16_t tx_seq;             /* persisted; resumed +32 on boot */
   int32_t rtc_drift_ms;        /* measured at last TIME_SYNC (§6.5 HB) */
+
+  /* --- M8b node OTA (§7.6, FMEA #11) --- */
+  uint32_t ota_from_ver;       /* AIO_NODE_FW_VER of the image that armed it */
+  uint8_t ota_lock;            /* 1 = actuation forbidden (relay already OFF) */
+  uint8_t ota_stage;           /* OTA_STAGE_* */
+  uint8_t reserved2[2];
 
   /* --- M2 fallback schedule (§9.6) --- */
   uint16_t sched_version;

@@ -368,7 +368,7 @@ void test_hub_answers_hello(void) {
   static int hello_count = 0;
   hello_count = 0;
   LinkHandlers h{};
-  h.on_hello = [](const uint8_t *, const hello_payload_t &pl, int8_t) {
+  h.on_hello = [](const uint8_t *, const hello_payload_t &pl, uint32_t, uint8_t, int8_t) {
     got = pl;
     hello_count++;
   };
@@ -600,6 +600,138 @@ void test_config_blob_fits_slot(void) {
   TEST_ASSERT_TRUE(sizeof(NodeConfig) >= 400); /* sanity: new fields landed */
 }
 
+/* ---- ENTER_OTA (M8b, FMEA #11) ------------------------------------------- */
+
+static bool g_ota_got;
+static enter_ota_payload_t g_ota_pl;
+static int g_ota_ack_count;
+static ota_ack_payload_t g_ota_ack_pl;
+static uint32_t g_hello_rel_ver;
+static uint8_t g_hello_mcu;
+
+void test_enter_ota_roundtrip_and_wrap(void) {
+  g_ota_got = false;
+  g_ota_ack_count = 0;
+  g_hello_rel_ver = 0x000C00;
+  MockTransport ta, tb;
+  LinkEngine hub, node;
+  LinkHandlers hh = hub_handlers();
+  hh.on_ota_ack = [](uint8_t, const ota_ack_payload_t &a) {
+    g_ota_ack_pl = a;
+    g_ota_ack_count++;
+  };
+  hub.begin(LinkEngine::Role::Hub, &ta, hh, 0);
+  LinkHandlers nh = node_handlers();
+  nh.on_enter_ota = [](const enter_ota_payload_t &o) {
+    g_ota_got = true;
+    g_ota_pl = o;
+  };
+  nh.on_hello = [](const uint8_t *, const hello_payload_t &, uint32_t rel, uint8_t mcu,
+                   int8_t) {
+    g_hello_rel_ver = rel;
+    g_hello_mcu = mcu;
+  };
+  node.begin(LinkEngine::Role::Node, &tb, nh, 0);
+  uint8_t mac[6] = {0xCC, 0, 0, 0, 0, 3};
+  hub.add_peer(mac, 1, SHARED_KEY, 32);
+  node.add_peer(mac, LINK_HUB_ID, SHARED_KEY, 32);
+
+  uint8_t sha[32];
+  sha256("image", 5, sha);
+  const char *url = "http://192.168.1.50/fw/node";
+  TEST_ASSERT_TRUE(hub.send_enter_ota(1, "home-ap", "hunter2", url, sha, 5000));
+
+  /* the blob on the wire must NOT contain the plaintext credentials */
+  pump(ta, hub, tb, node, 5010);
+  TEST_ASSERT_TRUE(g_ota_got);
+  TEST_ASSERT_TRUE(g_ota_pl.flags & OTA_FLAG_WRAPPED);
+  TEST_ASSERT_TRUE(g_ota_pl.flags & OTA_FLAG_SHA);
+  TEST_ASSERT_EQUAL_UINT8(7, g_ota_pl.ssid_len);
+  TEST_ASSERT_EQUAL_UINT8(7, g_ota_pl.pass_len);
+  TEST_ASSERT_EQUAL_UINT8((uint8_t)strlen(url), g_ota_pl.url_len);
+  TEST_ASSERT_EQUAL_MEMORY(sha, g_ota_pl.sha256, 32);
+  char flat[sizeof(g_ota_pl.blob) + 1];
+  memcpy(flat, g_ota_pl.blob, sizeof(g_ota_pl.blob));
+  flat[sizeof(g_ota_pl.blob)] = 0;
+  TEST_ASSERT_NULL(strstr(flat, "hunter2"));
+  TEST_ASSERT_NULL(strstr(flat, "home-ap"));
+
+  /* the node unwraps with its hub key and recovers exactly what was sent */
+  uint8_t blob[sizeof(g_ota_pl.blob)];
+  const size_t blen = g_ota_pl.ssid_len + g_ota_pl.pass_len + g_ota_pl.url_len;
+  memcpy(blob, g_ota_pl.blob, blen);
+  ota_wrap(SHARED_KEY, g_ota_pl.ks_seed, blob, blen);
+  TEST_ASSERT_EQUAL_STRING_LEN("home-ap", blob, 7);
+  TEST_ASSERT_EQUAL_STRING_LEN("hunter2", blob + 7, 7);
+  TEST_ASSERT_EQUAL_STRING_LEN(url, blob + 14, (size_t)g_ota_pl.url_len);
+
+  /* node ACKs; hub handler fires */
+  node.send_ota_ack(1, OTA_ACK_OK, 5020);
+  pump(ta, hub, tb, node, 5030);
+  TEST_ASSERT_EQUAL_INT(1, g_ota_ack_count);
+  TEST_ASSERT_EQUAL_UINT8(1, g_ota_ack_pl.ok);
+
+  /* role guards: the node may not originate, the hub may not ACK */
+  TEST_ASSERT_FALSE(node.send_enter_ota(1, "a", "b", "http://x/y", nullptr, 0));
+  TEST_ASSERT_FALSE(hub.send_ota_ack(1, OTA_ACK_OK, 0));
+  /* length validation */
+  TEST_ASSERT_FALSE(hub.send_enter_ota(1, "", "pw", "http://x/y", nullptr, 0));
+  TEST_ASSERT_FALSE(hub.send_enter_ota(1, "ssid", "pw", "", nullptr, 0));
+}
+
+void test_hello_and_heartbeat_carry_identity(void) {
+  g_hello_rel_ver = 0;
+  g_hello_mcu = MCU_NONE;
+  MockTransport ta, tb;
+  LinkEngine hub, node;
+  LinkHandlers hh = hub_handlers();
+  hh.on_hello = [](const uint8_t *, const hello_payload_t &, uint32_t rel, uint8_t mcu,
+                   int8_t) {
+    g_hello_rel_ver = rel;
+    g_hello_mcu = mcu;
+  };
+  hub.begin(LinkEngine::Role::Hub, &ta, hh, 0);
+  LinkHandlers nh = node_handlers();
+  nh.hb_fill = [](heartbeat_payload_t *hb) { *hb = heartbeat_payload_t{}; };
+  nh.on_heartbeat = [](uint8_t, const heartbeat_payload_t &, uint32_t rel, uint8_t mcu,
+                       int8_t) {
+    g_hello_rel_ver = rel;
+    g_hello_mcu = mcu;
+  };
+  node.begin(LinkEngine::Role::Node, &tb, nh, 0);
+  uint8_t mac[6] = {0xDD, 0, 0, 0, 0, 4};
+  hub.add_peer(mac, 1, SHARED_KEY, 32);
+  node.add_peer(mac, LINK_HUB_ID, SHARED_KEY, 32);
+
+  node.send_hello(100);
+  pump(ta, hub, tb, node, 110);
+  /* whatever the build baked in is what must arrive (host default: 0/none) */
+  TEST_ASSERT_EQUAL_UINT32(AIO_NODE_FW_VER, g_hello_rel_ver);
+  TEST_ASSERT_EQUAL_UINT8(AIO_NODE_MCU, g_hello_mcu);
+
+  heartbeat_payload_t hb{};
+  node.send_heartbeat(hb, 1000);
+  pump(ta, hub, tb, node, 1010);
+  TEST_ASSERT_EQUAL_UINT32(AIO_NODE_FW_VER, g_hello_rel_ver);
+
+  /* a 19-byte heartbeat (old node) still parses — tail is optional */
+  g_hello_rel_ver = 0;
+  uint8_t buf[FRAME_HEADER_SIZE + sizeof(heartbeat_payload_t) + FRAME_MAC_SIZE];
+  const uint16_t plen = (uint16_t)sizeof(heartbeat_payload_t);
+  buf[0] = PROTO_VER;
+  buf[1] = MSG_HEARTBEAT;
+  buf[2] = 1;
+  buf[3] = 0;
+  buf[4] = 9;
+  buf[5] = 0;
+  buf[6] = (uint8_t)plen;
+  buf[7] = 0;
+  memset(buf + 8, 0, plen);
+  frame_compute_mac(SHARED_KEY, buf, 8 + plen, buf + 8 + plen);
+  hub.on_rx(mac, buf, sizeof(buf), -60, 2000);
+  TEST_ASSERT_EQUAL_UINT32(0, g_hello_rel_ver); /* no ext → identity unknown */
+}
+
 int main(void) {
   UNITY_BEGIN();
   for (int i = 0; i < 32; i++) SHARED_KEY[i] = (uint8_t)(0x10 + i);
@@ -623,5 +755,7 @@ int main(void) {
   RUN_TEST(test_schedule_set_fits_frame_and_store);
   RUN_TEST(test_limits_bench_bypass);
   RUN_TEST(test_config_blob_fits_slot);
+  RUN_TEST(test_enter_ota_roundtrip_and_wrap);
+  RUN_TEST(test_hello_and_heartbeat_carry_identity);
   return UNITY_END();
 }

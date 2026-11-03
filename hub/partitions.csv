@@ -1,17 +1,17 @@
 # AIO Feeder hub — 16 MB flash. App sits at 0x10000 so the web-flash layout
 # matches the node builds (bootloader 0x0, partition table 0x8000, app 0x10000).
-# M8a (v0.11.0): otadata + two OTA slots arrive — a fresh flash boots factory
-# (otadata empty); an update stages into ota_0/ota_1 and the bootloader's
-# rollback (sdkconfig.defaults) reverts to the last valid slot if the new
-# image never confirms. The 256 KB "badapp" data partition is a CI/QEMU
-# convenience: the OTA selftest streams it through esp_ota_ops as a
-# deliberately non-confirming image (tools/qemu/badapp). The rest of the
-# 16 MB stays reserved for LVGL assets.
+# M8a (v0.11.0): otadata + two OTA slots + a 256 KB "badapp" data partition
+# (CI/QEMU selftest, tools/qemu/badapp); bootloader rollback (sdkconfig.defaults)
+# reverts to the last valid slot if a new image never confirms.
+# M8b (v0.12.0): OTA slots trimmed 4.75 → 4.25 MB to make room for "nfw" —
+# the node-firmware store the dashboard uploads into and /fw/node serves to
+# nodes (§7.6). One-time hub re-flash (or one self-OTA hop) after upgrading.
 # Name,   Type, SubType, Offset,   Size,     Flags
 nvs,      data, nvs,      0x9000,   0x5000,
 factory,  app,  factory,  0x10000,  0x600000,
 otadata,  data, ota,      0x610000, 0x2000,
-ota_0,    app,  ota_0,    0x620000, 0x4C0000,
-ota_1,    app,  ota_1,    0xAE0000, 0x4C0000,
+ota_0,    app,  ota_0,    0x620000, 0x440000,
+ota_1,    app,  ota_1,    0xA60000, 0x440000,
+nfw,      data, 0x41,     0xEA0000, 0x100000,
 badapp,   data, 0x40,     0xFA0000, 0x40000,
 coredump, data, coredump, 0xFE0000, 0x20000,

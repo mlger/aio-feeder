@@ -56,6 +56,7 @@ static const char *result_name(uint8_t r) {
     case FEED_ABORTED: return "ABORTED";
     case FEED_GATE_NOT_OPENED: return "GATE_NOT_OPENED";
     case FEED_GATE_STUCK_OPEN: return "GATE_STUCK_OPEN";
+    case FEED_REJ_OTA_LOCK: return "REJ_OTA_LOCK";
     default: return "?";
   }
 }
@@ -139,6 +140,7 @@ static void cli_help() {
   Serial.println(F("  feed <amount>          manual feed (profile units)"));
   Serial.println(F("  feeds <amount>         scheduled feed (needs time + limits)"));
   Serial.println(F("  abort                  abort in-flight feed"));
+  Serial.println(F("  otalock [off]          node OTA lock status / clear (M8b)"));
   Serial.println(F("  stop on|off            manual-stop latch (SR9)"));
   Serial.println(F("  fault clear            clear latched fault"));
   Serial.println(F("  time                   show RTC + trust state"));
@@ -263,6 +265,10 @@ static void cli_poll(CliCtx &c) {
     } else if (!strcmp(cmd, "status")) {
       cli_status(c);
     } else if (!strcmp(cmd, "feed") || !strcmp(cmd, "feeds")) {
+      if (c.cfg->ota_lock) {
+        Serial.println(F("feed -> rejected: REJ_OTA_LOCK (ota lock active)"));
+        continue;
+      }
       if (!a1) { Serial.println(F("usage: feed <amount>")); continue; }
       aio::FeedRequest req{};
       req.feed_id = ++c.cfg->feed_id_seq;
@@ -289,6 +295,19 @@ static void cli_poll(CliCtx &c) {
     } else if (!strcmp(cmd, "fault") && a1 && !strcmp(a1, "clear")) {
       c.act->clear_fault();
       Serial.println(F("fault cleared"));
+    } else if (!strcmp(cmd, "otalock")) {
+      /* M8b serial recovery path (§7.6): the only way to clear the lock
+       * without a completed update — deliberately explicit. */
+      if (a1 && !strcmp(a1, "off")) {
+        c.cfg->ota_lock = 0;
+        c.cfg->ota_stage = OTA_STAGE_NONE;
+        c.persist_fn();
+        Serial.println(F("ota lock cleared (actuation re-enabled)"));
+      } else {
+        Serial.printf("ota lock=%u stage=%u from_ver=%lu — 'otalock off' to clear\n",
+                      c.cfg->ota_lock, c.cfg->ota_stage,
+                      (unsigned long)c.cfg->ota_from_ver);
+      }
     } else if (!strcmp(cmd, "time")) {
       bool osf;
       int64_t u = 0;
@@ -327,6 +346,10 @@ static void cli_poll(CliCtx &c) {
       Serial.printf("limits_confirmed=%d\n", c.limits->limits_confirmed);
       c.persist_fn(); /* SR8 flag survives resets */
     } else if (!strcmp(cmd, "relay")) {
+      if (c.cfg->ota_lock) {
+        Serial.println(F("refused: ota lock active (FMEA #11) — 'otalock off' to clear"));
+        continue;
+      }
       uint32_t ms = a1 ? (uint32_t)atol(a1) : 500;
       if (ms > profile_max_on_ms(&c.cfg->profile)) {
         Serial.println(F("refused: over max on-time (SR2)"));

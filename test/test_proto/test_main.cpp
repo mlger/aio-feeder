@@ -32,15 +32,19 @@ void test_msg_type_values_are_stable(void) {
   TEST_ASSERT_EQUAL_INT(MSG_HELLO, 0);
   TEST_ASSERT_EQUAL_INT(MSG_FEED, 4);
   TEST_ASSERT_EQUAL_INT(MSG_HEARTBEAT, 13);
-  TEST_ASSERT_EQUAL_INT(MSG_TARE_OR_CAL, MSG_TYPE_COUNT - 1);
+  /* append-only history: v0.11 tail was TARE_OR_CAL; M8b added two more */
+  TEST_ASSERT_EQUAL_INT(MSG_TARE_OR_CAL, 16);
+  TEST_ASSERT_EQUAL_INT(MSG_ENTER_OTA, 17);
+  TEST_ASSERT_EQUAL_INT(MSG_ENTER_OTA_ACK, 18);
+  TEST_ASSERT_EQUAL_INT(MSG_ENTER_OTA_ACK, MSG_TYPE_COUNT - 1);
 }
 
 void test_heartbeat_flag_bits_unique(void) {
   int bits = HB_FLAG_MANUAL_STOP | HB_FLAG_TIME_INVALID | HB_FLAG_LIMITS_UNCONFIRMED |
-             HB_FLAG_RTC_OK | HB_FLAG_RTC_LOST;
+             HB_FLAG_RTC_OK | HB_FLAG_RTC_LOST | HB_FLAG_OTA_LOCK;
   int count = 0;
   while (bits) { count += bits & 1; bits >>= 1; }
-  TEST_ASSERT_EQUAL_INT(5, count);
+  TEST_ASSERT_EQUAL_INT(6, count);
 }
 
 int main(void) {

@@ -34,6 +34,16 @@
 #include "../lib/proto/profile.h"
 #include "../lib/proto/proto.h"
 
+/* Node identity defaults (D40): the node build overrides both from
+ * platformio.ini; the hub/host builds never call send_hello but still
+ * compile it, so they need the symbols. */
+#ifndef AIO_NODE_FW_VER
+#define AIO_NODE_FW_VER 0
+#endif
+#ifndef AIO_NODE_MCU
+#define AIO_NODE_MCU MCU_NONE
+#endif
+
 namespace aio {
 
 constexpr uint8_t LINK_BROADCAST[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
@@ -82,11 +92,14 @@ struct LinkPeer {
 
 struct LinkHandlers {
   /* hub side */
-  void (*on_hello)(const uint8_t mac[6], const hello_payload_t &pl, int8_t rssi) = nullptr;
+  void (*on_hello)(const uint8_t mac[6], const hello_payload_t &pl, uint32_t rel_ver,
+                   uint8_t mcu, int8_t rssi) = nullptr;
   void (*on_feed_ack)(uint8_t node_id, const feed_ack_payload_t &pl) = nullptr;
   void (*on_feed_result)(uint8_t node_id, const feed_result_payload_t &pl) = nullptr;
-  void (*on_heartbeat)(uint8_t node_id, const heartbeat_payload_t &pl, int8_t rssi) = nullptr;
+  void (*on_heartbeat)(uint8_t node_id, const heartbeat_payload_t &pl, uint32_t rel_ver,
+                       uint8_t mcu, int8_t rssi) = nullptr;
   void (*on_pair_req)(const uint8_t mac[6], const pair_req_payload_t &pl, int8_t rssi) = nullptr;
+  void (*on_ota_ack)(uint8_t node_id, const ota_ack_payload_t &pl) = nullptr;
   /* node side: PAIR_ACCEPT for an unpaired node (§6.3.5) — code + wrapped key */
   void (*on_pair_accept)(const uint8_t mac[6], const pair_accept_payload_t &pl,
                          int8_t rssi) = nullptr;
@@ -101,6 +114,9 @@ struct LinkHandlers {
   void (*on_status_req)(void) = nullptr;
   void (*on_abort)(const abort_payload_t &pl) = nullptr;
   void (*on_unpair)(void) = nullptr;
+  /* node side, M8b: hub-initiated firmware update (§7.6). The handler gets
+   * the raw payload — unwrap blob with the per-node key + ks_seed. */
+  void (*on_enter_ota)(const enter_ota_payload_t &pl) = nullptr;
   /* node lifecycle */
   void (*hb_fill)(heartbeat_payload_t *pl) = nullptr;
   void (*on_channel_locked)(uint8_t channel) = nullptr;
@@ -266,6 +282,37 @@ class LinkEngine {
     return emit_raw(mac, key, MSG_UNPAIR, node_id, seq, &pl, sizeof(pl), now_ms);
   }
 
+  /* ENTER_OTA (M8b, FMEA #11): wraps ssid/pass/url with the node's key
+   * keystream (D39) before the frame leaves. sha may be nullptr (no pin —
+   * the hub always pins in practice, the flag just keeps the wire honest). */
+  bool send_enter_ota(uint8_t node_id, const char *ssid, const char *pass, const char *url,
+                      const uint8_t *sha, uint32_t now_ms) {
+    if (role_ != Role::Hub || !ssid || !pass || !url) return false;
+    const size_t ssid_len = strlen(ssid), pass_len = strlen(pass), url_len = strlen(url);
+    if (!ssid_len || ssid_len > OTA_SSID_MAX || pass_len > OTA_PASS_MAX ||
+        !url_len || url_len > OTA_URL_MAX)
+      return false;
+    LinkPeer *p = peer_by_node(node_id);
+    if (!p || !p->key_len) return false;
+    enter_ota_payload_t pl{};
+    pl.ssid_len = (uint8_t)ssid_len;
+    pl.pass_len = (uint8_t)pass_len;
+    pl.url_len = (uint8_t)url_len;
+    pl.flags = OTA_FLAG_WRAPPED | (sha ? OTA_FLAG_SHA : 0);
+    /* wrap salt: not secret — mixes monotonic state so identical payloads
+     * wrap differently; the per-node keystream does the actual hiding. */
+    const uint32_t salt = now_ms ^ ((uint32_t)p->tx_seq << 16) ^ 0x4F5441C3u;
+    memcpy(pl.ks_seed, &salt, 4);
+    if (sha) memcpy(pl.sha256, sha, 32);
+    uint8_t *b = pl.blob;
+    memcpy(b, ssid, ssid_len); b += ssid_len;
+    memcpy(b, pass, pass_len); b += pass_len;
+    memcpy(b, url, url_len);
+    const size_t blob_len = ssid_len + pass_len + url_len;
+    ota_wrap(p->key, pl.ks_seed, pl.blob, blob_len);
+    return hub_send(node_id, MSG_ENTER_OTA, &pl, sizeof(pl), now_ms);
+  }
+
   /* --- TX: node role ----------------------------------------------------- */
   bool send_feed_ack(uint32_t feed_id, uint8_t accepted, uint8_t reason, uint32_t now_ms) {
     feed_ack_payload_t pl{feed_id, accepted, reason};
@@ -286,14 +333,23 @@ class LinkEngine {
   }
   bool send_heartbeat(const heartbeat_payload_t &pl, uint32_t now_ms,
                       uint8_t frame_flags = 0) {
-    if (!node_send_f(MSG_HEARTBEAT, &pl, sizeof(pl), now_ms, frame_flags)) return false;
+    /* D40: identity tail — the hub records rel_ver/mcu for the firmware pane */
+    const fw_id_ext_t ext{(uint32_t)AIO_NODE_FW_VER, (uint8_t)AIO_NODE_MCU};
+    uint8_t buf[sizeof(pl) + sizeof(ext)];
+    memcpy(buf, &pl, sizeof(pl));
+    memcpy(buf + sizeof(pl), &ext, sizeof(ext));
+    if (!node_send_f(MSG_HEARTBEAT, buf, sizeof(buf), now_ms, frame_flags)) return false;
     last_hb_tx_ms_ = now_ms;
     return true;
   }
   bool send_hello(uint32_t now_ms) {
-    hello_payload_t pl{AIO_FW_VER, 0, beacon_state_};
+    hello_payload_t h{AIO_FW_VER, 0, beacon_state_};
+    const fw_id_ext_t ext{(uint32_t)AIO_NODE_FW_VER, (uint8_t)AIO_NODE_MCU};
+    uint8_t buf[sizeof(h) + sizeof(ext)];
+    memcpy(buf, &h, sizeof(h));
+    memcpy(buf + sizeof(h), &ext, sizeof(ext));
     return emit_raw(LINK_BROADCAST, AIO_ZERO_KEY, MSG_HELLO, self_node_id_, bcast_seq_++,
-                    &pl, sizeof(pl), now_ms);
+                    buf, sizeof(buf), now_ms);
   }
   /* Hub → unpaired node, §6.3.5: PAIR_ACCEPT is a discovery frame (zero
    * key) and its recipient is not a peer yet, so it bypasses the peer
@@ -320,6 +376,11 @@ class LinkEngine {
   bool send_config_ack(uint16_t profile_crc, uint8_t ok, uint32_t now_ms) {
     ack_status_payload_t pl{profile_crc, ok};
     return node_send(MSG_CONFIG_ACK, &pl, sizeof(pl), now_ms);
+  }
+  bool send_ota_ack(uint8_t ok, uint8_t reason, uint32_t now_ms) {
+    if (role_ != Role::Node) return false; /* ENTER_OTA_ACK is node-origin only */
+    ota_ack_payload_t pl{ok, reason};
+    return node_send(MSG_ENTER_OTA_ACK, &pl, sizeof(pl), now_ms);
   }
 
   /* --- RX ----------------------------------------------------------------- */
@@ -413,8 +474,17 @@ class LinkEngine {
         if (plen < (int)sizeof(hello_payload_t)) { stats_.rx_bad_len++; return; }
         hello_payload_t h;
         memcpy(&h, pl, sizeof(h));
+        /* M8b: length-tolerant tail — rel_ver/mcu when the node sends them */
+        uint32_t rel_ver = 0;
+        uint8_t mcu = MCU_NONE;
+        if (plen >= (int)(sizeof(hello_payload_t) + sizeof(fw_id_ext_t))) {
+          fw_id_ext_t e;
+          memcpy(&e, pl + sizeof(hello_payload_t), sizeof(e));
+          rel_ver = e.rel_ver;
+          mcu = e.mcu;
+        }
         if (role_ == Role::Hub) {
-          if (handlers_.on_hello) handlers_.on_hello(src, h, rssi);
+          if (handlers_.on_hello) handlers_.on_hello(src, h, rel_ver, mcu, rssi);
           hello_ack_payload_t ack{0, 0, channel_}; /* assignment is M3 pairing */
           emit_raw(src, AIO_ZERO_KEY, MSG_HELLO_ACK, self_node_id_, bcast_seq_++, &ack,
                    sizeof(ack), now_ms);
@@ -466,10 +536,20 @@ class LinkEngine {
         if (plen < (int)sizeof(heartbeat_payload_t)) { stats_.rx_bad_len++; return; }
         heartbeat_payload_t hb;
         memcpy(&hb, pl, sizeof(hb));
+        /* D40: identity tail — 0/unknown when an older node omits it */
+        uint32_t rel_ver = 0;
+        uint8_t mcu = MCU_NONE;
+        if (plen >= (int)(sizeof(heartbeat_payload_t) + sizeof(fw_id_ext_t))) {
+          fw_id_ext_t e;
+          memcpy(&e, pl + sizeof(heartbeat_payload_t), sizeof(e));
+          rel_ver = e.rel_ver;
+          mcu = e.mcu;
+        }
         if (role_ == Role::Hub && peer) {
           peer->last_hb = hb;
           peer->last_hb_ms = now_ms;
-          if (handlers_.on_heartbeat) handlers_.on_heartbeat(data[2], hb, rssi);
+          if (handlers_.on_heartbeat)
+            handlers_.on_heartbeat(data[2], hb, rel_ver, mcu, rssi);
         }
         break;
       }
@@ -514,6 +594,20 @@ class LinkEngine {
       case MSG_UNPAIR: {
         if (plen < (int)sizeof(unpair_payload_t)) { stats_.rx_bad_len++; return; }
         if (role_ == Role::Node && handlers_.on_unpair) handlers_.on_unpair();
+        break;
+      }
+      case MSG_ENTER_OTA: {
+        if (plen < (int)sizeof(enter_ota_payload_t)) { stats_.rx_bad_len++; return; }
+        enter_ota_payload_t o;
+        memcpy(&o, pl, sizeof(o));
+        if (role_ == Role::Node && handlers_.on_enter_ota) handlers_.on_enter_ota(o);
+        break;
+      }
+      case MSG_ENTER_OTA_ACK: {
+        if (plen < (int)sizeof(ota_ack_payload_t)) { stats_.rx_bad_len++; return; }
+        ota_ack_payload_t a;
+        memcpy(&a, pl, sizeof(a));
+        if (role_ == Role::Hub && handlers_.on_ota_ack) handlers_.on_ota_ack(data[2], a);
         break;
       }
       case MSG_SCHEDULE_ACK:

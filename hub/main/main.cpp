@@ -55,6 +55,7 @@
 #include "hub_registry.h"
 #include "hub_store.h"
 #include "hub_time.h"
+#include "nodefw.h"
 #include "calib_session.h"
 #include "pin_lock.h"
 #include "remote.h"
@@ -94,6 +95,8 @@ constexpr int64_t TIME_VALID_MIN = 1600000000; /* 2020-09 (SR7 range check) */
 static NowTransportIdf nowt;
 static aio::LinkEngine eng;
 static aio::NvsHubStore nvs;
+/* M8b: node image metadata + per-node MCU/fw versions ("nfwmeta" blob) */
+static aio::NodeFw g_nfw;
 static aio::HubRegistry reg;
 static aio::EventLog evlog;
 static aio::ui::AlertsAck g_alerts_ack; /* §8.7 ack keys, RAM-only (resets on reboot) */
@@ -213,10 +216,22 @@ static bool unpair_park(aio::HubNode *n) {
 
 /* --- engine callbacks ----------------------------------------------------------- */
 
-static void cb_hello(const uint8_t mac[6], const hello_payload_t &pl, int8_t rssi) {
-  printf("HELLO from %02X:%02X:%02X:%02X:%02X:%02X fw=%u state=%u rssi=%d%s\n", mac[0],
-         mac[1], mac[2], mac[3], mac[4], mac[5], pl.fw_ver, pl.state, rssi,
+static void cb_hello(const uint8_t mac[6], const hello_payload_t &pl, uint32_t rel_ver,
+                     uint8_t mcu, int8_t rssi) {
+  printf("HELLO from %02X:%02X:%02X:%02X:%02X:%02X fw=%u rel=%lu mcu=%u state=%u rssi=%d%s\n",
+         mac[0], mac[1], mac[2], mac[3], mac[4], mac[5], pl.fw_ver,
+         (unsigned long)rel_ver, mcu, pl.state, rssi,
          pl.state == 0 ? " (unpaired: peer add this mac)" : "");
+  /* M8b: remember the node's build identity (firmware pane) — NVS write only
+   * when something changed; HELLO repeats unchanged data. */
+  if (rel_ver || mcu != MCU_NONE) {
+    const aio::HubNode *n = reg.by_mac(mac);
+    const aio::NodeFwNode *prev = n ? g_nfw.node(n->id) : nullptr;
+    if (n && (!prev || prev->rel_ver != rel_ver || prev->mcu != mcu)) {
+      g_nfw.hello(n->id, rel_ver, mcu);
+      g_nfw.save(nvs);
+    }
+  }
   /* FMEA #15: an unpaired beacon from a queued node = the UNPAIR landed. */
   if (pl.state == 0 && g_unpair.drop(mac)) {
     g_unpair.save(nvs);
@@ -251,10 +266,19 @@ static void cb_feed_result(uint8_t node_id, const feed_result_payload_t &r) {
   core.on_feed_result(node_id, r, (uint32_t)hub_unix_now());
 }
 
-static void cb_heartbeat(uint8_t node_id, const heartbeat_payload_t &hb, int8_t rssi) {
-  printf("HB node=%u up=%us vin=%u day=%u flags=0x%02X drift=%d rssi=%d\n", node_id,
-         (unsigned)(hb.uptime_ms / 1000), hb.vin_mv, hb.day_units, hb.flags,
-         (int)hb.rtc_drift_ms, rssi);
+static void cb_heartbeat(uint8_t node_id, const heartbeat_payload_t &hb, uint32_t rel_ver,
+                         uint8_t mcu, int8_t rssi) {
+  printf("HB node=%u up=%us vin=%u day=%u flags=0x%02X drift=%d rel=%lu mcu=%u rssi=%d\n",
+         node_id, (unsigned)(hb.uptime_ms / 1000), hb.vin_mv, hb.day_units, hb.flags,
+         (int)hb.rtc_drift_ms, (unsigned long)rel_ver, mcu, rssi);
+  /* M8b (D40): identity tail — record for the firmware pane (change-gated). */
+  if (rel_ver || mcu != MCU_NONE) {
+    const aio::NodeFwNode *prev = g_nfw.node(node_id);
+    if (!prev || prev->rel_ver != rel_ver || prev->mcu != mcu) {
+      g_nfw.hello(node_id, rel_ver, mcu);
+      g_nfw.save(nvs);
+    }
+  }
   /* Ack non-reply heartbeats with STATUS_REQ so the node's freshness window
    * (§6.2 scan trigger) stays fed on an otherwise quiet link (D30). */
   aio::LinkPeer *p = eng.peer_by_node(node_id);
@@ -319,6 +343,12 @@ static void cb_config_ack(uint8_t node_id, const ack_status_payload_t &a) {
   printf("CONFIG_ACK node=%u crc=0x%04X ok=%u\n", node_id, a.version, a.ok);
 }
 
+/* M8b: the node answered ENTER_OTA — remember for the firmware pane. */
+static void cb_ota_ack(uint8_t node_id, const ota_ack_payload_t &a) {
+  printf("ENTER_OTA_ACK node=%u ok=%u reason=%u\n", node_id, a.ok, a.reason);
+  g_nfw.ack(node_id, a.ok, a.reason);
+  g_nfw.save(nvs);
+}
 static aio::LinkHandlers make_handlers() {
   aio::LinkHandlers h{};
   h.on_hello = cb_hello;
@@ -329,6 +359,7 @@ static aio::LinkHandlers make_handlers() {
   h.on_feed_unknown = cb_feed_unknown;
   h.on_schedule_ack = cb_schedule_ack;
   h.on_config_ack = cb_config_ack;
+  h.on_ota_ack = cb_ota_ack;
   return h;
 }
 
@@ -633,6 +664,8 @@ static int cmd_peer(int argc, char **argv) {
     const bool parked = unpair_park(n);
     if (!parked) eng.remove_peer(n->mac);
     reg.remove(id);
+    g_nfw.node_removed(id);
+    g_nfw.save(nvs);
     nvs.del(aio::FeedManager::pend_key_for(id));
     reg.save(nvs);
     printf("%s\n", parked ? "peer removed (unpair pending until it checks in)"
@@ -2144,6 +2177,10 @@ extern "C" void app_main(void) {
     g_rset = aio::remote_defaults();
     printf("remote: defaults (no valid blob)\n");
   }
+  if (!g_nfw.load(nvs)) {
+    g_nfw.reset();
+    printf("nodefw meta: fresh (no valid blob)\n");
+  }
   g_pin.configure(g_set);
   g_wiz.bind_registry(&reg);
   g_sd = backup_store_create();
@@ -2230,7 +2267,7 @@ extern "C" void app_main(void) {
   /* M6 remote: web dashboard + MQTT (no-op under AIO_NO_RADIO) */
   {
     RemoteNetCtx rctx{&reg,      &evlog, &core, &g_set, &g_rset,
-                      &nvs,       &eng,   &g_unpair,
+                      &nvs,       &eng,   &g_unpair, &g_nfw,
                       esp_app_get_description()->version,
                       ms_now,     hub_unix_now, g_state_mu};
     remote_net_init(&rctx);

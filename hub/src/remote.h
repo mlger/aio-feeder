@@ -38,6 +38,7 @@
 #include "hub_registry.h"
 #include "hub_store.h"
 #include "hub_time.h"
+#include "nodefw.h"
 #include "ota_core.h"
 #include "settings_store.h"
 #include "ui_model.h" /* NodeState, state_of, next_occurrence, is_alert_kind */
@@ -174,6 +175,7 @@ struct RemoteNodeLive {
   uint8_t state = ui::NODE_OFFLINE; /* ui::NodeState */
   uint16_t vin_mv = 0;
   uint32_t hb_age_s = 0;
+  bool ota_lock = false; /* M8b: HB_FLAG_OTA_LOCK from the last heartbeat */
 };
 
 static inline const char *remote_unit_name(uint8_t unit) {
@@ -294,7 +296,8 @@ static inline size_t remote_status_json(const HubRegistry &reg, const EventLog &
                                         const LocalTime &now, int64_t unix_now,
                                         char *out, size_t cap,
                                         const UnpairQueue *unpair = nullptr,
-                                        const OtaBrief *ota = nullptr) {
+                                        const OtaBrief *ota = nullptr,
+                                        const NodeFw *nfw = nullptr) {
   uint8_t online = 0;
   bool has_alert = false;
   uint8_t alert_node = 0;
@@ -356,6 +359,18 @@ static inline size_t remote_status_json(const HubRegistry &reg, const EventLog &
         ota->target, ota_err_name(ota->err));
     if (o >= cap) return 0;
   }
+  if (nfw && nfw->img_valid()) {
+    /* M8b: the stored node image + which nodes it can go to */
+    char sha_hex[65];
+    nodefw_sha_hex(nfw->img().sha, sha_hex, sizeof(sha_hex));
+    o += (size_t)snprintf(
+        out + o, cap - o,
+        ",\"nodefw\":{\"present\":true,\"target\":\"%s\",\"ver\":\"%s\","
+        "\"size\":%lu,\"sha\":\"%s\"}",
+        nodefw_target_name(nfw->img().target), nfw->img().ver,
+        (unsigned long)nfw->img().size, sha_hex);
+    if (o >= cap) return 0;
+  }
   o += (size_t)snprintf(out + o, cap - o, ",\"n\":[");
   if (o >= cap) return 0;
 
@@ -382,6 +397,27 @@ static inline size_t remote_status_json(const HubRegistry &reg, const EventLog &
         (unsigned)left_, (unsigned)days);
     first = false;
     if (o >= cap) return 0;
+    /* M8b: node fw identity + ota lock, when known */
+    if (nfw) {
+      const NodeFwNode *nf = nfw->node(n->id);
+      if (nf && (nf->rel_ver || nf->mcu != MCU_NONE)) {
+        char nver[16];
+        nodefw_ver_str(nf->rel_ver, nver, sizeof(nver));
+        o += (size_t)snprintf(out + o, cap - o,
+                              ",\"fw\":\"%s\",\"mcu\":\"%s\",\"lock\":%s",
+                              nver,
+                              nf->mcu == MCU_ESP8266 ? "esp8266"
+                              : nf->mcu == MCU_ESP32C3 ? "esp32c3" : "?",
+                              live[i].ota_lock ? "true" : "false");
+        if (o >= cap) return 0;
+      } else if (live[i].ota_lock) {
+        o += (size_t)snprintf(out + o, cap - o, ",\"lock\":true");
+        if (o >= cap) return 0;
+      }
+    } else if (live[i].ota_lock) {
+      o += (size_t)snprintf(out + o, cap - o, ",\"lock\":true");
+      if (o >= cap) return 0;
+    }
     const HubEvent *last = remote_last_event(log, n->id);
     if (last) {
       o += (size_t)snprintf(out + o, cap - o,

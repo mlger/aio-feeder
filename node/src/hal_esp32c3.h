@@ -14,6 +14,9 @@
 #include <soc/gpio_struct.h>
 #include <Preferences.h>
 #include <Wire.h>
+#include <WiFi.h>
+#include <Update.h>
+#include <esp_ota_ops.h>
 #include "ds3231.h"
 
 #define HAL_RELAY_PIN 3     /* not a strapping pin [VERIFY vs silkscreen] */
@@ -99,6 +102,37 @@ struct Hal {
   bool storage_write(const uint8_t *buf, size_t len) {
     return prefs.putBytes("cfg", buf, len) == len;
   }
+
+  /* --- M8b node OTA (§7.6): join the hub's Wi-Fi, stream an image ---------- */
+  bool wifi_join(const char *ssid, const char *pass, uint32_t timeout_ms) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, pass);
+    const uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+      if (millis() - t0 > timeout_ms) return false;
+      delay(50);
+      feed_wdt();
+    }
+    return true;
+  }
+  void wifi_off() {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+  bool ota_begin(size_t len) { return Update.begin(len ? len : UPDATE_SIZE_UNKNOWN); }
+  size_t ota_write(const uint8_t *buf, size_t len) { return Update.write((uint8_t *)buf, len); }
+  bool ota_end() { return Update.end(true); }
+  void ota_abort() { Update.abort(); }
+  /* C3 bootloader rollback (FMEA #11 parity with the hub, §7.6): confirm the
+   * new slot once setup completed — a build that never gets here rolls back. */
+  void ota_mark_valid() {
+    const esp_partition_t *run = esp_ota_get_running_partition();
+    esp_ota_img_states_t st;
+    if (run && esp_ota_get_state_partition(run, &st) == ESP_OK &&
+        st == ESP_OTA_IMG_PENDING_VERIFY)
+      esp_ota_mark_app_valid_cancel_rollback();
+  }
+  void reboot() { ESP.restart(); }
 };
 
 #endif /* AIO_HAL_ESP32C3_H */

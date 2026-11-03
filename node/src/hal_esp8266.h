@@ -11,6 +11,8 @@
 #include <Arduino.h>
 #include <EEPROM.h>
 #include <Wire.h>
+#include <ESP8266WiFi.h>
+#include <Update.h>
 #include "ds3231.h"
 
 #define HAL_RELAY_PIN 14    /* D5 — boot-safe [VERIFY vs your module] */
@@ -103,6 +105,31 @@ struct Hal {
     for (size_t i = 0; i < len; i++) EEPROM.write(i, buf[i]);
     return EEPROM.commit(); /* flash erase+write; debounced by the caller */
   }
+
+  /* --- M8b node OTA (§7.6): join the hub's Wi-Fi, stream an image ---------- */
+  bool wifi_join(const char *ssid, const char *pass, uint32_t timeout_ms) {
+    WiFi.mode(WIFI_STA);
+    WiFi.begin(ssid, pass);
+    const uint32_t t0 = millis();
+    while (WiFi.status() != WL_CONNECTED) {
+      if (millis() - t0 > timeout_ms) return false;
+      delay(50);
+      ESP.wdtFeed();
+    }
+    return true;
+  }
+  void wifi_off() {
+    WiFi.disconnect(true);
+    WiFi.mode(WIFI_OFF);
+  }
+  bool ota_begin(size_t len) { return Update.begin(len ? len : (size_t)UPDATE_SIZE_UNKNOWN); }
+  size_t ota_write(const uint8_t *buf, size_t len) { return Update.write((uint8_t *)buf, len); }
+  bool ota_end() { return Update.end(true); }
+  void ota_abort() { Update.abort(); }
+  /* 8266 has no bootloader rollback — the sha pin (checked before reboot) is
+   * the confirmation; nothing to mark valid here. */
+  void ota_mark_valid() {}
+  void reboot() { ESP.restart(); }
 };
 
 #endif /* AIO_HAL_ESP8266_H */

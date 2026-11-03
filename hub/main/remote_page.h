@@ -56,6 +56,21 @@ a{color:#8c8}
 <div class=small>Download runs in the background — the hub keeps feeding.
 After the download the hub reboots once you tap Update again (apply);
 a new image that fails to boot rolls back on its own.</div>
+<hr style="border-color:#333;margin:10px 0">
+<div class=small><b>Node firmware</b> (M8b): upload the node .bin here, then
+push it to a node from its card. The node stops feeding, joins this hub's
+Wi-Fi, pulls the image (sha256-pinned) and reboots; a locked node shows
+“ota lock” until the new image confirms itself.</div>
+<div class=small id=nodefwinfo></div>
+<label>Node image (.bin) — target &amp; version</label>
+<div class=row>
+<select id=nfw_target style="background:#333;color:#eee;border:1px solid #444;border-radius:6px;padding:6px">
+<option value=esp8266>esp8266</option><option value=esp32c3>esp32c3</option>
+</select>
+<input type=text id=nfw_ver placeholder="0.12.0" style="width:90px">
+<input type=file id=nfw_file style="max-width:220px">
+</div>
+<div class=row><button onclick=nfw_upload()>Upload to hub</button></div>
 </details>
 <details><summary>Remote settings</summary>
 <label>Web dashboard</label><input type=text id=web_on placeholder="1 = on, 0 = off">
@@ -106,7 +121,10 @@ function draw(){
     if(n.left!=null)h+='<div class=small>stock est: '+n.left+' '+n.unit+(n.days?' (~'+n.days+' d)':'')+'</div>';
     if(n.last)h+='<div class=small>last: '+n.last.amount+' '+n.unit+' '+n.last.result+' '+age(n.last.age)+' ago</div>';
     if(n.next)h+='<div class=small>next: '+n.next.min+' ('+n.next.in+' min) '+n.next.amount+' '+n.unit+(n.en?'':' [sched off]')+'</div>';
-    h+='<div class=row><input type=number id=a'+n.id+' value='+(n.next?n.next.amount:10)+'><button onclick=feed('+n.id+')>Feed</button></div>';
+    if(n.fw)h+='<div class=small>fw '+esc(n.fw)+' · '+esc(n.mcu||'?')+(n.lock?' · <b style="color:#e88">ota lock</b>':'')+'</div>';
+    h+='<div class=row><input type=number id=a'+n.id+' value='+(n.next?n.next.amount:10)+'><button onclick=feed('+n.id+')>Feed</button>';
+    if(st.nodefw&&st.nodefw.present)h+='<button onclick=pushfw('+n.id+') style="background:#3a6d8a">Update FW</button>';
+    h+='</div>';
     c.innerHTML=h;g.appendChild(c);
   });
 }
@@ -152,6 +170,29 @@ function ota_factory(){
     .then(r=>r.json()).then(j=>note(j.ok?'rebooting into factory…':'refused',!j.ok))
     .catch(e=>{if(e.message!='pin')note('factory escape failed: '+e.message,true)});
 }
+function draw_nodefw(s){
+  const el=document.getElementById('nodefwinfo');
+  if(!s.nodefw){el.textContent='no node image uploaded — pick a .bin below';return}
+  const o=s.nodefw;
+  el.textContent='stored: '+o.target+' v'+o.ver+' · '+(o.size/1024).toFixed(0)+' KB · sha '+o.sha.slice(0,12)+'…';
+}
+function nfw_upload(){
+  const f=document.getElementById('nfw_file').files[0];
+  if(!f){note('pick a node .bin first',true);return}
+  const t=document.getElementById('nfw_target').value;
+  const v=document.getElementById('nfw_ver').value.trim()||'?';
+  if(!confirm('Upload '+f.name+' ('+(f.size/1024).toFixed(0)+' KB) as '+t+' '+v+'?'))return;
+  note('uploading…');
+  api('/api/nodefw?target='+t+'&ver='+encodeURIComponent(v),{method:'POST',body:f})
+    .then(r=>r.json()).then(j=>note(j.ok?'node image stored ('+(j.size/1024).toFixed(0)+' KB, sha '+j.sha.slice(0,12)+'…)':'upload refused: '+(j.error||'?'),!j.ok))
+    .catch(e=>{if(e.message!='pin')note('upload failed: '+e.message,true)});
+}
+function pushfw(id){
+  if(!confirm('Push the stored node image to node '+id+'? It stops feeding until the update lands.'))return;
+  api('/api/nodefw/push',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({node:id})})
+    .then(r=>r.json()).then(j=>note(j.ok?'ENTER_OTA sent — watch the node card':'refused: '+(j.error||'?'),!j.ok))
+    .catch(e=>{if(e.message!='pin')note('push failed: '+e.message,true)});
+}
 function load_events(){
   api('/api/events?limit=20').then(r=>r.json()).then(j=>{
     const t=document.getElementById('ev');
@@ -164,7 +205,7 @@ function load_events(){
       r.insertCell().textContent=e.src;});
   }).catch(()=>{});
 }
-function tick(){api('/api/status').then(r=>r.json()).then(j=>{st=j;draw();draw_ota(j)}).catch(()=>{if(st){st=null;document.getElementById('hubinfo').textContent='hub unreachable'}})}
+function tick(){api('/api/status').then(r=>r.json()).then(j=>{st=j;draw();draw_ota(j);draw_nodefw(j)}).catch(()=>{if(st){st=null;document.getElementById('hubinfo').textContent='hub unreachable'}})}
 function draw_ota(s){
   const el=document.getElementById('otainfo');
   if(!s.ota){el.textContent='OTA status unavailable';return}

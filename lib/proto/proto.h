@@ -42,6 +42,8 @@ typedef enum {
   MSG_ABORT,
   MSG_UNPAIR,
   MSG_TARE_OR_CAL,
+  MSG_ENTER_OTA,
+  MSG_ENTER_OTA_ACK,
   MSG_TYPE_COUNT
 } msg_type_t;
 
@@ -68,6 +70,7 @@ typedef enum {
   FEED_ABORTED,
   FEED_GATE_NOT_OPENED,
   FEED_GATE_STUCK_OPEN,
+  FEED_REJ_OTA_LOCK,     /* M8b FMEA #11: actuation locked during/after OTA */
 } feed_result_t;
 
 /* HEARTBEAT.flags bits (PLAN.md §6.5). */
@@ -76,6 +79,7 @@ typedef enum {
 #define HB_FLAG_LIMITS_UNCONFIRMED 0x04
 #define HB_FLAG_RTC_OK 0x08
 #define HB_FLAG_RTC_LOST 0x10
+#define HB_FLAG_OTA_LOCK 0x20  /* M8b: actuation locked (OTA in progress/failed) */
 
 typedef struct __attribute__((packed)) {
   uint8_t ver;

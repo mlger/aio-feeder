@@ -10,6 +10,7 @@
 
 #include <esp_event.h>
 #include <esp_http_server.h>
+#include <esp_partition.h>
 #include <esp_wifi.h>
 #include <mqtt_client.h>
 #include <esp_netif.h>
@@ -49,6 +50,8 @@ static void rebuild_live() {
     s_live[i].hb_age_s = p && p->last_hb_ms
                              ? (now_ms - p->last_hb_ms) / 1000
                              : 0;
+    /* M8b: actuation lock reported by the node (FMEA #11) */
+    s_live[i].ota_lock = p && (p->last_hb.flags & HB_FLAG_OTA_LOCK) != 0;
   }
 }
 
@@ -226,7 +229,7 @@ static esp_err_t h_status(httpd_req_t *req) {
     aio::ota::brief(&otab); /* M8a: phase/pct are atomics — safe to read */
     const size_t len = aio::remote_status_json(
         *s_ctx.reg, *s_ctx.log, *s_ctx.rset, s_mqtt_up == 2, s_live, s_ctx.fw, now,
-        s_ctx.unix_now(), buf, 3072, s_ctx.unpair, &otab);
+        s_ctx.unix_now(), buf, 3072, s_ctx.unpair, &otab, s_ctx.nfw);
     httpd_resp_set_type(req, "application/json");
     if (!len)
       httpd_resp_send_500(req);
@@ -385,6 +388,206 @@ static esp_err_t h_ota(httpd_req_t *req) {
   return httpd_resp_sendstr(req, "{\"ok\":true}");
 }
 
+/* --- M8b node firmware (§7.6): upload into "nfw", push ENTER_OTA, serve --- */
+
+static const esp_partition_t *nfw_partition(void) {
+  return esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
+                                  (esp_partition_subtype_t)0x41, "nfw");
+}
+
+static void json_err(httpd_req_t *req, const char *status, const char *err) {
+  httpd_resp_set_status(req, status);
+  httpd_resp_set_type(req, "application/json");
+  char body[80];
+  snprintf(body, sizeof(body), "{\"ok\":false,\"error\":\"%s\"}", err);
+  httpd_resp_sendstr(req, body);
+}
+
+/* POST /api/nodefw?target=esp8266|esp32c3&ver=X.Y.Z — raw body is the .bin.
+ * Streams into the "nfw" partition while hashing; meta lands in NVS after. */
+static esp_err_t h_nodefw_post(httpd_req_t *req) {
+  if (!api_auth(req)) return ESP_FAIL;
+  char q[64] = "", v[24] = "", verbuf[20] = "";
+  uint8_t target = 0;
+  const char *ver = "?";
+  if (httpd_req_get_url_query_str(req, q, sizeof(q)) == ESP_OK) {
+    if (httpd_query_key_value(q, "target", v, sizeof(v)) == ESP_OK) {
+      if (!strcmp(v, "esp8266")) target = aio::NFW_TARGET_8266;
+      else if (!strcmp(v, "esp32c3")) target = aio::NFW_TARGET_C3;
+    }
+    if (httpd_query_key_value(q, "ver", verbuf, sizeof(verbuf)) == ESP_OK && verbuf[0])
+      ver = verbuf; /* lives as long as this handler */
+  }
+  const esp_partition_t *part = nfw_partition();
+  if (!target || !part) {
+    json_err(req, "400 Bad Request", "bad target");
+    return ESP_FAIL;
+  }
+  const uint32_t total = (uint32_t)req->content_len;
+  if (!total || total > part->size) {
+    json_err(req, total ? "413 Payload Too Large" : "400 Bad Request",
+             total ? "image too big" : "empty body");
+    return ESP_FAIL;
+  }
+  /* one whole-partition erase up front (~1 s): writes then stay plain */
+  if (esp_partition_erase_range(part, 0, part->size) != ESP_OK) {
+    json_err(req, "500 Internal Server Error", "erase failed");
+    return ESP_FAIL;
+  }
+  uint8_t *buf = (uint8_t *)malloc(1024);
+  if (!buf) {
+    json_err(req, "500 Internal Server Error", "oom");
+    return ESP_FAIL;
+  }
+  sha256_ctx ctx;
+  sha256_init(&ctx);
+  uint32_t off = 0;
+  bool io_ok = true;
+  while (off < total) {
+    const size_t want = total - off < 1024 ? total - off : 1024;
+    const int n = httpd_req_recv(req, buf, want);
+    if (n <= 0 || esp_partition_write(part, off, buf, (size_t)n) != ESP_OK) {
+      io_ok = false;
+      break;
+    }
+    sha256_update(&ctx, buf, (size_t)n);
+    off += (uint32_t)n;
+  }
+  free(buf);
+  if (!io_ok) {
+    json_err(req, "500 Internal Server Error", "write failed");
+    return ESP_FAIL;
+  }
+  aio::NodeFwImage img{};
+  img.magic = aio::NFW_IMAGE_MAGIC;
+  img.size = total;
+  img.target = target;
+  snprintf(img.ver, sizeof(img.ver), "%.15s", ver);
+  sha256_final(&ctx, img.sha);
+  {
+    SessLock lock;
+    s_ctx.nfw->img_set(img);
+    s_ctx.nfw->save(*s_ctx.store);
+  }
+  char sha_hex[65];
+  aio::nodefw_sha_hex(img.sha, sha_hex, sizeof(sha_hex));
+  char out[192];
+  snprintf(out, sizeof(out),
+           "{\"ok\":true,\"size\":%lu,\"target\":\"%s\",\"ver\":\"%s\",\"sha\":\"%s\"}",
+           (unsigned long)total, aio::nodefw_target_name(target), img.ver, sha_hex);
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, out);
+}
+
+/* POST /api/nodefw/push {"node":N} — sends the wrapped ENTER_OTA (D39). */
+static esp_err_t h_nodefw_push(httpd_req_t *req) {
+  if (!api_auth(req)) return ESP_FAIL;
+  char body[128];
+  uint8_t node = 0;
+  if (req->method != HTTP_POST || !req_body(req, body, sizeof(body))) {
+    json_err(req, "400 Bad Request", "bad body");
+    return ESP_FAIL;
+  }
+  /* body is {"node":N} — minimal scan; skip past "node" then the colon */
+  {
+    const char *p = strstr(body, "\"node\"");
+    const char *d = p ? strchr(p + 6, ':') : nullptr;
+    if (!d || !(node = (uint8_t)atoi(d + 1))) {
+      json_err(req, "400 Bad Request", "no node");
+      return ESP_FAIL;
+    }
+  }
+  esp_err_t res = ESP_OK;
+  {
+    SessLock lock;
+    const aio::HubNode *n = s_ctx.reg->by_id(node);
+    if (!n) {
+      json_err(req, "404 Not Found", "unknown node");
+      return ESP_FAIL;
+    }
+    if (!s_ctx.nfw->img_valid()) {
+      json_err(req, "409 Conflict", "no image uploaded");
+      return ESP_FAIL;
+    }
+    const aio::NodeFwNode *nf = s_ctx.nfw->node(node);
+    if (nf && nf->mcu != MCU_NONE && nf->mcu != MCU_ESP8266 &&
+        nf->mcu != MCU_ESP32C3) {
+      json_err(req, "409 Conflict", "node mcu unknown");
+      return ESP_FAIL;
+    }
+    const uint8_t want = s_ctx.nfw->img().target == aio::NFW_TARGET_8266 ? MCU_ESP8266
+                                                                         : MCU_ESP32C3;
+    if (nf && nf->mcu != MCU_NONE && nf->mcu != want) {
+      json_err(req, "409 Conflict", "image is for a different MCU");
+      return ESP_FAIL;
+    }
+    /* the node joins the hub's own Wi-Fi (§7.6) and pulls from this hub */
+    wifi_config_t wcfg{};
+    if (esp_wifi_get_config(WIFI_IF_STA, &wcfg) != ESP_OK || !wcfg.sta.ssid[0]) {
+      json_err(req, "409 Conflict", "hub has no wifi credentials");
+      return ESP_FAIL;
+    }
+    if (!s_have_ip || !s_ip[0]) {
+      json_err(req, "409 Conflict", "hub has no ip yet");
+      return ESP_FAIL;
+    }
+    char url[64];
+    snprintf(url, sizeof(url), "http://%s:%u/fw/node", s_ip,
+             (unsigned)s_ctx.rset->web_port);
+    char ssid[sizeof(wcfg.sta.ssid) + 1];
+    memcpy(ssid, wcfg.sta.ssid, sizeof(wcfg.sta.ssid));
+    ssid[sizeof(wcfg.sta.ssid)] = 0;
+    if (!s_ctx.eng->send_enter_ota(node, ssid, (const char *)wcfg.sta.password, url,
+                                   s_ctx.nfw->img().sha, s_ctx.ms_now())) {
+      json_err(req, "409 Conflict", "send failed (node offline?)");
+      return ESP_FAIL;
+    }
+    s_ctx.nfw->pushed(node, (uint32_t)s_ctx.unix_now());
+    s_ctx.nfw->save(*s_ctx.store);
+    printf("ENTER_OTA sent node=%u url=%s\n", node, url);
+  }
+  httpd_resp_set_type(req, "application/json");
+  res = httpd_resp_sendstr(req, "{\"ok\":true}");
+  return res;
+}
+
+/* GET /fw/node — the stored image for the node's HTTPUpdate pull. Open like
+ * /: the image is a public release artifact; integrity is the sha pin. */
+static esp_err_t h_fw_node(httpd_req_t *req) {
+  const esp_partition_t *part = nfw_partition();
+  aio::NodeFwImage img;
+  {
+    SessLock lock;
+    if (!part || !s_ctx.nfw->img_valid()) {
+      httpd_resp_send_404(req);
+      return ESP_FAIL;
+    }
+    img = s_ctx.nfw->img();
+  }
+  if (img.size > part->size) {
+    httpd_resp_send_404(req);
+    return ESP_FAIL;
+  }
+  httpd_resp_set_type(req, "application/octet-stream");
+  uint8_t *buf = (uint8_t *)malloc(1024);
+  if (!buf) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+  uint32_t off = 0;
+  while (off < img.size) {
+    const size_t n = img.size - off < 1024 ? img.size - off : 1024;
+    if (esp_partition_read(part, off, buf, n) != ESP_OK ||
+        httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+      free(buf);
+      return ESP_FAIL;
+    }
+    off += (uint32_t)n;
+  }
+  free(buf);
+  return httpd_resp_send_chunk(req, nullptr, 0);
+}
+
 static esp_err_t h_settings(httpd_req_t *req) {
   if (!api_auth(req)) return ESP_FAIL;
   char body[512];
@@ -479,7 +682,7 @@ void remote_net_apply(void) {
     if (s_ctx.rset->web_on) {
       httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
       cfg.stack_size = 6144;
-      cfg.max_uri_handlers = 8;
+      cfg.max_uri_handlers = 11;
       cfg.lru_purge_enable = true;
       if (httpd_start(&s_http, &cfg) == ESP_OK) {
         const httpd_uri_t uris[] = {
@@ -491,6 +694,9 @@ void remote_net_apply(void) {
             {"/api/backup", HTTP_GET, h_backup, nullptr},
             {"/api/settings", HTTP_POST, h_settings, nullptr},
             {"/api/ota", HTTP_POST, h_ota, nullptr},
+            {"/api/nodefw", HTTP_POST, h_nodefw_post, nullptr},
+            {"/api/nodefw/push", HTTP_POST, h_nodefw_push, nullptr},
+            {"/fw/node", HTTP_GET, h_fw_node, nullptr},
         };
         for (const auto &u : uris) httpd_register_uri_handler(s_http, &u);
         printf("web dashboard on :%u%s\n", (unsigned)s_ctx.rset->web_port,

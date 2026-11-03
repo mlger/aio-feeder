@@ -14,7 +14,9 @@
 
 #include <unity.h>
 
+#include "messages.h"
 #include "ota_core.h"
+#include "nodefw.h"
 
 using namespace aio;
 
@@ -275,6 +277,99 @@ static void test_brief_phase_names(void) {
   TEST_ASSERT_EQUAL_STRING("setboot", ota_err_name(OTA_ERR_SETBOOT));
 }
 
+/* --- M8b: nodefw meta store + helpers --------------------------------------- */
+
+static void test_nodefw_store_roundtrip(void) {
+  RamStore st;
+  NodeFw nfw;
+  TEST_ASSERT_FALSE(nfw.img_valid());
+  TEST_ASSERT_FALSE(nfw.load(st)); /* fresh blob → reset */
+
+  NodeFwImage img{};
+  img.magic = NFW_IMAGE_MAGIC;
+  img.size = 412345;
+  img.target = NFW_TARGET_C3;
+  strcpy(img.ver, "0.12.0");
+  for (int i = 0; i < 32; i++) img.sha[i] = (uint8_t)i;
+  nfw.img_set(img);
+  nfw.hello(1, 0x000C00, MCU_ESP32C3);
+  nfw.pushed(1, 1700000000);
+  nfw.ack(1, 1, OTA_ACK_OK);
+  TEST_ASSERT_TRUE(nfw.save(st));
+
+  NodeFw nfw2;
+  TEST_ASSERT_TRUE(nfw2.load(st));
+  TEST_ASSERT_TRUE(nfw2.img_valid());
+  TEST_ASSERT_EQUAL_UINT32(412345, nfw2.img().size);
+  TEST_ASSERT_EQUAL_UINT8(NFW_TARGET_C3, nfw2.img().target);
+  TEST_ASSERT_EQUAL_STRING("0.12.0", nfw2.img().ver);
+  const NodeFwNode *n = nfw2.node(1);
+  TEST_ASSERT_NOT_NULL(n);
+  TEST_ASSERT_EQUAL_UINT32(0x000C00, n->rel_ver);
+  TEST_ASSERT_EQUAL_UINT8(MCU_ESP32C3, n->mcu);
+  TEST_ASSERT_EQUAL_UINT8(1, n->ack_ok);
+  TEST_ASSERT_EQUAL_UINT32(1700000000, n->push_unix);
+  TEST_ASSERT_NULL(nfw2.node(9));
+
+  nfw2.node_removed(1);
+  TEST_ASSERT_NULL(nfw2.node(1));
+}
+
+static void test_nodefw_helpers(void) {
+  TEST_ASSERT_EQUAL_STRING("esp8266", nodefw_target_name(NFW_TARGET_8266));
+  TEST_ASSERT_EQUAL_STRING("esp32c3", nodefw_target_name(NFW_TARGET_C3));
+  TEST_ASSERT_EQUAL_STRING("none", nodefw_target_name(NFW_TARGET_NONE));
+  char v[16];
+  nodefw_ver_str(0x000C00, v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("0.12.0", v);
+  nodefw_ver_str(0, v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("?", v);
+  nodefw_ver_str(0x00010A, v, sizeof(v));
+  TEST_ASSERT_EQUAL_STRING("0.1.10", v);
+
+  TEST_ASSERT_TRUE(nodefw_image_plausible(400000, NFW_TARGET_8266));
+  TEST_ASSERT_TRUE(nodefw_image_plausible(900000, NFW_TARGET_C3));
+  TEST_ASSERT_FALSE(nodefw_image_plausible(500, NFW_TARGET_C3));
+  TEST_ASSERT_FALSE(nodefw_image_plausible(2000000, NFW_TARGET_C3));
+  TEST_ASSERT_FALSE(nodefw_image_plausible(400000, 0));
+
+  uint8_t sha[32];
+  memset(sha, 0xAB, 32);
+  char hex[65];
+  nodefw_sha_hex(sha, hex, sizeof(hex));
+  TEST_ASSERT_EQUAL(64, strlen(hex));
+  TEST_ASSERT_EQUAL_STRING("abababababababababababababababab"
+                           "abababababababababababababababab",
+                           hex);
+}
+
+/* --- M8b: ENTER_OTA wire struct --------------------------------------------- */
+
+static void test_enter_ota_wire(void) {
+  /* blob = ssid 32 + pass 64 + url 98; fixed 234-byte payload exactly fits */
+  TEST_ASSERT_EQUAL(234, (int)sizeof(enter_ota_payload_t));
+  TEST_ASSERT_TRUE(sizeof(enter_ota_payload_t) <= FRAME_MAX_PAYLOAD);
+
+  /* wrap/unwrap round-trip over a full-length blob (3 keystream blocks) */
+  uint8_t key[32], seed[4] = {1, 2, 3, 4};
+  for (int i = 0; i < 32; i++) key[i] = (uint8_t)(0x30 + i);
+  uint8_t buf[OTA_SSID_MAX + OTA_PASS_MAX + OTA_URL_MAX];
+  for (size_t i = 0; i < sizeof(buf); i++) buf[i] = (uint8_t)(i & 0xFF);
+  uint8_t plain[sizeof(buf)];
+  memcpy(plain, buf, sizeof(buf));
+  ota_wrap(key, seed, buf, sizeof(buf));
+  TEST_ASSERT_NOT_EQUAL(0, memcmp(buf, plain, sizeof(buf)));
+  ota_wrap(key, seed, buf, sizeof(buf)); /* symmetric */
+  TEST_ASSERT_EQUAL_MEMORY(plain, buf, sizeof(buf));
+
+  /* a different seed must not unwrap the same ciphertext */
+  uint8_t wrong[sizeof(buf)];
+  memcpy(wrong, buf, sizeof(buf));
+  const uint8_t seed2[4] = {1, 2, 3, 5};
+  ota_wrap(key, seed2, wrong, sizeof(wrong));
+  TEST_ASSERT_NOT_EQUAL(0, memcmp(wrong, plain, sizeof(plain)));
+}
+
 int main() {
   UNITY_BEGIN();
   RUN_TEST(test_url_valid_accepts_schemes);
@@ -290,5 +385,8 @@ int main() {
   RUN_TEST(test_status_blob_roundtrip);
   RUN_TEST(test_url_blob_roundtrip_and_validation);
   RUN_TEST(test_brief_phase_names);
+  RUN_TEST(test_nodefw_store_roundtrip);
+  RUN_TEST(test_nodefw_helpers);
+  RUN_TEST(test_enter_ota_wire);
   return UNITY_END();
 }

@@ -1,0 +1,11 @@
+; AIO Feeder node — ESP32-C3 dual-slot OTA partitions (M8b, PLAN §7.6/§4.9).
+; 4 MB flash: two 1.5 MB app slots + otadata so HTTPUpdate can write the
+; other slot and the bootloader rolls back a slot that never confirms
+; (hal_esp32c3.h ota_mark_valid() confirms after setup). No SPIFFS — node
+; state lives in NVS (Preferences) which no OTA traffic ever touches.
+# Name,   Type, SubType, Offset,  Size,   Flags
+nvs,      data, nvs,     0x9000,  0x6000,
+otadata,  data, ota,     0xf000,  0x2000,
+ota_0,    app,  ota_0,   0x10000, 0x180000,
+ota_1,    app,  ota_1,   0x190000,0x180000,
+coredump, data, coredump,0x310000,0x10000,

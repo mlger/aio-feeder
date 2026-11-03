@@ -17,6 +17,7 @@
 
 #include "../../link_core/link.h"
 #include "hub_core.h"
+#include "nodefw.h"
 #include "remote.h"
 
 struct RemoteNetCtx {
@@ -28,6 +29,7 @@ struct RemoteNetCtx {
   aio::IHubStore *store;       /* persist rset */
   aio::LinkEngine *eng;        /* peer freshness */
   aio::UnpairQueue *unpair;    /* pending unpairs → status JSON (FMEA #15) */
+  aio::NodeFw *nfw;            /* M8b: node image meta + per-node fw identity */
   const char *fw;
   uint32_t (*ms_now)(void);
   int64_t (*unix_now)(void);

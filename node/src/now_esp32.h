@@ -56,6 +56,9 @@ struct NowTransportEsp32 : public aio::ILinkTransport {
     return true;
   }
 
+  /* M8b OTA: release the radio for Wi-Fi; begin() re-arms after a failed pull. */
+  void end() { esp_now_deinit(); }
+
   /* IDF 4.4 refuses esp_now_send to an unregistered peer. */
   void ensure_peer(const uint8_t mac[6]) {
     if (esp_now_is_peer_exist(mac)) esp_now_del_peer(mac);

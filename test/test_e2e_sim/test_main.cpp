@@ -194,7 +194,9 @@ struct HubSide {
   static void cb_feed_unknown(uint32_t feed_id, uint8_t node_id) {
     g_hub->core.on_feed_unknown(feed_id, node_id, (uint32_t)g_hub->unix_now);
   }
-  static void cb_heartbeat(uint8_t node_id, const heartbeat_payload_t &hb, int8_t rssi) {
+  static void cb_heartbeat(uint8_t node_id, const heartbeat_payload_t &hb, uint32_t rel_ver,
+                           uint8_t mcu, int8_t rssi) {
+    (void)rel_ver; (void)mcu;
     /* §7.4: push TIME_SYNC when the node's time looks off */
     if (hb.flags & HB_FLAG_TIME_INVALID) {
       const time_sync_payload_t t{(uint32_t)g_hub->unix_now, g_hub->reg.data().tz_rule};

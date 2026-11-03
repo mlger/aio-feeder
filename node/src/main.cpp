@@ -37,6 +37,7 @@
 #include "../../node_core/schedule.h"
 #include "../../node_core/time_validity.h"
 #include "cli.h"
+#include "ota_run.h"
 
 /* Supply monitor: reject below this rail voltage (12 V nominal) [VERIFY]. */
 constexpr uint16_t VIN_MIN_MV = 10800;
@@ -79,6 +80,17 @@ static aio::LocalSchedState last_sched_state = aio::LocalSchedState::Idle;
 static bool stop_switch_seen = false;
 /* M7 (FMEA #8): hopper-low edge, serial warn once per low period. */
 static bool hopper_warned = false;
+
+/* M8b build identity (platformio.ini): what the hub sees in HELLO and what
+ * proves a new image actually booted (D40 lock semantics). */
+#ifndef AIO_NODE_FW_VER
+#define AIO_NODE_FW_VER 0
+#endif
+static void fw_ver_str(uint32_t v, char *out, size_t cap) {
+  if (!v) snprintf(out, cap, "?");
+  else snprintf(out, cap, "%u.%u.%u", (unsigned)((v >> 16) & 0xFF),
+                (unsigned)((v >> 8) & 0xFF), (unsigned)(v & 0xFF));
+}
 
 #if defined(AIO_NODE_8266)
 static NowTransport8266 nowt;
@@ -177,6 +189,9 @@ static int64_t unix_now_guess() {
   return time_ok ? tv.sync_unix() + (int64_t)((millis() - tv.sync_ms()) / 1000) : 0;
 }
 
+static void handle_feed(const uint8_t mac[6], const feed_payload_t &f);
+static bool ota_actuation_allowed();
+
 static void hb_fill(heartbeat_payload_t *hb) {
   hb->uptime_ms = millis() - boot_ms;
   hb->rssi = 0; /* not exposed by these SDK callbacks */
@@ -189,6 +204,7 @@ static void hb_fill(heartbeat_payload_t *hb) {
   if (cfg.manual_stop) flags |= HB_FLAG_MANUAL_STOP;
   if (!time_ok) flags |= HB_FLAG_TIME_INVALID;
   if (!limits.limits_confirmed) flags |= HB_FLAG_LIMITS_UNCONFIRMED;
+  if (cfg.ota_lock) flags |= HB_FLAG_OTA_LOCK;
   bool osf;
   int64_t u = 0;
   if (hal.rtc_healthy(&u, &osf)) {
@@ -201,6 +217,13 @@ static void hb_fill(heartbeat_payload_t *hb) {
 
 static void handle_feed(const uint8_t mac[6], const feed_payload_t &f) {
   uint32_t now = millis();
+
+  /* M8b FMEA #11: an ota-locked node answers, never actuates. */
+  if (!ota_actuation_allowed()) {
+    eng.send_feed_ack(f.feed_id, 0, FEED_REJ_OTA_LOCK, now);
+    Serial.printf("RX feed id=%u -> REJ_OTA_LOCK\n", f.feed_id);
+    return;
+  }
 
   /* Bench radio mode: pure protocol loopback, relay never energised. */
   if (bench_mode == BENCH_RADIO) {
@@ -340,6 +363,111 @@ static void handle_pair_accept(const uint8_t mac[6], const pair_accept_payload_t
                 pa.code_digits[3], mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
 }
 
+static void handle_unpair() {
+  /* FMEA #15: the hub removed this node — stop obeying, re-beacon (§6.3). */
+  if (bench_mode != BENCH_OFF) {
+    Serial.println(F("RX unpair (bench: ignored)"));
+    return;
+  }
+  if (!cfg.paired) return;
+  cfg.paired = 0;
+  memset(cfg.hub_mac, 0, 6);
+  memset(cfg.hub_key, 0, sizeof(cfg.hub_key));
+  cfg.hub_key_len = 0;
+  cfg.sched_count = 0; /* the fallback copy dies with the pairing (§9.6) */
+  cfg.sched_version = 0;
+  cfg.sched_pushed_unix = 0;
+  cfg.skip_until = 0;
+  cfg.hold_until = 0;
+  cfg.limits_confirmed = 0; /* hub re-pushes CONFIG on the next pairing */
+  last_local_min = -1;
+  last_sched_state = aio::LocalSchedState::NotTrusted;
+  eng.clear_peers();
+  eng.set_self(cfg.node_id, 0);
+  Serial.println(F("RX unpair: pairing + fallback schedule cleared — beaconing"));
+  persist_now();
+}
+
+/* --- M8b node OTA (§7.6, FMEA #11) ------------------------------------------------ */
+
+/* SR2 parity: while the lock is set nothing may actuate — radio feeds,
+ * fallback schedule and CLI all go through this gate. */
+static bool ota_actuation_allowed() { return !cfg.ota_lock; }
+
+static void handle_enter_ota(const enter_ota_payload_t &o) {
+  uint8_t ok = 0, reason = OTA_ACK_REJ_BAD;
+  char ssid[OTA_SSID_MAX + 1], pass[OTA_PASS_MAX + 1], url[OTA_URL_MAX + 1];
+
+  do {
+    if (bench_mode != BENCH_OFF) { reason = OTA_ACK_REJ_BENCH; break; }
+    if (act.in_fault() || !act.idle()) { reason = OTA_ACK_REJ_BUSY; break; }
+    if (!(o.flags & OTA_FLAG_WRAPPED) ||
+        o.ssid_len > OTA_SSID_MAX || o.pass_len > OTA_PASS_MAX ||
+        !o.url_len || o.url_len > OTA_URL_MAX ||
+        (size_t)o.ssid_len + o.pass_len + o.url_len > sizeof(o.blob))
+      break; /* bad payload — answered REJ_BAD */
+    /* Unwrap with OUR hub key: a foreign hub cannot produce a valid MAC
+     * (replay window + HMAC), so the unwrap key is trusted by construction. */
+    uint8_t blob[sizeof(ssid) + sizeof(pass) + sizeof(url)];
+    memcpy(blob, o.blob, o.ssid_len + o.pass_len + o.url_len);
+    ota_wrap(cfg.hub_key, o.ks_seed, blob, o.ssid_len + o.pass_len + o.url_len);
+    memcpy(ssid, blob, o.ssid_len); ssid[o.ssid_len] = 0;
+    memcpy(pass, blob + o.ssid_len, o.pass_len); pass[o.pass_len] = 0;
+    memcpy(url, blob + o.ssid_len + o.pass_len, o.url_len); url[o.url_len] = 0;
+
+    /* FMEA #11: persist lock + identity BEFORE the radio leaves ESP-NOW —
+     * a crash after this point still boots actuation-disabled. */
+    cfg.ota_lock = 1;
+    cfg.ota_from_ver = AIO_NODE_FW_VER;
+    cfg.ota_stage = OTA_STAGE_ARMED;
+    persist_now();
+    hal.relay(false);
+    hal.cancel_relay_off();
+    ok = 1;
+    reason = OTA_ACK_OK;
+  } while (0);
+
+  Serial.printf("RX enter_ota -> %s (%u)\n", ok ? "accepted" : "refused", reason);
+  eng.send_ota_ack(ok, reason, millis());
+  if (!ok) return;
+
+  /* Leave ESP-NOW, pull, verify, flash. This blocks the loop for minutes —
+  * the WDT is fed inside ota_run; nothing can actuate (lock + idle FSM). */
+  nowt.end();
+  const OtaRunResult r = ota_run(hal, ssid, pass, url,
+                                 (o.flags & OTA_FLAG_SHA) ? o.sha256 : nullptr);
+  if (r.ok) {
+    cfg.ota_stage = OTA_STAGE_DONE;
+    persist_now();
+    Serial.println("OTA: rebooting into the new image");
+    delay(200);
+    hal.reboot();
+  }
+  /* Failure: keep the lock (D40), re-arm the link — the hub sees the node
+   * back with the OLD fw version and can retry; serial 'otalock off' escapes. */
+  Serial.println("OTA: failed — staying locked, re-arming ESP-NOW");
+  nowt.begin(cfg.chan ? cfg.chan : 1);
+}
+
+/* Boot-time lock resolution (D40): the lock survives the OTA reboot; only a
+ * DIFFERENT image with stage DONE may clear it. */
+static void ota_boot_resolve() {
+  if (!cfg.ota_lock) return;
+  char from[16], now_[16];
+  fw_ver_str(cfg.ota_from_ver, from, sizeof(from));
+  fw_ver_str(AIO_NODE_FW_VER, now_, sizeof(now_));
+  if (cfg.ota_stage == OTA_STAGE_DONE && cfg.ota_from_ver != AIO_NODE_FW_VER) {
+    cfg.ota_lock = 0;
+    cfg.ota_stage = OTA_STAGE_NONE;
+    persist_now();
+    Serial.printf("OTA: update %s -> %s confirmed, actuation lock cleared\n", from, now_);
+  } else {
+    Serial.printf("OTA: LOCK ACTIVE (from %s, running %s, stage %u) — actuation"
+                  " disabled; 'otalock off' on serial to clear\n", from, now_,
+                  cfg.ota_stage);
+  }
+}
+
 static aio::LinkHandlers make_handlers() {
   aio::LinkHandlers h{};
   h.on_feed = handle_feed;
@@ -358,30 +486,8 @@ static aio::LinkHandlers make_handlers() {
     Serial.printf("RX abort feed_id=%u\n", a.feed_id);
     if (act.abort(millis())) Serial.println(F("aborted (radio)"));
   };
-  h.on_unpair = []() {
-    /* FMEA #15: the hub removed this node — stop obeying, re-beacon (§6.3). */
-    if (bench_mode != BENCH_OFF) {
-      Serial.println(F("RX unpair (bench: ignored)"));
-      return;
-    }
-    if (!cfg.paired) return;
-    cfg.paired = 0;
-    memset(cfg.hub_mac, 0, 6);
-    memset(cfg.hub_key, 0, sizeof(cfg.hub_key));
-    cfg.hub_key_len = 0;
-    cfg.sched_count = 0; /* the fallback copy dies with the pairing (§9.6) */
-    cfg.sched_version = 0;
-    cfg.sched_pushed_unix = 0;
-    cfg.skip_until = 0;
-    cfg.hold_until = 0;
-    cfg.limits_confirmed = 0; /* hub re-pushes CONFIG on the next pairing */
-    last_local_min = -1;
-    last_sched_state = aio::LocalSchedState::NotTrusted;
-    eng.clear_peers();
-    eng.set_self(cfg.node_id, 0);
-    Serial.println(F("RX unpair: pairing + fallback schedule cleared — beaconing"));
-    persist_now();
-  };
+  h.on_unpair = handle_unpair;
+  h.on_enter_ota = handle_enter_ota;
   h.hb_fill = hb_fill;
   h.on_channel_locked = [](uint8_t ch) {
     if (cfg.chan != ch) {
@@ -447,6 +553,7 @@ static void apply_commands() {
  * FEED_RESULT reporting are identical (the hub reconciles on return). */
 static void local_sched_poll_tick() {
   if (bench_mode != BENCH_OFF) return; /* bench modes are RAM-only, no real feeds */
+  if (!ota_actuation_allowed()) return; /* M8b FMEA #11: locked during/after OTA */
   if (g_unix_now < 1600000000) {
     last_local_min = -1;
     return;
@@ -527,6 +634,10 @@ void setup() {
   }
   if (cfg.sched_count > SCHEDULE_STORE_MAX) cfg.sched_count = 0;
 
+  /* M8b (D40): an OTA lock set before the last reboot gates everything below
+   * until a different image confirms itself — or serial unlocks it. */
+  ota_boot_resolve();
+
   /* SR6: anything still IN_PROGRESS was attempted before the reset */
   memcpy((void *)journal.entries(), cfg.journal, sizeof(cfg.journal));
   uint32_t attempted = journal.resolve_in_progress();
@@ -595,8 +706,11 @@ void setup() {
 
   boot_ms = millis();
   refresh_time(0);
-  Serial.printf("ready: time_ok=%d limits_confirmed=%d fault=%d\n", time_ok,
-                limits.limits_confirmed, act.in_fault());
+  hal.ota_mark_valid(); /* C3: setup completed — cancel bootloader rollback */
+  char fw[16];
+  fw_ver_str(AIO_NODE_FW_VER, fw, sizeof(fw));
+  Serial.printf("ready: fw=%s time_ok=%d limits_confirmed=%d fault=%d ota_lock=%d\n",
+                fw, time_ok, limits.limits_confirmed, act.in_fault(), cfg.ota_lock);
   cli_help();
 }
 
