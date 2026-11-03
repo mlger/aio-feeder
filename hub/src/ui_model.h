@@ -1014,6 +1014,14 @@ struct SettingsView {
   char wifi_ssid[33] = "";
   uint8_t chan = 1;
 
+  /* remote (M6 §6.7) — filled by the firmware after build_settings.
+   * Plain literals here: remote.h includes this header, so no constants. */
+  bool web_on = false;
+  uint16_t web_port = 80;
+  bool mqtt_on = false;
+  char mqtt_state[8] = "off"; /* off / down / up */
+  char remote_ip[16] = "";
+
   /* security */
   bool pin_enabled = false;
   uint8_t pin_scope = PIN_SCOPE_SETTINGS;

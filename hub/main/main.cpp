@@ -57,6 +57,8 @@
 #include "hub_time.h"
 #include "calib_session.h"
 #include "pin_lock.h"
+#include "remote.h"
+#include "remote_net.h"
 #include "settings_store.h"
 #include "wizard_session.h"
 #include "now_espnow.h"
@@ -97,6 +99,7 @@ static aio::HubCore core;
 static aio::PairingSession g_pair; /* §6.3 pairing window (M4b) */
 static aio::CalibSession g_calib;  /* §9.3 calibration wizard (M4b) */
 static aio::HubSettings g_set;     /* §8.8 settings blob (M4b) */
+static aio::RemoteSettings g_rset; /* §6.7 remote settings blob (M6) */
 static aio::PinLock g_pin;         /* §8 PIN lock (M4b, RAM) */
 static aio::WizardSession g_wiz;   /* §9.13 setup wizard (M4b) */
 static aio::IBackupStore *g_sd = nullptr; /* SD card / virtual SD (M4b) */
@@ -367,6 +370,8 @@ static void factory_reset() { /* caller holds the state lock */
   reg.save(nvs);
   g_set = settings_defaults();
   settings_persist(); /* PIN gone with the blob (factory reset, §8.8) */
+  g_rset = aio::remote_defaults();
+  nvs.del(aio::RMT_STORE_KEY);
   printf("factory reset done - nodes=%u, settings back to defaults\n",
          (unsigned)reg.count());
 }
@@ -962,7 +967,7 @@ static int cmd_cal(int argc, char **argv) {
  */
 static int cmd_set(int argc, char **argv) {
   if (argc < 2) {
-    printf("usage: set show|brightness|screenoff|retention|ntp|wifi|factoryreset ...\n");
+    printf("usage: set show|brightness|screenoff|retention|ntp|wifi|mqtt|web|factoryreset ...\n");
     return 1;
   }
   StateLock lock;
@@ -973,6 +978,10 @@ static int cmd_set(int argc, char **argv) {
            (unsigned)g_set.pin_enabled, (unsigned)g_set.pin_scope);
     printf("wifi ssid='%s' (pass kept on device) sd=%s backups=%u\n",
            g_set.wifi_ssid, g_sd_note, (unsigned)g_backup_count);
+    printf("web=%u :%u auth=%u mqtt=%s disc=%u\n",
+           (unsigned)g_rset.web_on, (unsigned)g_rset.web_port,
+           (unsigned)g_rset.web_auth, g_rset.mqtt_on ? g_rset.mqtt_url : "off",
+           (unsigned)g_rset.mqtt_disc);
     return 0;
   }
   if (!strcmp(argv[1], "brightness") && argc == 3) {
@@ -1022,6 +1031,36 @@ static int cmd_set(int argc, char **argv) {
           g_set.wifi_pass[0] ? "set" : "cleared/open");
     return 0;
   }
+  if (!strcmp(argv[1], "web") && argc >= 3) {
+    /* set web <0|1> [port] [auth] — dashboard switch, §6.7 */
+    const uint32_t port = argc >= 4 ? parse_num(argv[3]) : g_rset.web_port;
+    const uint32_t auth = argc >= 5 ? parse_num(argv[4]) : g_rset.web_auth;
+    if (!aio::remote_set_web(&g_rset, (uint8_t)parse_num(argv[2]),
+                             (uint16_t)port, (uint8_t)auth)) {
+      printf("bad web args (port 1-65535)\n");
+      return 1;
+    }
+    aio::remote_save(nvs, g_rset);
+    remote_net_request_apply(); /* restart from the loop task, no locks held */
+    printf("web=%u port=%u auth=%u\n", (unsigned)g_rset.web_on,
+           (unsigned)g_rset.web_port, (unsigned)g_rset.web_auth);
+    return 0;
+  }
+  if (!strcmp(argv[1], "mqtt") && argc >= 3) {
+    /* set mqtt <url> [user] [pass] — "" clears the broker, §6.7 */
+    if (!aio::remote_set_mqtt(&g_rset, argv[2], argc >= 4 ? argv[3] : "",
+                              argc >= 5 ? argv[4] : "")) {
+      printf("url too long (max %u)\n", (unsigned)(sizeof(g_rset.mqtt_url) - 1));
+      return 1;
+    }
+    g_rset.mqtt_on = argv[2][0] ? 1 : 0;
+    aio::remote_save(nvs, g_rset);
+    remote_net_request_apply(); /* restart from the loop task, no locks held */
+    printf("mqtt %s user='%s' pass %s (applied now)\n",
+           g_rset.mqtt_on ? g_rset.mqtt_url : "off", g_rset.mqtt_user,
+           g_rset.mqtt_pass[0] ? "set" : "none");
+    return 0;
+  }
   if (!strcmp(argv[1], "factoryreset")) {
     if (argc != 3 || strcmp(argv[2], "RESET") != 0) {
       printf("type it: set factoryreset RESET\n");
@@ -1030,8 +1069,34 @@ static int cmd_set(int argc, char **argv) {
     factory_reset();
     return 0;
   }
-  printf("usage: set show|brightness|screenoff|retention|ntp|wifi|factoryreset ...\n");
+  printf("usage: set show|brightness|screenoff|retention|ntp|wifi|mqtt|web|factoryreset ...\n");
   return 1;
+}
+
+/* remote fields for the Settings pane (SET_SEC_REMOTE body, ui.cpp) — build
+ * the snapshot, then stamp the live remote state on top */
+static void set_remote_view(aio::ui::SettingsView &sv) {
+  sv.web_on = g_rset.web_on != 0;
+  sv.web_port = g_rset.web_port;
+  sv.mqtt_on = g_rset.mqtt_on != 0;
+  snprintf(sv.mqtt_state, sizeof(sv.mqtt_state), "%s", remote_net_mqtt_state());
+  snprintf(sv.remote_ip, sizeof(sv.remote_ip), "%s", remote_net_ip());
+}
+
+static int cmd_remote(int argc, char **argv) {
+  (void)argv;
+  StateLock lock;
+  if (argc > 1) {
+    printf("usage: remote  (status only — configure with 'set web' / 'set mqtt')\n");
+    return 1;
+  }
+  printf("web %s :%u auth=%s ip=%s\n", remote_net_web_up() ? "up" : "off",
+         (unsigned)g_rset.web_port, g_rset.web_auth ? "on" : "off",
+         remote_net_ip()[0] ? remote_net_ip() : "-");
+  printf("mqtt %s url='%s' user='%s' disc=%u\n", remote_net_mqtt_state(),
+         g_rset.mqtt_url, g_rset.mqtt_user, (unsigned)g_rset.mqtt_disc);
+  printf("topics: aio/hub/{status,notify} aio/node/<id>/{state,cmd/feed,event/feed_result,config}\n");
+  return 0;
 }
 
 /* PIN (§8, FR10): stored as a salted hash in the settings blob; the RAM
@@ -1258,6 +1323,7 @@ static void register_commands() {
           cmd_backup);
   add_cmd("wiz", "setup wizard (§9.13)",
           "start|tz|ntp|wifi|node|cap|sched|next|back|save", cmd_wiz);
+  add_cmd("remote", "web + MQTT status (§6.7)", "", cmd_remote);
 }
 
 /* --- main loop task (1 ms; shares state with the REPL under g_state_mu) ---------- */
@@ -1273,6 +1339,7 @@ static void aio_loop_task(void *) {
 #endif
       eng.tick(now);
       core.tick(now, hub_unix_now());
+      remote_net_poll(now, hub_unix_now()); /* deferred applies + 30 s cadence */
 
 #if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
       aio::sim::tick_nodes(now); /* node engines + hub → node sim frames */
@@ -1550,6 +1617,7 @@ static void aio_loop_task(void *) {
                                     g_pin.blocks_settings(),
                                     g_pin.unlock_left_s(now));
         sv.section = s_set_section;
+        set_remote_view(sv);
         aio::ui::publish_settings(sv);
         aio::ui::publish_wizard(g_wiz.view());
         /* §8: mirror the lock state so the nav model bounces on expiry */
@@ -1594,6 +1662,7 @@ static void aio_loop_task(void *) {
               reg, g_set, un, g_sd_note, g_backup_count, g_backup_last,
               g_pin.blocks_settings(), g_pin.unlock_left_s(now));
           sv.section = s_set_section;
+          set_remote_view(sv);
           aio::ui::publish_settings(sv);
         }
         /* PIN pad OK → PinLock verify (§8); the verdict routes the nav */
@@ -1885,6 +1954,7 @@ static void aio_loop_task(void *) {
       }
 #endif
     }
+    remote_net_service(); /* deferred web/MQTT restarts — mutex NOT held here */
     vTaskDelay(pdMS_TO_TICKS(1));
   }
 }
@@ -1905,6 +1975,10 @@ extern "C" void app_main(void) {
   if (!settings_load(nvs, &g_set)) {
     g_set = settings_defaults();
     printf("settings: defaults (no valid blob)\n");
+  }
+  if (!aio::remote_load(nvs, &g_rset)) {
+    g_rset = aio::remote_defaults();
+    printf("remote: defaults (no valid blob)\n");
   }
   g_pin.configure(g_set);
   g_wiz.bind_registry(&reg);
@@ -1938,6 +2012,7 @@ extern "C" void app_main(void) {
 #endif
 
   time_begin(); /* PCF85063 → system clock; SNTP starts with the radio */
+  evlog.on_push = remote_net_on_event; /* M6: feed_result + notify publishes */
   core.begin(&reg, &link_adapter, &nvs, &evlog, hub_unix_now());
   g_pair.begin([](uint8_t *out, size_t n) { esp_fill_random(out, n); });
   g_pair.set_channel(HUB_CHAN_DEFAULT);
@@ -1976,6 +2051,15 @@ extern "C" void app_main(void) {
     printf("registry nodes=%u tz=%u stagger=%u feed_id_seq=%lu\n", reg.count(),
            reg.data().tz_rule, reg.data().stagger_max,
            (unsigned long)reg.data().feed_id_seq);
+  }
+
+  /* M6 remote: web dashboard + MQTT (no-op under AIO_NO_RADIO) */
+  {
+    RemoteNetCtx rctx{&reg,      &evlog, &core, &g_set, &g_rset,
+                      &nvs,       &eng,   esp_app_get_description()->version,
+                      ms_now,     hub_unix_now, g_state_mu};
+    remote_net_init(&rctx);
+    remote_net_apply();
   }
 
   /* 8 KB: the pairing commit path (session commit → PAIR_ACCEPT send →

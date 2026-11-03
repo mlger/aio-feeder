@@ -1451,8 +1451,16 @@ static void set_body_text(const SettingsView &v, char *buf, size_t n) {
                  (unsigned)v.chan);
       break;
     case SET_SEC_REMOTE:
-      snprintf(buf, n,
-               "Web dashboard + MQTT\nland with remote access\n(the next milestone).\n\nNotifications ride on MQTT.");
+      if (v.remote_ip[0])
+        snprintf(buf, n,
+                 "Web: %s http://%s:%u\nMQTT: %s\n\nTopics on 'remote' (CLI);\nedit from the web page.",
+                 v.web_on ? "on " : "off", v.remote_ip, (unsigned)v.web_port,
+                 v.mqtt_on ? v.mqtt_state : "off");
+      else
+        snprintf(buf, n,
+                 "Web: %s :%u (no Wi-Fi yet)\nMQTT: %s\n\nNeeds Wi-Fi (wizard or\n'set wifi'). Configure with\n'set web' / 'set mqtt'.",
+                 v.web_on ? "on" : "off", (unsigned)v.web_port,
+                 v.mqtt_on ? v.mqtt_state : "off");
       break;
     case SET_SEC_SECURITY:
       if (v.pin_enabled)
