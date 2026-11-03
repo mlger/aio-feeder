@@ -37,3 +37,7 @@ Thumbs.db
 *.token
 .env
 .env.local
+
+# Vendored host-test Unity (tools/hosttest.sh fetches it)
+tools/unity/
+build/

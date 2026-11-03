@@ -27,6 +27,7 @@ struct RemoteNetCtx {
   aio::RemoteSettings *rset;   /* live remote settings */
   aio::IHubStore *store;       /* persist rset */
   aio::LinkEngine *eng;        /* peer freshness */
+  aio::UnpairQueue *unpair;    /* pending unpairs → status JSON (FMEA #15) */
   const char *fw;
   uint32_t (*ms_now)(void);
   int64_t (*unix_now)(void);

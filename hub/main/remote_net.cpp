@@ -63,7 +63,9 @@ static void mq_publish(const char *topic, const char *payload, int qos, bool ret
     esp_mqtt_client_publish(s_mqtt, topic, payload, 0, qos, retain ? 1 : 0);
 }
 
-static void mq_notify(const char *text, uint8_t node_id) {
+static void mq_notify(uint8_t kind, const char *text, uint8_t node_id) {
+  /* §9.11: master + per-trigger switches; administrative rows always pass. */
+  if (!s_inited || !aio::notify_switch_allows(*s_ctx.rset, kind)) return;
   char pl[192];
   char esc[96];
   aio::json_escape(esc, sizeof(esc), 0, text);
@@ -119,11 +121,11 @@ static void mqtt_cmd_feed(uint8_t node, uint16_t amount) {
   SessLock lock;
   const aio::HubNode *n = s_ctx.reg->by_id(node);
   if (!n) {
-    mq_notify("feed refused: unknown node", node);
+    mq_notify(aio::EV_FEED_REJ, "feed refused: unknown node", node);
     return;
   }
   if (!s_ctx.core->request_manual(node, amount, s_ctx.ms_now(), s_ctx.unix_now()))
-    mq_notify("feed refused: node busy", node);
+    mq_notify(aio::EV_FEED_REJ, "feed refused: node busy", node);
 }
 
 static void mqtt_event(void *h, esp_event_base_t base, int32_t id, void *ed) {
@@ -161,7 +163,7 @@ static void mqtt_event(void *h, esp_event_base_t base, int32_t id, void *ed) {
           node == topic_node)
         mqtt_cmd_feed(node, amount);
       else if (topic_node)
-        mq_notify("feed command: bad payload", topic_node);
+        mq_notify(aio::EV_FEED_REJ, "feed command: bad payload", topic_node);
       break;
     }
     default:
@@ -221,7 +223,7 @@ static esp_err_t h_status(httpd_req_t *req) {
         aio::local_from_unix(s_ctx.unix_now(), s_ctx.reg->data().tz_rule);
     const size_t len = aio::remote_status_json(
         *s_ctx.reg, *s_ctx.log, *s_ctx.rset, s_mqtt_up == 2, s_live, s_ctx.fw, now,
-        s_ctx.unix_now(), buf, 3072);
+        s_ctx.unix_now(), buf, 3072, s_ctx.unpair);
     httpd_resp_set_type(req, "application/json");
     if (!len)
       httpd_resp_send_500(req);
@@ -473,14 +475,14 @@ void remote_net_poll(uint32_t now_ms, int64_t unix_now) {
     const uint8_t cur = s_live[i].state;
     if (s_prev_state[i] == aio::ui::NODE_ONLINE && cur != aio::ui::NODE_ONLINE) {
       snprintf(txt, sizeof(txt), "%s offline", n->profile.name);
-      mq_notify(txt, n->id);
+      mq_notify(aio::RMT_NOTIFY_OFFLINE, txt, n->id);
     }
     s_prev_state[i] = cur;
     /* shortcut: the low-stock latch clears only on reboot; a refill logged
      * over MQTT re-fires it until then, acceptable for v1 */
     if (!s_low_latch[i] &&
         aio::remote_notify_low_stock(*s_ctx.log, *n, unix_now, txt, sizeof(txt))) {
-      mq_notify(txt, n->id);
+      mq_notify(aio::RMT_NOTIFY_STOCK, txt, n->id);
       s_low_latch[i] = true;
     }
   }
@@ -511,7 +513,7 @@ void remote_net_on_event(const aio::HubEvent &e) {
   }
   if (aio::remote_notify_text(e.kind, e.node, notify_node_name(e.node), e.amount,
                               e.aux, txt, sizeof(txt)))
-    mq_notify(txt, e.node);
+    mq_notify(e.kind, txt, e.node);
 }
 
 void remote_net_service(void) {

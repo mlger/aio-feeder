@@ -291,6 +291,9 @@ static const char *kind_short(uint8_t kind) {
     case EV_FEED_FAIL: return "FAIL";
     case EV_FEED_REJ: return "REJECTED";
     case EV_FEED_UNKNOWN: return "NO LINK";
+    case EV_SKIPPED_MISSED: return "MISSED";
+    case EV_HOPPER_LOW: return "HOPPER";
+    case EV_UNPAIR_PENDING: return "UNPAIR";
     default: return "?";
   }
 }
@@ -301,6 +304,8 @@ static const char *alert_text(uint8_t kind) {
     case EV_FEED_REJ: return "feed rejected";
     case EV_FEED_UNKNOWN: return "feed not confirmed";
     case EV_SKIPPED_MISSED: return "feed missed";
+    case EV_HOPPER_LOW: return "hopper low";
+    case EV_UNPAIR_PENDING: return "removed — unpair pending";
     default: return "check feeder";
   }
 }

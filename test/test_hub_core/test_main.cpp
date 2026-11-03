@@ -18,6 +18,7 @@
 #include "hub_time.h"
 #include "messages.h"
 #include "profile.h"
+#include "unpair_queue.h"
 
 using namespace aio;
 
@@ -274,6 +275,72 @@ void test_fm_unknown_when_retries_exhausted(void) {
   TEST_ASSERT_EQUAL_UINT16(1, log.count_of(EV_FEED_UNKNOWN));
 }
 
+/* ---- M7: reconciliation of untracked results (§9.6, §9.7) ------------------ */
+
+void test_fm_untracked_result_reconciles(void) {
+  RamStore s;
+  MockLink l;
+  EventLog log;
+  HubRegistry reg;
+  static const uint8_t mac[6] = {0x24, 0x6F, 0x28, 0x00, 0x00, 0x09};
+  HubNode *n = reg.add(mac, 1);
+  TEST_ASSERT_NOT_NULL(n);
+  n->profile.cal_ms_per_unit_x100 = 25000; /* 250 ms per g (gate default) */
+  FeedManager fm;
+  fm.begin(&l, &s, &log, 1, &reg);
+
+  /* a fallback-schedule feed the node ran while the hub was down: the hub
+   * never tracked this id, yet it must land as an OK row with the
+   * node-reported amount (1000 ms / 250 ms per g = 4 g) so the stock
+   * estimate stays honest (§9.6, §9.7). */
+  feed_result_payload_t r = mk_res(0x80000001u, RESULT_OK);
+  r.actual_on_ms = 1000;
+  fm.on_result(1, r, 2000);
+  TEST_ASSERT_EQUAL_UINT16(1, log.count_of(EV_FEED_OK));
+  const HubEvent *ok = nullptr;
+  for (uint16_t i = 0; i < log.count(); i++)
+    if (log.at(i)->feed_id == 0x80000001u) ok = log.at(i);
+  TEST_ASSERT_NOT_NULL(ok);
+  TEST_ASSERT_EQUAL_UINT16(4, ok->amount);
+
+  /* a rejected run reconciles as a plain failure with no amount */
+  feed_result_payload_t bad = mk_res(0x80000002u, FEED_REJ_FAULT);
+  bad.actual_on_ms = 100;
+  fm.on_result(1, bad, 2100);
+  TEST_ASSERT_EQUAL_UINT16(1, log.count_of(EV_FEED_FAIL));
+}
+
+/* ---- M7: pending-unpair queue (FMEA #15) ------------------------------------ */
+
+void test_unpair_queue_roundtrip(void) {
+  RamStore s;
+  UnpairQueue q;
+  TEST_ASSERT_FALSE(q.load(s)); /* fresh store: nothing queued */
+  uint8_t mac[6] = {0x24, 0x6F, 0x28, 0x11, 0x22, 0x33};
+  uint8_t key[32];
+  memset(key, 7, sizeof(key));
+  TEST_ASSERT_TRUE(q.add(3, mac, key, 32, 6, 500, 1700000000));
+  TEST_ASSERT_TRUE(q.add(3, mac, key, 32, 6, 500, 1700000000)); /* idempotent */
+  TEST_ASSERT_EQUAL_UINT8(1, q.count());
+  const PendingUnpair *f = q.find(mac);
+  TEST_ASSERT_NOT_NULL(f);
+  TEST_ASSERT_EQUAL_UINT8(3, f->id);
+  TEST_ASSERT_EQUAL_UINT16(500, f->tx_seq);
+  TEST_ASSERT_EQUAL_UINT8(32, f->key_len);
+
+  /* hub reboot on the same storage */
+  TEST_ASSERT_TRUE(q.save(s));
+  UnpairQueue q2;
+  TEST_ASSERT_TRUE(q2.load(s));
+  TEST_ASSERT_EQUAL_UINT8(1, q2.count());
+  TEST_ASSERT_NOT_NULL(q2.find(mac));
+
+  /* the node re-beacons unpaired → dropped */
+  TEST_ASSERT_TRUE(q2.drop(mac));
+  TEST_ASSERT_EQUAL_UINT8(0, q2.count());
+  TEST_ASSERT_FALSE(q2.drop(mac));
+}
+
 void test_fm_stagger_and_node_mutex(void) {
   RamStore s;
   MockLink l;
@@ -392,6 +459,30 @@ void test_catchup_window_expired_stays_skipped(void) {
   h2->tick(0, manila_unix(local_at(DAY0, 10 * 60)));
   TEST_ASSERT_EQUAL_size_t(0, h2->link.sent.size());
   TEST_ASSERT_EQUAL_UINT16(1, h2->log.count_of(EV_SKIPPED_MISSED));
+  delete h2;
+}
+
+void test_catchup_stands_down_after_self_fed(void) {
+  /* D37: the node already ran the occurrence from its fallback copy — the
+   * hub must not add a second dose via the catch-up policy. The self-feed
+   * is visible only as a local-range result (node ids ≥ 0x80000000). */
+  Hub h;
+  add_node(h, 480);
+  h.reg.by_id(1)->profile.missed_policy = 1;
+  h.reg.by_id(1)->profile.catchup_window_min = 30;
+  h.reg.save(h.store);
+  h.begin(manila_unix(local_at(DAY0 - 1, 20 * 60)));
+  h.tick(0, manila_unix(local_at(DAY0 - 1, 20 * 60)));
+
+  Hub *h2 = h.reborn(0); /* clock not trusted yet → boot scan defers (SR7) */
+  feed_result_payload_t self_fed = mk_res(0x80000001u, RESULT_OK);
+  self_fed.actual_on_ms = 1000;
+  h2->core.note_local_result(1); /* the node's fallback FEED_RESULT arrived */
+  h2->core.on_feed_result(1, self_fed, (uint32_t)manila_unix(local_at(DAY0, 8 * 60 + 10)));
+  h2->tick(0, manila_unix(local_at(DAY0, 8 * 60 + 10))); /* trusted → scan runs */
+  TEST_ASSERT_EQUAL_size_t(0, h2->link.sent.size()); /* no second dose */
+  TEST_ASSERT_EQUAL_UINT16(1, h2->log.count_of(EV_SKIPPED_MISSED));
+  TEST_ASSERT_EQUAL_UINT16(1, h2->log.count_of(EV_FEED_OK)); /* reconciled row */
   delete h2;
 }
 
@@ -576,5 +667,8 @@ int main(void) {
   RUN_TEST(test_dst_fall_repeat_hour_fires_once);
   RUN_TEST(test_day_mask_and_two_entries_per_day);
   RUN_TEST(test_manual_feed_via_core);
+  RUN_TEST(test_fm_untracked_result_reconciles);
+  RUN_TEST(test_unpair_queue_roundtrip);
+  RUN_TEST(test_catchup_stands_down_after_self_fed);
   return UNITY_END();
 }

@@ -100,6 +100,7 @@ struct LinkHandlers {
   void (*on_config)(const node_profile_t &p, uint8_t limits_confirmed) = nullptr;
   void (*on_status_req)(void) = nullptr;
   void (*on_abort)(const abort_payload_t &pl) = nullptr;
+  void (*on_unpair)(void) = nullptr;
   /* node lifecycle */
   void (*hb_fill)(heartbeat_payload_t *pl) = nullptr;
   void (*on_channel_locked)(uint8_t channel) = nullptr;
@@ -253,6 +254,16 @@ class LinkEngine {
   bool send_abort(uint8_t node_id, uint32_t feed_id, uint32_t now_ms) {
     abort_payload_t pl{feed_id};
     return hub_send(node_id, MSG_ABORT, &pl, sizeof(pl), now_ms);
+  }
+  /* UNPAIR (M7, FMEA #15): keyed with the node's stored key, sent by explicit
+   * mac — the registry node may already be removed (pending-unpair queue).
+   * The caller owns the seq (persisted with the queue entry) so a hub reboot
+   * cannot replay a stale seq into the node's replay window. */
+  bool send_unpair(const uint8_t mac[6], const uint8_t *key, uint8_t key_len,
+                   uint8_t node_id, uint16_t seq, uint32_t now_ms) {
+    if (role_ != Role::Hub || !key || !key_len) return false;
+    unpair_payload_t pl{0}; /* 0 = removed by operator */
+    return emit_raw(mac, key, MSG_UNPAIR, node_id, seq, &pl, sizeof(pl), now_ms);
   }
 
   /* --- TX: node role ----------------------------------------------------- */
@@ -498,6 +509,11 @@ class LinkEngine {
         abort_payload_t a;
         memcpy(&a, pl, sizeof(a));
         if (role_ == Role::Node && handlers_.on_abort) handlers_.on_abort(a);
+        break;
+      }
+      case MSG_UNPAIR: {
+        if (plen < (int)sizeof(unpair_payload_t)) { stats_.rx_bad_len++; return; }
+        if (role_ == Role::Node && handlers_.on_unpair) handlers_.on_unpair();
         break;
       }
       case MSG_SCHEDULE_ACK:

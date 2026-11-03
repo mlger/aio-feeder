@@ -89,7 +89,8 @@ static inline NodeState state_of(uint32_t now_ms, uint32_t last_rx_ms) {
 /* Kinds the dashboard alert strip and the alerts screen (§8.7) both surface. */
 static inline bool is_alert_kind(uint8_t kind) {
   return kind == EV_FEED_FAIL || kind == EV_FEED_REJ ||
-         kind == EV_FEED_UNKNOWN || kind == EV_SKIPPED_MISSED;
+         kind == EV_FEED_UNKNOWN || kind == EV_SKIPPED_MISSED ||
+         kind == EV_HOPPER_LOW || kind == EV_UNPAIR_PENDING;
 }
 
 /* Next future occurrence of a node's schedule, searched across the next

@@ -1,15 +1,17 @@
 /*
- * AIO Feeder — node firmware, M2 link (PLAN.md §7.3, §12 M2).
+ * AIO Feeder — node firmware, M7 resilience (PLAN.md §7.3, §9.6, §12 M7).
  *
  * Cooperative loop: CLI → ESP-NOW drain → actuator tick → link tick
- * → command drain (HAL side effects) → persistence → periodic sampling.
+ * → command drain (HAL side effects) → persistence → periodic sampling
+ * → fallback-schedule poll (§9.6, once per local minute).
  * One actuation at a time; the relay-off hardware timer is the SR2
  * guarantee, the loop is only the fast path.
  *
  * Radio: the FSM's ReportResult commands become FEED_RESULT frames over the
  * same seam the CLI prints on; FEED frames enter the same request_feed() the
- * CLI uses, so a radio feed and a bench feed are indistinguishable to the
- * safety core (SR2–SR9 all apply; bench modes are RAM-only, docs/bench-m2.md).
+ * CLI uses, so a radio feed, a bench feed and a fallback-schedule feed are
+ * indistinguishable to the safety core (SR2–SR9 all apply; bench modes are
+ * RAM-only, docs/bench-m2.md).
  */
 #include <Arduino.h>
 
@@ -30,6 +32,7 @@
 #include "../../link_core/link.h"
 #include "../../node_core/actuator.h"
 #include "../../node_core/feed_journal.h"
+#include "../../node_core/local_sched.h"
 #include "../../node_core/node_limits.h"
 #include "../../node_core/schedule.h"
 #include "../../node_core/time_validity.h"
@@ -60,6 +63,22 @@ static uint32_t boot_ms = 0;
 static uint8_t bench_mode = BENCH_OFF;
 static uint32_t last_feed_id = 0;
 static uint8_t region[kStorageRegion];
+
+/* M7: shared clock estimate (refresh_time maintains it; loop reads it). */
+static int64_t g_unix_now = 0;
+/* M7 (FMEA #23): RTC sanity — reject reads that jump backwards or far from
+ * millis() tracking; the projection stands in until the next good read. */
+static int64_t rtc_ref_unix = 0;
+static uint32_t rtc_ref_ms = 0;
+static uint16_t rtc_rejects = 0;
+/* M7 (§9.6): fallback-schedule minute tick. */
+static int64_t last_local_min = -1;
+static aio::LocalSchedState last_sched_state = aio::LocalSchedState::Idle;
+/* M7 (SR9/FMEA #17): the physical stop switch owns the latch once it has
+ * been seen active — bench rigs without the switch keep CLI control. */
+static bool stop_switch_seen = false;
+/* M7 (FMEA #8): hopper-low edge, serial warn once per low period. */
+static bool hopper_warned = false;
 
 #if defined(AIO_NODE_8266)
 static NowTransport8266 nowt;
@@ -122,12 +141,30 @@ static void refresh_time(uint32_t now_ms) {
   int64_t unix_now = 0;
   bool osf = false;
   if (hal.rtc_healthy(&unix_now, &osf)) {
+    /* FMEA #23: a garbage I²C read must never move the clock. Reject reads
+     * that jump backwards (>2 s) or forward (>60 s) from the millis()
+     * projection; keep the projection for this poll. */
+    int64_t use = unix_now;
+    if (rtc_ref_unix != 0) {
+      const int64_t expect =
+          rtc_ref_unix + (int64_t)((now_ms - rtc_ref_ms) / 1000);
+      if (unix_now < expect - 2 || unix_now > expect + 60) {
+        rtc_rejects++;
+        Serial.printf("WARN rtc read rejected: %lld vs expected %lld (%u total)\n",
+                      (long long)unix_now, (long long)expect, rtc_rejects);
+        use = expect;
+      }
+    }
+    rtc_ref_unix = use;
+    rtc_ref_ms = now_ms;
     tv.on_rtc_status(true);
-    limits.roll(unix_now);
-    time_ok = tv.valid_rtc(unix_now);
+    limits.roll(use);
+    time_ok = tv.valid_rtc(use);
+    g_unix_now = use;
   } else {
     tv.on_rtc_status(false);
     time_ok = tv.valid_ms(now_ms); /* no RTC: 24 h window since boot sync */
+    g_unix_now = time_ok ? tv.sync_unix() + (int64_t)((now_ms - tv.sync_ms()) / 1000) : 0;
   }
 }
 
@@ -144,7 +181,8 @@ static void hb_fill(heartbeat_payload_t *hb) {
   hb->uptime_ms = millis() - boot_ms;
   hb->rssi = 0; /* not exposed by these SDK callbacks */
   hb->vin_mv = vin_mv;
-  hb->hopper_low = 0; /* no hopper sensor on the bench rig yet */
+  hb->hopper_low =
+      (cfg.profile.flags & PROFILE_FLAG_HOPPER_SENSOR) ? (hal.hopper_low() ? 1 : 0) : 0;
   hb->last_feed_id = last_feed_id;
   hb->day_units = (uint16_t)limits.counters().day_units;
   uint8_t flags = 0;
@@ -204,9 +242,16 @@ static void handle_feed(const uint8_t mac[6], const feed_payload_t &f) {
 
 static void report_result(const aio::ActuatorCmd &c) {
   last_feed_id = c.feed_id;
-  Serial.printf("RESULT id=%u status=%s actual_on_ms=%u pulses=%u\n", c.feed_id,
-                result_name(c.result), c.actual_on_ms, c.pulses);
-  eng.send_feed_result(c.feed_id, c.result, c.actual_on_ms, c.pulses, 0xFF,
+  /* FMEA #2 detection: with a reed sensor fitted, report whether the gate
+   * actually closed again — a gate still open after the feed suggests a
+   * welded contact. 0xFF = no sensor (wire default, §6.5). */
+  uint8_t gate_ok = 0xFF;
+  if ((cfg.profile.flags & PROFILE_FLAG_GATE_SENSOR) &&
+      cfg.profile.mech == MECH_SOLENOID_GATE)
+    gate_ok = hal.gate_closed() ? 1 : 0;
+  Serial.printf("RESULT id=%u status=%s actual_on_ms=%u pulses=%u gate=%u\n", c.feed_id,
+                result_name(c.result), c.actual_on_ms, c.pulses, gate_ok);
+  eng.send_feed_result(c.feed_id, c.result, c.actual_on_ms, c.pulses, gate_ok,
                        (uint32_t)unix_now_guess(), millis());
 }
 
@@ -218,8 +263,11 @@ static void handle_time_sync(const time_sync_payload_t &t) {
     cfg.rtc_drift_ms =
         rtc_before ? (int32_t)((rtc_before - (int64_t)t.unix_time) * 1000) : 0;
     tv.on_sync((int64_t)t.unix_time, millis());
-    Serial.printf("RX time_sync unix=%u drift_ms=%d\n", (unsigned)t.unix_time,
-                  cfg.rtc_drift_ms);
+    cfg.tz_rule = t.tz_rule; /* §9.6: the fallback schedule runs in local time */
+    rtc_ref_unix = 0;        /* RTC was rewritten: re-anchor the sanity window */
+    g_unix_now = (int64_t)t.unix_time;
+    Serial.printf("RX time_sync unix=%u tz=%u drift_ms=%d\n", (unsigned)t.unix_time,
+                  t.tz_rule, cfg.rtc_drift_ms);
     persist_now();
   } else {
     Serial.println(F("RX time_sync: rtc write FAILED"));
@@ -310,6 +358,30 @@ static aio::LinkHandlers make_handlers() {
     Serial.printf("RX abort feed_id=%u\n", a.feed_id);
     if (act.abort(millis())) Serial.println(F("aborted (radio)"));
   };
+  h.on_unpair = []() {
+    /* FMEA #15: the hub removed this node — stop obeying, re-beacon (§6.3). */
+    if (bench_mode != BENCH_OFF) {
+      Serial.println(F("RX unpair (bench: ignored)"));
+      return;
+    }
+    if (!cfg.paired) return;
+    cfg.paired = 0;
+    memset(cfg.hub_mac, 0, 6);
+    memset(cfg.hub_key, 0, sizeof(cfg.hub_key));
+    cfg.hub_key_len = 0;
+    cfg.sched_count = 0; /* the fallback copy dies with the pairing (§9.6) */
+    cfg.sched_version = 0;
+    cfg.sched_pushed_unix = 0;
+    cfg.skip_until = 0;
+    cfg.hold_until = 0;
+    cfg.limits_confirmed = 0; /* hub re-pushes CONFIG on the next pairing */
+    last_local_min = -1;
+    last_sched_state = aio::LocalSchedState::NotTrusted;
+    eng.clear_peers();
+    eng.set_self(cfg.node_id, 0);
+    Serial.println(F("RX unpair: pairing + fallback schedule cleared — beaconing"));
+    persist_now();
+  };
   h.hb_fill = hb_fill;
   h.on_channel_locked = [](uint8_t ch) {
     if (cfg.chan != ch) {
@@ -366,6 +438,64 @@ static void apply_commands() {
     }
   }
   if (saw_intent) act.on_intent_saved(intent_ok, millis());
+}
+
+/* --- fallback schedule (§9.6, M7) ---------------------------------------------- */
+
+/* Once per local minute: run a due fallback occurrence through the same
+ * request_feed() path a radio feed takes — caps, cooldown, journal and
+ * FEED_RESULT reporting are identical (the hub reconciles on return). */
+static void local_sched_poll_tick() {
+  if (bench_mode != BENCH_OFF) return; /* bench modes are RAM-only, no real feeds */
+  if (g_unix_now < 1600000000) {
+    last_local_min = -1;
+    return;
+  }
+  const int64_t minute = g_unix_now / 60;
+  if (minute == last_local_min) return;
+  last_local_min = minute;
+
+  aio::LocalDue due{};
+  const aio::LocalSchedState st =
+      aio::local_sched_poll(cfg.sched_entries, cfg.sched_count, cfg.tz_rule,
+                       cfg.sched_pushed_unix, cfg.skip_until, cfg.hold_until,
+                       cfg.paired != 0, time_ok, g_unix_now, &due);
+  if (st != aio::LocalSchedState::Run && st != last_sched_state) {
+    switch (st) {
+      case aio::LocalSchedState::NotFresh:
+        Serial.println(F("sched: fallback copy stale (>7 d) — not running"));
+        break;
+      case aio::LocalSchedState::SkippedUser:
+        Serial.println(F("sched: occurrence inside skip_until"));
+        break;
+      case aio::LocalSchedState::SkippedHold:
+        Serial.println(F("sched: occurrence inside hold_until"));
+        break;
+      default:
+        break; /* NotTrusted: silent (unpaired / no valid time) */
+    }
+  }
+  last_sched_state = st;
+  if (st != aio::LocalSchedState::Run) return;
+
+  aio::FeedRequest req{};
+  req.feed_id = due.feed_id; /* journal-stable occurrence id (SR6) */
+  req.amount = due.amount;
+  req.scheduled = true;
+  req.time_ok = time_ok;
+  req.manual_stop = cfg.manual_stop;
+  req.vin_ok = !vin_present || vin_mv >= VIN_ABSENT_MV;
+  bool acc = false;
+  uint8_t res = 0;
+  act.request_feed(req, millis(), &acc, &res);
+  if (acc) {
+    Serial.printf("LOCAL sched v%u entry%u: amount=%u -> feed id=%u accepted\n",
+                  cfg.sched_version, due.entry, due.amount, due.feed_id);
+  } else if (res == FEED_OK) {
+    Serial.printf("LOCAL sched id=%u: already ran (journal dedup)\n", due.feed_id);
+  } else {
+    Serial.printf("LOCAL sched entry%u rejected: %s\n", due.entry, result_name(res));
+  }
 }
 
 /* --- setup / loop --------------------------------------------------------------- */
@@ -484,6 +614,7 @@ void loop() {
   nowt.pump(eng, now); /* ESP-NOW rx → engine (journal dedups feeds, SR6) */
 
   act.tick(now);
+  local_sched_poll_tick(); /* §9.6: may submit a feed — drained below */
   apply_commands();
 
   eng.tick(now); /* retries, RESULT repeats, heartbeat, channel scan */
@@ -502,6 +633,28 @@ void loop() {
   cli_ctx.vin_mv = vin_mv;
   cli_ctx.vin_present = vin_present;
   *cli_ctx.time_ok = time_ok;
+
+  /* SR9 (FMEA #17): physical stop switch — once seen fitted, it owns the
+   * manual_stop latch (bench rigs without the switch keep CLI control). */
+  if (hal.stop_active()) stop_switch_seen = true;
+  if (stop_switch_seen) {
+    const uint8_t want = hal.stop_active() ? 1 : 0;
+    if (want != cfg.manual_stop) {
+      cfg.manual_stop = want;
+      Serial.printf("stop switch -> manual_stop=%d\n", want);
+      persist_now();
+    }
+  }
+
+  /* FMEA #8: hopper-low edge — the heartbeat carries the level; warn once. */
+  if ((cfg.profile.flags & PROFILE_FLAG_HOPPER_SENSOR) && hal.hopper_low()) {
+    if (!hopper_warned) {
+      hopper_warned = true;
+      Serial.println(F("WARN hopper low"));
+    }
+  } else {
+    hopper_warned = false;
+  }
 
   persist_maybe(); /* also lands cfg.tx_seq for the replay window */
 }

@@ -50,7 +50,7 @@ class HubCore {
     reg_ = reg;
     log_ = log;
     store_ = store;
-    fm_.begin(link, store, log, reg->data().stagger_max);
+    fm_.begin(link, store, log, reg->data().stagger_max, reg);
     /* a hub death mid-feed surfaces as FEED_UNKNOWN, never a re-issue */
     for (int i = 0; i < HUB_MAX_NODES; i++) {
       HubNode *n = reg->node(i);
@@ -90,6 +90,12 @@ class HubCore {
   }
   void on_feed_result(uint8_t node, const feed_result_payload_t &r, uint32_t unix_now) {
     fm_.on_result(node, r, unix_now);
+  }
+  /* The node reported a fallback-schedule feed (local-range id, §9.6). RAM
+   * latch: the boot-scan catch-up-once (§9.4) then stands down for this node
+   * — a self-fed occurrence must never get a second dose (D37). */
+  void note_local_result(uint8_t node) {
+    if (node > 0 && node < sizeof(local_fed_)) local_fed_[node] = true;
   }
   void on_feed_unknown(uint32_t feed_id, uint8_t node, uint32_t unix_now) {
     fm_.on_unknown(feed_id, node, unix_now);
@@ -188,8 +194,12 @@ class HubCore {
       } else if (age_s < 60) {
         if (older) report_older(n, e, older, unix_now);
         fire(n, e, latest, (uint8_t)FeedKind::Scheduled, unix_now);
-      } else if (p.missed_policy == 1 && !catchup_used && within_window) {
-        /* §9.4 catch up once — one feed per node, never stacked */
+      } else if (p.missed_policy == 1 && !catchup_used && within_window &&
+                 !local_fed_[n.id]) {
+        /* §9.4 catch up once — one feed per node, never stacked. Stands down
+         * when the node already fed itself from the fallback copy (D37): the
+         * occurrence time of that self-feed is unknown here, so skip is the
+         * safe direction. */
         catchup_used = true;
         if (older) report_older(n, e, older, unix_now);
         fire(n, e, latest, (uint8_t)FeedKind::CatchUp, unix_now);
@@ -267,6 +277,7 @@ class HubCore {
   IHubStore *store_ = nullptr;
   EventLog *log_ = nullptr;
   FeedManager fm_;
+  bool local_fed_[256] = {}; /* node id → self-fed flag (RAM, D37 guard) */
   int64_t last_eval_unix_ = -1;
   bool boot_scan_done_ = false;
 };

@@ -67,6 +67,14 @@ typedef struct __attribute__((packed)) {
   uint32_t feed_id;
 } abort_payload_t;
 
+/* UNPAIR (hub → node, M7 FMEA #15): keyed with the hub's per-node key — the
+ * node verifies it exactly like any other frame, clears its pairing and
+ * re-beacons. Sent on remove, retried from the hub's pending-unpair queue
+ * until the node announces itself unpaired again (HELLO/PAIR_REQ). */
+typedef struct __attribute__((packed)) {
+  uint8_t reason;   /* 0 = removed by operator */
+} unpair_payload_t;
+
 /* SCHEDULE_ACK / CONFIG_ACK (node → hub). */
 typedef struct __attribute__((packed)) {
   uint16_t version;
@@ -137,6 +145,7 @@ AIO_STATIC_ASSERT(sizeof(time_sync_payload_t) == 5, "time_sync payload drift");
 AIO_STATIC_ASSERT(sizeof(heartbeat_payload_t) == 19, "heartbeat payload drift");
 AIO_STATIC_ASSERT(sizeof(feed_result_payload_t) == 14, "feed_result payload drift");
 AIO_STATIC_ASSERT(sizeof(abort_payload_t) == 4, "abort payload drift");
+AIO_STATIC_ASSERT(sizeof(unpair_payload_t) == 1, "unpair payload drift");
 AIO_STATIC_ASSERT(sizeof(ack_status_payload_t) == 3, "ack_status payload drift");
 AIO_STATIC_ASSERT(sizeof(sched_entry_t) == 5, "sched_entry drift");
 AIO_STATIC_ASSERT(sizeof(schedule_hdr_t) == 11, "schedule_hdr drift");

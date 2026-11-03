@@ -40,6 +40,7 @@ typedef enum {
   MSG_STATUS_REQ,
   MSG_HEARTBEAT,
   MSG_ABORT,
+  MSG_UNPAIR,
   MSG_TARE_OR_CAL,
   MSG_TYPE_COUNT
 } msg_type_t;

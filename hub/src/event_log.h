@@ -28,6 +28,8 @@ enum : uint8_t {
   EV_SKIPPED_HOLD,     /* §9.9 hold mode */
   EV_SKIPPED_MISSED,   /* §9.4 missed, outside catch-up (aux = occurrence count) */
   EV_CATCHUP,          /* §9.4 catch-up-once feed issued */
+  EV_HOPPER_LOW,       /* FMEA #8: heartbeat reported the hopper sensor low */
+  EV_UNPAIR_PENDING,   /* FMEA #15: node removed while offline — UNPAIR pending */
   EV_KIND_COUNT
 };
 

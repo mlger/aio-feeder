@@ -230,6 +230,38 @@ void test_feed_roundtrip(void) {
   TEST_ASSERT_EQUAL_UINT32(2, hub.stats().results_deduped);
 }
 
+/* ---- UNPAIR (M7, FMEA #15) ------------------------------------------------- */
+
+void test_unpair_keyed_roundtrip_and_reject(void) {
+  reset_cbs();
+  MockTransport ta, tb;
+  LinkEngine hub, node;
+  hub.begin(LinkEngine::Role::Hub, &ta, hub_handlers(), 0);
+  LinkHandlers nh = node_handlers();
+  static bool unpair_got;
+  unpair_got = false;
+  nh.on_unpair = []() { unpair_got = true; };
+  node.begin(LinkEngine::Role::Node, &tb, nh, 0);
+  uint8_t mac[6] = {0xBB, 0, 0, 0, 0, 2};
+  hub.add_peer(mac, 1, SHARED_KEY, 32);
+  node.add_peer(mac, LINK_HUB_ID, SHARED_KEY, 32);
+
+  TEST_ASSERT_TRUE(hub.send_unpair(mac, SHARED_KEY, 32, 1, 4242, 2000));
+  pump(ta, hub, tb, node, 2010);
+  TEST_ASSERT_TRUE(unpair_got); /* keyed with the node's key → accepted */
+
+  /* a foreign key fails the MAC check — the node never fires the handler */
+  unpair_got = false;
+  static const uint8_t other_key[32] = {1};
+  TEST_ASSERT_TRUE(hub.send_unpair(mac, other_key, 32, 1, 4243, 2020));
+  pump(ta, hub, tb, node, 2030);
+  TEST_ASSERT_FALSE(unpair_got);
+  TEST_ASSERT_TRUE(node.stats().rx_bad_mac >= 1);
+
+  /* node role may not originate UNPAIR */
+  TEST_ASSERT_FALSE(node.send_unpair(mac, SHARED_KEY, 32, 1, 4244, 2040));
+}
+
 void test_feed_retries_then_unknown(void) {
   reset_cbs();
   MockTransport ta;
@@ -578,6 +610,7 @@ int main(void) {
   RUN_TEST(test_frame_mac_tamper);
   RUN_TEST(test_pairing_wrap_roundtrip);
   RUN_TEST(test_feed_roundtrip);
+  RUN_TEST(test_unpair_keyed_roundtrip_and_reject);
   RUN_TEST(test_feed_retries_then_unknown);
   RUN_TEST(test_feed_dup_reanswered_not_actuated_twice);
   RUN_TEST(test_seq_window_and_replay);

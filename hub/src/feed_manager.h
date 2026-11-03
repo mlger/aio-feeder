@@ -60,10 +60,12 @@ struct IHubLink {
 
 class FeedManager {
  public:
-  void begin(IHubLink *link, IHubStore *store, EventLog *log, uint8_t stagger_max) {
+  void begin(IHubLink *link, IHubStore *store, EventLog *log, uint8_t stagger_max,
+             HubRegistry *reg = nullptr) {
     link_ = link;
     store_ = store;
     log_ = log;
+    reg_ = reg;
     stagger_ = stagger_max ? stagger_max : 1;
     inflight_ = 0;
     memset(slots_, 0, sizeof(slots_));
@@ -108,9 +110,17 @@ class FeedManager {
     if (log_->has_result(r.feed_id)) return; /* §9.7 no double counting */
     Slot *s = find_inflight(node, r.feed_id);
     if (!s) {
-      /* late/reconciled result for a feed this hub no longer tracks */
-      log_->push(unix_now, node, EV_FEED_FAIL, r.status, r.feed_id, 0, r.pulses,
-                 EV_SRC_SCHED);
+      /* §9.6 reconciliation: a result for a feed this hub does not track —
+       * a fallback-schedule feed the node ran while the hub was down, or a
+       * late result after a hub reboot. Log what actually dispensed
+       * (§9.7: node-reported amount) so the stock estimate stays honest. */
+      uint16_t amount = 0;
+      if (reg_) {
+        const HubNode *n = reg_->by_id(node);
+        if (n) amount = result_units(n->profile, r);
+      }
+      log_->push(unix_now, node, r.status == RESULT_OK ? EV_FEED_OK : EV_FEED_FAIL,
+                 r.status, r.feed_id, amount, r.pulses, EV_SRC_SCHED);
       return;
     }
     finish(*s, r.status == RESULT_OK ? EV_FEED_OK : EV_FEED_FAIL, r.status,
@@ -158,6 +168,16 @@ class FeedManager {
     bool used;
   };
 
+  /* Node-reported amount in the profile's unit (§9.7): OK counts the full
+   * dispensed amount, ABORTED the partial, REJ_* and gate failures 0. */
+  static uint16_t result_units(const node_profile_t &p,
+                               const feed_result_payload_t &r) {
+    if (r.status != RESULT_OK && r.status != FEED_ABORTED) return 0;
+    if (p.unit == UNIT_PULSES) return r.pulses;
+    if (!p.cal_ms_per_unit_x100) return 0;
+    return (uint16_t)((uint32_t)r.actual_on_ms * 100u / p.cal_ms_per_unit_x100);
+  }
+
   Slot *find_inflight(uint8_t node, uint32_t feed_id) {
     for (int i = 0; i < HUB_MAX_NODES; i++)
       if (slots_[i].used && slots_[i].job.node == node &&
@@ -197,6 +217,7 @@ class FeedManager {
   IHubLink *link_ = nullptr;
   IHubStore *store_ = nullptr;
   EventLog *log_ = nullptr;
+  HubRegistry *reg_ = nullptr; /* reconciliation lookups (§9.6); may be null */
   uint8_t stagger_ = 1;
   int inflight_ = 0;
   Slot slots_[HUB_MAX_NODES]{};

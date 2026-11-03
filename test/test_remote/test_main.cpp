@@ -82,6 +82,64 @@ static void test_defaults(void) {
   TEST_ASSERT_EQUAL_UINT8(0, s.mqtt_on);
   TEST_ASSERT_EQUAL_UINT8(1, s.mqtt_disc);
   TEST_ASSERT_EQUAL_UINT8(0, s.mqtt_url[0]);
+  TEST_ASSERT_EQUAL_UINT8(1, s.notify_master);
+  TEST_ASSERT_EQUAL_UINT8(1, s.notify_offline);
+  TEST_ASSERT_EQUAL_UINT8(1, s.notify_fault);
+  TEST_ASSERT_EQUAL_UINT8(1, s.notify_missed);
+  TEST_ASSERT_EQUAL_UINT8(1, s.notify_stock);
+  TEST_ASSERT_EQUAL_UINT8(1, s.notify_sensor);
+}
+
+static void test_notify_switches_gate(void) {
+  RemoteSettings s = remote_defaults();
+  TEST_ASSERT_TRUE(notify_switch_allows(s, EV_FEED_FAIL));
+  TEST_ASSERT_TRUE(notify_switch_allows(s, EV_SKIPPED_MISSED));
+  TEST_ASSERT_TRUE(notify_switch_allows(s, EV_HOPPER_LOW));
+  TEST_ASSERT_TRUE(notify_switch_allows(s, RMT_NOTIFY_OFFLINE));
+  TEST_ASSERT_TRUE(notify_switch_allows(s, RMT_NOTIFY_STOCK));
+  TEST_ASSERT_TRUE(notify_switch_allows(s, EV_UNPAIR_PENDING));
+  s.notify_master = 0;
+  TEST_ASSERT_FALSE(notify_switch_allows(s, EV_FEED_FAIL)); /* master kills all */
+  s = remote_defaults();
+  s.notify_fault = 0;
+  TEST_ASSERT_FALSE(notify_switch_allows(s, EV_FEED_FAIL));
+  TEST_ASSERT_FALSE(notify_switch_allows(s, EV_FEED_UNKNOWN));
+  TEST_ASSERT_TRUE(notify_switch_allows(s, EV_SKIPPED_MISSED)); /* others unaffected */
+  s.notify_missed = 0;
+  TEST_ASSERT_FALSE(notify_switch_allows(s, EV_SKIPPED_MISSED));
+  s = remote_defaults();
+  s.notify_offline = 0;
+  TEST_ASSERT_FALSE(notify_switch_allows(s, RMT_NOTIFY_OFFLINE));
+  s.notify_stock = 0;
+  TEST_ASSERT_FALSE(notify_switch_allows(s, RMT_NOTIFY_STOCK));
+  s.notify_sensor = 0;
+  TEST_ASSERT_FALSE(notify_switch_allows(s, EV_HOPPER_LOW));
+}
+
+static void test_v1_blob_migrates(void) {
+  /* a v0.9 hub upgrades in place: the v1 blob keeps web + MQTT fields (D36) */
+  RemoteSettingsV1 v1;
+  memset(&v1, 0, sizeof(v1));
+  v1.version = 1;
+  v1.web_on = 1;
+  v1.web_port = 8080;
+  v1.web_auth = 1;
+  v1.mqtt_on = 1;
+  v1.mqtt_disc = 1;
+  snprintf(v1.mqtt_url, sizeof(v1.mqtt_url), "mqtt://old:1883");
+  snprintf(v1.mqtt_user, sizeof(v1.mqtt_user), "alice");
+  snprintf(v1.mqtt_pass, sizeof(v1.mqtt_pass), "s3cret");
+  TEST_ASSERT_TRUE(store_put(store, RMT_STORE_KEY, 1, &v1, sizeof(v1)));
+  RemoteSettings out;
+  TEST_ASSERT_TRUE(remote_load(store, &out));
+  TEST_ASSERT_EQUAL_UINT16(RMT_VERSION, out.version);
+  TEST_ASSERT_EQUAL_STRING("mqtt://old:1883", out.mqtt_url);
+  TEST_ASSERT_EQUAL_STRING("alice", out.mqtt_user);
+  TEST_ASSERT_EQUAL_STRING("s3cret", out.mqtt_pass);
+  TEST_ASSERT_EQUAL_UINT16(8080, out.web_port);
+  TEST_ASSERT_EQUAL_UINT8(1, out.web_auth);
+  TEST_ASSERT_EQUAL_UINT8(1, out.notify_master); /* new switches default on */
+  TEST_ASSERT_EQUAL_UINT8(1, out.notify_sensor);
 }
 
 static void test_roundtrip(void) {
@@ -350,6 +408,8 @@ static void test_low_stock_notify(void) {
 int main(void) {
   UNITY_BEGIN();
   RUN_TEST(test_defaults);
+  RUN_TEST(test_notify_switches_gate);
+  RUN_TEST(test_v1_blob_migrates);
   RUN_TEST(test_roundtrip);
   RUN_TEST(test_load_rejects_corrupt);
   RUN_TEST(test_set_web_validation);
