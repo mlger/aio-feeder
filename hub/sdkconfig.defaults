@@ -13,6 +13,12 @@ CONFIG_SPIRAM_SPEED_80M=y
 CONFIG_PARTITION_TABLE_CUSTOM=y
 CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
 
+# M8a OTA (PLAN.md §7.6): a staged image boots in PENDING_VERIFY and must
+# call esp_ota_mark_app_valid_cancel_rollback() within the health window
+# (ota_service.cpp tick, CONFIG_AIO_OTA_CONFIRM_MS) — otherwise the
+# bootloader marks it INVALID and falls back to the previous slot.
+CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE=y
+
 CONFIG_FREERTOS_HZ=1000
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=8192
 CONFIG_ESP_TASK_WDT_TIMEOUT_S=10

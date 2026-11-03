@@ -980,9 +980,10 @@ struct WizardView {
 
 /* --- settings view (§8.8; M4b) -------------------------------------------------------- */
 
-constexpr uint8_t UI_SET_SECTION_COUNT = 10;
+constexpr uint8_t UI_SET_SECTION_COUNT = 11;
 /* §8.8 jump bar: Restart, Display, Time, Network, Remote, Security, Storage,
- * Backup, Wizard, Danger (Backup and Wizard are the §8.8 sub-entries). */
+ * Backup, Wizard, Firmware (M8a), Danger (Backup and Wizard are the §8.8
+ * sub-entries). */
 enum SetSection : uint8_t {
   SET_SEC_RESTART = 0,
   SET_SEC_DISPLAY,
@@ -993,6 +994,7 @@ enum SetSection : uint8_t {
   SET_SEC_STORAGE,
   SET_SEC_BACKUP,
   SET_SEC_WIZARD,
+  SET_SEC_FIRMWARE,
   SET_SEC_DANGER,
 };
 
@@ -1034,6 +1036,11 @@ struct SettingsView {
   char sd_status[24] = "no card";
   uint8_t backup_count = 0;
   char backup_last[32] = ""; /* newest aio-backup-*.json (BACKUP_NAME_LEN) */
+
+  /* firmware / OTA (M8a) — preformatted by the firmware glue
+   * (aio::ota::brief → "slot ver" + "phase (err)" lines) */
+  char fw_slot_ver[40] = "factory";
+  char fw_state[56] = "idle";
 
   /* danger */
   uint8_t node_count = 0;

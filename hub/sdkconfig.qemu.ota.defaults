@@ -1,0 +1,8 @@
+# QEMU OTA selftest (ci.yml ota-selftest, tools/qemu/ota_run.py): the
+# esp32s3 machine has no Wi-Fi (AIO_NO_RADIO) and the boot walk needs no
+# UI (no AIO_UI_SHOT — frees the LVGL DRAM and keeps the shot rotation
+# from interfering with the reboots). The health-confirm window shrinks
+# to seconds so the whole walk fits one CI job.
+CONFIG_AIO_NO_RADIO=y
+CONFIG_AIO_OTA_SELFTEST=y
+CONFIG_AIO_OTA_CONFIRM_MS=5000

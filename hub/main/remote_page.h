@@ -48,6 +48,15 @@ a{color:#8c8}
 <div class=grid id=nodes></div>
 <details><summary>History</summary><table id=ev><tr><th>time</th><th>node</th><th>amount</th><th>result</th><th>src</th></tr></table>
 <div class=row><a href=/api/events.csv>CSV export</a>&nbsp;<a href=/api/backup>backup.json</a></div></details>
+<details><summary>Firmware update</summary>
+<div class=small id=otainfo>loading…</div>
+<label>Firmware image URL (.bin, http(s))</label>
+<input type=text id=ota_url placeholder="https://mlger.github.io/aio-feeder/hub/firmware.bin">
+<div class=row><button onclick=ota()>Update now</button><button onclick="ota_factory()" style="background:#7a2020">Factory image</button></div>
+<div class=small>Download runs in the background — the hub keeps feeding.
+After the download the hub reboots once you tap Update again (apply);
+a new image that fails to boot rolls back on its own.</div>
+</details>
 <details><summary>Remote settings</summary>
 <label>Web dashboard</label><input type=text id=web_on placeholder="1 = on, 0 = off">
 <label>Web port</label><input type=text id=web_port>
@@ -129,6 +138,20 @@ function save(){
     .then(r=>r.json()).then(j=>{if(j.ok){note('saved');setTimeout(()=>location.reload(),800)}else note('rejected',true)})
     .catch(e=>{if(e.message!='pin')note('save failed: '+e.message,true)});
 }
+function ota(){
+  const url=document.getElementById('ota_url').value.trim();
+  if(!url){note('enter a firmware URL first',true);return}
+  if(!confirm('Download and stage '+url+' ?'))return;
+  api('/api/ota',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({url:url})})
+    .then(r=>r.json()).then(j=>note(j.ok?'download started':'refused: '+(j.error||'?'),!j.ok))
+    .catch(e=>{if(e.message!='pin')note('update failed: '+e.message,true)});
+}
+function ota_factory(){
+  if(!confirm('Reboot into the factory image now? (nodes and settings survive)'))return;
+  api('/api/ota',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({factory:1})})
+    .then(r=>r.json()).then(j=>note(j.ok?'rebooting into factory…':'refused',!j.ok))
+    .catch(e=>{if(e.message!='pin')note('factory escape failed: '+e.message,true)});
+}
 function load_events(){
   api('/api/events?limit=20').then(r=>r.json()).then(j=>{
     const t=document.getElementById('ev');
@@ -141,7 +164,16 @@ function load_events(){
       r.insertCell().textContent=e.src;});
   }).catch(()=>{});
 }
-function tick(){api('/api/status').then(r=>r.json()).then(j=>{st=j;draw()}).catch(()=>{if(st){st=null;document.getElementById('hubinfo').textContent='hub unreachable'}})}
+function tick(){api('/api/status').then(r=>r.json()).then(j=>{st=j;draw();draw_ota(j)}).catch(()=>{if(st){st=null;document.getElementById('hubinfo').textContent='hub unreachable'}})}
+function draw_ota(s){
+  const el=document.getElementById('otainfo');
+  if(!s.ota){el.textContent='OTA status unavailable';return}
+  const o=s.ota;
+  let t='running '+o.slot+' '+o.ver+' - '+o.phase+(o.pct&&o.phase=='downloading'?' '+o.pct+'%':'');
+  if(o.target&&o.phase!='idle')t+=' - target '+o.target;
+  if(o.phase=='failed')t+=' ('+o.err+')';
+  el.textContent=t;
+}
 tick();setInterval(tick,5000);load_events();setInterval(load_events,15000);
 </script></body></html>)page";
 

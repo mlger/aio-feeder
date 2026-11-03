@@ -75,4 +75,27 @@ menu "AIO Feeder hub"
             running headless (feeding never depends on the UI, PLAN.md
             3.3).
 
+    config AIO_OTA_CONFIRM_MS
+        int "OTA health-confirm window (ms) before marking a new image valid"
+        default 300000
+        help
+            After an update reboots into the staged slot the image sits in
+            PENDING_VERIFY; once the hub loop has run healthy for this long
+            ota_service calls esp_ota_mark_app_valid_cancel_rollback(). A
+            crash-looping image never confirms and the bootloader rolls
+            back. The QEMU OTA selftest overlay shortens this to seconds.
+
+    config AIO_OTA_SELFTEST
+        bool "QEMU OTA selftest driver (stage/copy/rollback boot walk)"
+        default n
+        depends on AIO_NO_RADIO
+        help
+            CI-only boot walk for the M8a OTA path (tools/qemu/badapp +
+            tools/qemu/ota_run.py): boots 1) stage a copy of the running
+            image into ota_0, 2) confirm it via the health window, 3) stage
+            the badapp partition into ota_1, 4) watch the bootloader
+            invalidate the never-confirming image and fall back. Requires
+            the flash image to carry a "badapp" partition (partitions.csv)
+            and CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE.
+
 endmenu

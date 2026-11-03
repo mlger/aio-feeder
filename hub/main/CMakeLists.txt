@@ -3,6 +3,7 @@
 # link_core are shared with the nodes.
 idf_component_register(
     SRCS "main.cpp" "ui/ui.cpp" "display_hw.cpp" "i2c_bus.cpp" "remote_net.cpp"
+         "ota_service.cpp"
     INCLUDE_DIRS "."
     PRIV_REQUIRES
         nvs_flash
@@ -18,6 +19,11 @@ idf_component_register(
         sdmmc
         esp_lcd
         esp_http_server
+        esp_http_client
+        esp-tls
+        app_update
+        esp_partition
+        mbedtls
         mqtt
 )
 

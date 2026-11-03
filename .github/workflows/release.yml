@@ -34,8 +34,14 @@ jobs:
           mkdir -p out
           for d in dist/fw-*; do
             env="${d#dist/fw-}"
-            zip -qj "out/aio-feeder-${TAG}-${env}.zip" "$d"/*
+            # stage a copy so each zip carries its own ota.json (M8a, D37) —
+            # a self-hosted update server serves the extracted zip as-is
+            mkdir -p "out/stage-$env"
+            cp -f "$d"/* "out/stage-$env"/
+            python3 tools/flasher/ota_json.py --dir "out/stage-$env" --version "$TAG"
+            zip -qj "out/aio-feeder-${TAG}-${env}.zip" "out/stage-$env"/*
           done
+          rm -rf out/stage-*
           ls -la out
       - name: Create GitHub Release (notes from commits since previous tag)
         env:

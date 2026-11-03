@@ -38,6 +38,7 @@
 #include "hub_registry.h"
 #include "hub_store.h"
 #include "hub_time.h"
+#include "ota_core.h"
 #include "settings_store.h"
 #include "ui_model.h" /* NodeState, state_of, next_occurrence, is_alert_kind */
 #include "unpair_queue.h"
@@ -292,7 +293,8 @@ static inline size_t remote_status_json(const HubRegistry &reg, const EventLog &
                                         const RemoteNodeLive *live, const char *fw,
                                         const LocalTime &now, int64_t unix_now,
                                         char *out, size_t cap,
-                                        const UnpairQueue *unpair = nullptr) {
+                                        const UnpairQueue *unpair = nullptr,
+                                        const OtaBrief *ota = nullptr) {
   uint8_t online = 0;
   bool has_alert = false;
   uint8_t alert_node = 0;
@@ -342,6 +344,16 @@ static inline size_t remote_status_json(const HubRegistry &reg, const EventLog &
       if (o >= cap) return 0;
     }
     o += (size_t)snprintf(out + o, cap - o, "]");
+    if (o >= cap) return 0;
+  }
+  if (ota) {
+    /* M8a: firmware/OTA brief (phase name + pct + slot/target) */
+    o += (size_t)snprintf(
+        out + o, cap - o,
+        ",\"ota\":{\"phase\":\"%s\",\"pct\":%u,\"slot\":\"%s\","
+        "\"ver\":\"%s\",\"target\":\"%s\",\"err\":\"%s\"}",
+        ota_phase_name(ota->phase), (unsigned)ota->pct, ota->slot, ota->ver,
+        ota->target, ota_err_name(ota->err));
     if (o >= cap) return 0;
   }
   o += (size_t)snprintf(out + o, cap - o, ",\"n\":[");
@@ -472,6 +484,35 @@ static inline bool remote_feed_parse(const char *body, uint8_t *node,
   *node = (uint8_t)n;
   *amount = (uint16_t)a;
   return true;
+}
+
+/* POST /api/ota (M8a): {"url":"http(s)://…"} starts a download+stage,
+ * {"factory":1} arms the factory-image escape hatch. No sha256 field in
+ * v1: the release ota.json pins the digest; a URL pointing at the served
+ * .bin is enough. */
+static inline bool remote_ota_parse(const char *body, char *url, size_t cap,
+                                    bool *factory = nullptr) {
+  if (!body || !url || cap < OTA_URL_LEN) return false;
+  url[0] = '\0';
+  if (factory) *factory = false;
+  const char *p = body;
+  char key[16];
+  if (!json_expect(&p, '{')) return false;
+  while (json_next_key(&p, key, sizeof(key))) {
+    if (!strcmp(key, "url")) {
+      char u[OTA_URL_LEN];
+      if (!json_parse_string(&p, u, sizeof(u))) return false;
+      snprintf(url, cap, "%s", u);
+    } else if (!strcmp(key, "factory") && factory) {
+      uint32_t v;
+      if (!json_parse_uint(&p, &v) || v > 1) return false;
+      *factory = v != 0;
+    } else {
+      return false; /* unknown key: refuse rather than half-read */
+    }
+  }
+  if (factory && *factory) return true; /* the escape hatch needs no URL */
+  return ota_url_valid(url);
 }
 
 /* MQTT topic aio/node/<id>/cmd/feed → id (0 = not a feed topic). Strict:

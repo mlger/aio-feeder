@@ -18,6 +18,7 @@
 #include <cstring>
 
 #include "backup.h"
+#include "ota_service.h"
 #include "remote_page.h"
 
 static RemoteNetCtx s_ctx; /* zeroed: apply/poll/on_event no-op until init */
@@ -221,9 +222,11 @@ static esp_err_t h_status(httpd_req_t *req) {
     rebuild_live();
     const aio::LocalTime now =
         aio::local_from_unix(s_ctx.unix_now(), s_ctx.reg->data().tz_rule);
+    aio::OtaBrief otab;
+    aio::ota::brief(&otab); /* M8a: phase/pct are atomics — safe to read */
     const size_t len = aio::remote_status_json(
         *s_ctx.reg, *s_ctx.log, *s_ctx.rset, s_mqtt_up == 2, s_live, s_ctx.fw, now,
-        s_ctx.unix_now(), buf, 3072, s_ctx.unpair);
+        s_ctx.unix_now(), buf, 3072, s_ctx.unpair, &otab);
     httpd_resp_set_type(req, "application/json");
     if (!len)
       httpd_resp_send_500(req);
@@ -343,6 +346,45 @@ static esp_err_t h_backup(httpd_req_t *req) {
   return res;
 }
 
+/* POST /api/ota (M8a): {"url":"…"} saves the URL + starts the download;
+ * {"factory":1} arms the factory-image escape hatch (reboots). 409 when a
+ * download is already running; 400 on a bad body/URL. */
+static esp_err_t h_ota(httpd_req_t *req) {
+  if (!api_auth(req)) return ESP_FAIL;
+  char body[256];
+  char url[aio::OTA_URL_LEN];
+  bool factory = false;
+  if (req->method != HTTP_POST || !req_body(req, body, sizeof(body)) ||
+      !aio::remote_ota_parse(body, url, sizeof(url), &factory)) {
+    httpd_resp_set_status(req, "400 Bad Request");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"bad body\"}");
+    return ESP_FAIL;
+  }
+  {
+    SessLock lock;
+    if (factory) {
+      aio::ota::boot_factory(); /* reboots (or 500s if no factory slot) */
+      httpd_resp_set_type(req, "application/json");
+      return httpd_resp_sendstr(req, "{\"ok\":true}");
+    }
+    if (!aio::ota::url_save(url)) {
+      httpd_resp_set_status(req, "400 Bad Request");
+      httpd_resp_set_type(req, "application/json");
+      httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"bad url\"}");
+      return ESP_FAIL;
+    }
+    if (!aio::ota::start(url)) {
+      httpd_resp_set_status(req, "409 Conflict");
+      httpd_resp_set_type(req, "application/json");
+      httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"busy\"}");
+      return ESP_FAIL;
+    }
+  }
+  httpd_resp_set_type(req, "application/json");
+  return httpd_resp_sendstr(req, "{\"ok\":true}");
+}
+
 static esp_err_t h_settings(httpd_req_t *req) {
   if (!api_auth(req)) return ESP_FAIL;
   char body[512];
@@ -448,6 +490,7 @@ void remote_net_apply(void) {
             {"/api/events.csv", HTTP_GET, h_csv, nullptr},
             {"/api/backup", HTTP_GET, h_backup, nullptr},
             {"/api/settings", HTTP_POST, h_settings, nullptr},
+            {"/api/ota", HTTP_POST, h_ota, nullptr},
         };
         for (const auto &u : uris) httpd_register_uri_handler(s_http, &u);
         printf("web dashboard on :%u%s\n", (unsigned)s_ctx.rset->web_port,

@@ -1388,12 +1388,18 @@ static void update_calib(const CalibView &v) {
  * (see the pairing screen note). */
 static const char *SET_SECTIONS[UI_SET_SECTION_COUNT] = {
     "Restart", "Display", "Time", "Network", "Remote",
-    "Security", "Storage", "Backup", "Wizard", "Danger"};
+    "Security", "Storage", "Backup", "Wizard", "Firmware", "Danger"};
 
 static lv_obj_t *s_set_scr = nullptr;
 static lv_obj_t *s_set_clock_lbl = nullptr;
 static lv_obj_t *s_set_list_lbl = nullptr;
 static lv_obj_t *s_set_body_lbl = nullptr;
+static lv_obj_t *s_set_hint_lbl = nullptr; /* section-aware action strip */
+
+/* default hint lane; the Firmware pane swaps the wording (set_action_tap_cb
+ * remaps the zones to match) */
+#define SET_HINT_DEFAULT "Restart | Add node | Export | Restore | Wizard"
+#define SET_HINT_FIRMWARE "Update | Apply | Factory | URL: web/CLI | -"
 
 static void build_settings_screen() {
   s_set_scr = lv_obj_create(nullptr);
@@ -1495,6 +1501,13 @@ static void set_body_text(const SettingsView &v, char *buf, size_t n) {
       snprintf(buf, n,
                "Run setup wizard\n\nSix steps: zone, Wi-Fi,\nfeeder, hopper, schedule,\ndone. Nothing is written\nuntil you save.");
       break;
+    case SET_SEC_FIRMWARE:
+      snprintf(buf, n,
+               "Running: %s\nState: %s\n\nUpdate enters via the web page\n"
+               "or 'ota' (CLI); the hub\nstays live while it pulls.\n"
+               "Factory = escape hatch.",
+               v.fw_slot_ver, v.fw_state);
+      break;
     case SET_SEC_DANGER:
       snprintf(buf, n,
                "Factory reset\n\nWipes nodes, schedules,\nsettings and the PIN.\nType RESET to confirm.\n\nHistory stays on the card.");
@@ -1523,6 +1536,11 @@ static void update_settings(const SettingsView &v) {
     lv_label_set_text(s_set_body_lbl, buf);
     lv_obj_set_style_text_color(
         s_set_body_lbl, lv_color_hex(v.section == SET_SEC_DANGER ? C_ALERT : C_TEXT), 0);
+  }
+  if (s_set_hint_lbl) {
+    lv_label_set_text(s_set_hint_lbl, v.section == SET_SEC_FIRMWARE
+                                          ? SET_HINT_FIRMWARE
+                                          : SET_HINT_DEFAULT);
   }
 }
 
@@ -1906,7 +1924,16 @@ static void set_section_tap_cb(lv_event_t *e) {
 }
 
 /* settings bottom action strip (hint lane: "Restart | Add node | Export |
- * Restore | Wizard") — five 70 px zones */
+ * Restore | Wizard") — five 70 px zones. On the Firmware pane (M8a) the
+ * same zones remap to "Update | Apply | Factory | URL | -" (the hint label
+ * swaps in update_settings; zone cuts are shared so a tap on a word still
+ * lands its own zone). */
+/* latest published settings section (255 = none yet) */
+static uint8_t tap_section_now() {
+  if (!s_set_seq) return 255;
+  return s_set_snap[(s_set_seq - 1) & 1].section;
+}
+
 static void set_action_tap_cb(lv_event_t *e) {
   (void)e;
   lv_point_t p{0, 0};
@@ -1914,6 +1941,15 @@ static void set_action_tap_cb(lv_event_t *e) {
   /* zone cuts follow the hint-label metrics (Restart | Add node | Export |
    * Restore | Wizard from x=10) so a tap on a label lands its own zone */
   const int zone = p.x < 58 ? 0 : p.x < 125 ? 1 : p.x < 168 ? 2 : p.x < 232 ? 3 : 4;
+  if (tap_section_now() == SET_SEC_FIRMWARE) {
+    switch (zone) {
+      case 0: s_acts.fw_start = true; break;
+      case 1: s_acts.fw_reboot = true; break;
+      case 2: s_acts.fw_factory = true; break;
+      default: break; /* URL lives in the web page / CLI (D37) */
+    }
+    return;
+  }
   switch (zone) {
     case 0: s_acts.restart = true; break;
     case 1: s_acts.pair_open = true; show(s_nav.open(nav::SC_PAIR, 0)); break;
@@ -2436,7 +2472,7 @@ static void build_tap_targets() {
 
   /* settings: section list + bottom action strip + hint lane */
   new_catcher(s_set_scr, 0, 34, 146, 150, set_section_tap_cb, nullptr);
-  new_hint(s_set_scr, "Restart | Add node | Export | Restore | Wizard");
+  s_set_hint_lbl = new_hint(s_set_scr, SET_HINT_DEFAULT);
   new_catcher(s_set_scr, 0, UI_H - 26, UI_W, 26, set_action_tap_cb, nullptr);
 
   /* PIN pad */
@@ -2648,15 +2684,15 @@ static void ui_task(void *) {
       /* resume an unfinished walk; restart only after it completed (the
        * 25 s slot can end mid-walk — the runner's timeout spans two
        * cycles) */
-      if (shot == SH_TAP && tap_stage >= 9) {
+      if (shot == SH_TAP && tap_stage >= 11) {
         tap_stage = 0;
         tap_shot = "tap_idle";
       }
     }
 
     /* tap-path driver (slot 10): dash → detail → home → settings → BACKUP
-     * → SECURITY, tapped through the real catchers. Stages advance on
-     * CONFIRMATIONS (nav state / published settings section) and, between
+     * → SECURITY → FIRMWARE, tapped through the real catchers. Stages
+     * advance on CONFIRMATIONS (nav state / published settings section) and, between
      * panes, on marker beats: the next tap fires only after one marker
      * printed for the current name, so the runner's first-dump-per-name
      * always lands on the right frame (a 4.5 s hold raced the 5 s marker
@@ -2715,6 +2751,17 @@ static void ui_task(void *) {
           if (tap_section() == SET_SEC_SECURITY) {
             tap_shot = "tap_security"; tap_marked = false;
             tap_stage = 9;
+          }
+          break;
+        case 9: /* one settled marker beat on SECURITY, then row 9 (FIRMWARE) */
+          if (tap_marked && now - tap_marked_at >= 2000) {
+            tap_marked = false; inject_tap(70, 169); tap_stage = 10;
+          }
+          break;
+        case 10:
+          if (tap_section() == SET_SEC_FIRMWARE) {
+            tap_shot = "tap_firmware"; tap_marked = false;
+            tap_stage = 11;
           }
           break;
         default: break;
