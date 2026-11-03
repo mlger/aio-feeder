@@ -66,6 +66,11 @@ class EventLog {
  public:
   static constexpr uint16_t CAP = 128;
 
+  /* Optional observer (M6 remote glue): fires once per push with the event,
+   * before it becomes visible via at(). Runs in the caller's context — the
+   * push sites hold the engine state mutex; keep the callback non-blocking. */
+  void (*on_push)(const HubEvent &e) = nullptr;
+
   void push(uint32_t unix, uint8_t node, uint8_t kind, uint8_t result,
             uint32_t feed_id, uint16_t amount, int16_t aux = 0,
             uint8_t src = EV_SRC_SCHED) {
@@ -80,6 +85,7 @@ class EventLog {
     e.src = src;
     head_ = (uint16_t)((head_ + 1) % CAP);
     if (count_ < CAP) count_++;
+    if (on_push) on_push(e);
   }
 
   /* §7.5 retention: drop entries older than `days` (settings screen,
