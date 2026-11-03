@@ -22,9 +22,13 @@
 
 namespace aio {
 
-#define NFW_TARGET_NONE 0
-#define NFW_TARGET_8266 1
-#define NFW_TARGET_C3 2
+/* enum, not #define: call sites use aio::NFW_TARGET_* — macros ignore
+ * namespaces and expand to `aio::1` (caught by CI, M8b build). */
+enum : uint8_t {
+  NFW_TARGET_NONE = 0,
+  NFW_TARGET_8266 = 1,
+  NFW_TARGET_C3 = 2,
+};
 
 /* Image metadata — mirrors the first bytes the upload handler computes. */
 struct NodeFwImage {
@@ -51,7 +55,7 @@ struct NodeFwData {
 };
 
 #define NFW_META_VERSION 1
-#define NFW_IMAGE_MAGIC 0xA10F8100u
+constexpr uint32_t NFW_IMAGE_MAGIC = 0xA10F8100u; /* same reason: aio::-qualified use */
 #define NFW_MAX_IMAGE (1024u * 1024u) /* "nfw" partition size (partitions.csv) */
 
 class NodeFw {

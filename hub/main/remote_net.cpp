@@ -445,7 +445,7 @@ static esp_err_t h_nodefw_post(httpd_req_t *req) {
   bool io_ok = true;
   while (off < total) {
     const size_t want = total - off < 1024 ? total - off : 1024;
-    const int n = httpd_req_recv(req, buf, want);
+    const int n = httpd_req_recv(req, reinterpret_cast<char *>(buf), want);
     if (n <= 0 || esp_partition_write(part, off, buf, (size_t)n) != ESP_OK) {
       io_ok = false;
       break;
@@ -578,7 +578,7 @@ static esp_err_t h_fw_node(httpd_req_t *req) {
   while (off < img.size) {
     const size_t n = img.size - off < 1024 ? img.size - off : 1024;
     if (esp_partition_read(part, off, buf, n) != ESP_OK ||
-        httpd_resp_send_chunk(req, buf, n) != ESP_OK) {
+        httpd_resp_send_chunk(req, reinterpret_cast<const char *>(buf), n) != ESP_OK) {
       free(buf);
       return ESP_FAIL;
     }

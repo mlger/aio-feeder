@@ -12,7 +12,7 @@
 #include <EEPROM.h>
 #include <Wire.h>
 #include <ESP8266WiFi.h>
-#include <Update.h>
+#include <Updater.h> /* 8266 core 3.x names it Updater.h (ESP32 calls it Update.h) */
 #include "ds3231.h"
 
 #define HAL_RELAY_PIN 14    /* D5 — boot-safe [VERIFY vs your module] */
