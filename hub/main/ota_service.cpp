@@ -104,18 +104,7 @@ bool set_expected_sha(const char *hex64) {
 
 /* --- partition helpers ------------------------------------------------------------ */
 
-#if defined(CONFIG_AIO_OTA_SELFTEST) && CONFIG_AIO_OTA_SELFTEST
-/* selftest-only: label lookup + the partition→slot streamer (kept out of
- * the normal builds so -Wunused-function never bites under -Werror) */
-static const esp_partition_t *slot_by_label(const char *label) {
-  esp_partition_iterator_t it =
-      esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, label);
-  if (!it) return nullptr;
-  const esp_partition_t *p = esp_partition_get(it);
-  esp_partition_iterator_release(it);
-  return p;
-}
-
+/* Result of the last staged attempt, persisted for the dashboard/pane. */
 static void save_status(uint8_t result, uint8_t err, const char *ver,
                         uint32_t unix_now) {
   if (!s_store) return;
@@ -129,6 +118,18 @@ static void save_status(uint8_t result, uint8_t err, const char *ver,
   snprintf(s.last_ver, sizeof(s.last_ver), "%s", ver ? ver : "");
   s.last_unix = unix_now;
   ota_status_save(*s_store, s);
+}
+
+#if defined(CONFIG_AIO_OTA_SELFTEST) && CONFIG_AIO_OTA_SELFTEST
+/* selftest-only: label lookup + the partition→slot streamer (kept out of
+ * the normal builds so -Wunused-function never bites under -Werror) */
+static const esp_partition_t *slot_by_label(const char *label) {
+  esp_partition_iterator_t it =
+      esp_partition_find(ESP_PARTITION_TYPE_ANY, ESP_PARTITION_SUBTYPE_ANY, label);
+  if (!it) return nullptr;
+  const esp_partition_t *p = esp_partition_get(it);
+  esp_partition_iterator_release(it);
+  return p;
 }
 
 /* Stream `src` into `dst` through esp_ota_ops, byte-exact to the scanned
@@ -197,7 +198,8 @@ static void download_task(void *arg) {
     esp_http_client_config_t cfg = {};
     cfg.url = ctx->url;
     cfg.crt_bundle_attach = esp_crt_bundle_attach;
-    cfg.max_redirects = 5;
+    /* redirects follow automatically in IDF 5.4 (disable_auto_redirect
+     * defaults to false); cap the wait, not the hops */
     cfg.timeout_ms = 15000;
 
     esp_http_client_handle_t c = esp_http_client_init(&cfg);
@@ -269,10 +271,9 @@ static void download_task(void *arg) {
         ok = false;
         s_err.store(OTA_ERR_END, std::memory_order_release);
       }
-      const esp_app_desc_t *desc = nullptr;
-      if (ok && esp_ota_get_partition_description(update, &desc) == ESP_OK &&
-          desc) {
-        snprintf(s_target, sizeof(s_target), "%s", desc->version);
+      esp_app_desc_t desc = {};
+      if (ok && esp_ota_get_partition_description(update, &desc) == ESP_OK) {
+        snprintf(s_target, sizeof(s_target), "%s", desc.version);
       }
       if (ok && esp_ota_set_boot_partition(update) != ESP_OK) {
         ok = false;
