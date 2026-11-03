@@ -10,6 +10,7 @@
 
 #include <esp_event.h>
 #include <esp_http_server.h>
+#include <esp_wifi.h>
 #include <mqtt_client.h>
 #include <esp_netif.h>
 
@@ -387,7 +388,7 @@ static void mqtt_start() {
   cfg.session.last_will.retain = 1;
   s_mqtt = esp_mqtt_client_init(&cfg);
   if (!s_mqtt) return;
-  esp_mqtt_client_register_event(s_mqtt, (esp_event_handler_t)mqtt_event, nullptr);
+  esp_mqtt_client_register_event(s_mqtt, MQTT_EVENT_ANY, mqtt_event, nullptr);
   esp_mqtt_client_start(s_mqtt);
   s_mqtt_up = 1;
 }
