@@ -134,42 +134,66 @@ static const esp_partition_t *slot_by_label(const char *label) {
 
 /* Stream `src` into `dst` through esp_ota_ops, byte-exact to the scanned
  * image length. Returns the length, 0 on failure. Used by the selftest
- * (partition→slot copy); the HTTP path has its own reader. */
+ * (partition→slot copy); the HTTP path has its own reader. Every failure
+ * path prints its esp_err so a CI serial tail pinpoints the step. */
 static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *dst) {
   esp_ota_handle_t h = 0;
-  if (esp_ota_begin(dst, 0, &h) != ESP_OK) return 0;
+  esp_err_t e = esp_ota_begin(dst, 0, &h);
+  if (e != ESP_OK) {
+    printf("ota: copy begin err=0x%x (%s)\n", (int)e, esp_err_to_name(e));
+    return 0;
+  }
   uint8_t *buf = static_cast<uint8_t *>(malloc(4096));
   if (!buf) {
     esp_ota_abort(h);
+    printf("ota: copy OOM\n");
     return 0;
   }
   OtaImgScan scan;
   uint32_t off = 0;
   bool done = false, ok = true;
   while (!done && ok) {
-    if (esp_partition_read(src, off, buf, 4096) != ESP_OK) {
+    e = esp_partition_read(src, off, buf, 4096);
+    if (e != ESP_OK) {
+      printf("ota: copy read err=0x%x at off=%lu\n", (int)e, (unsigned long)off);
       ok = false;
       break;
     }
     ota_img_scan(&scan, buf, 4096);
     if (scan.bad) {
+      printf("ota: copy scan bad at off=%lu stage=%u\n", (unsigned long)off,
+             (unsigned)scan.stage);
       ok = false;
       break;
     }
     uint32_t take = 4096;
     if (scan.done) {
       if (scan.img_len <= off) {
+        printf("ota: copy short scan img_len=%lu off=%lu\n",
+               (unsigned long)scan.img_len, (unsigned long)off);
         ok = false;
         break;
       }
       take = scan.img_len - off;
       done = true;
     }
-    if (esp_ota_write(h, buf, take) != ESP_OK) ok = false;
+    e = esp_ota_write(h, buf, take);
+    if (e != ESP_OK) {
+      printf("ota: copy write err=0x%x at off=%lu take=%lu\n", (int)e,
+             (unsigned long)off, (unsigned long)take);
+      ok = false;
+    }
     off += take;
   }
   free(buf);
-  if (!ok || !scan.done || esp_ota_end(h) != ESP_OK) {
+  if (!ok) {
+    esp_ota_abort(h);
+    return 0;
+  }
+  e = esp_ota_end(h);
+  if (e != ESP_OK) {
+    printf("ota: copy end err=0x%x (%s) img_len=%lu\n", (int)e,
+           esp_err_to_name(e), (unsigned long)scan.img_len);
     esp_ota_abort(h);
     return 0;
   }
@@ -379,6 +403,14 @@ static void selftest_boot(const esp_partition_t *run) {
       printf("ota: selftest stage0 %s (%lu B)\n", len ? "staged" : "FAILED",
              (unsigned long)len);
       if (!len) return; /* stay: CI will see a missing marker */
+      /* esp_ota_begin only erases — otadata needs an explicit boot select
+       * or the next boot lands back in factory and the walk stalls */
+      if (esp_ota_set_boot_partition(dst) != ESP_OK) {
+        printf("ota: selftest stage0 set_boot FAILED\n");
+        stage = 0;
+        store_put(*s_store, SELF_KEY, 1, &stage, 1);
+        return;
+      }
       stage = 1;
       store_put(*s_store, SELF_KEY, 1, &stage, 1);
       vTaskDelay(pdMS_TO_TICKS(200));
