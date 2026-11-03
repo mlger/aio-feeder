@@ -137,52 +137,68 @@ static const esp_partition_t *slot_by_label(const char *label) {
  * (partition→slot copy); the HTTP path has its own reader. Every failure
  * path prints its esp_err so a CI serial tail pinpoints the step.
  *
- * The source is read through the flash cache (esp_partition_mmap) — the
- * same window the running code executes from, so QEMU serves it exactly;
- * the esp_flash driver read path (esp_partition_read) returned garbage
- * here (scan-bad at byte 0 of a verifiably valid image). Chunks stage
- * into RAM before esp_ota_write: no flash-mapped source may be live
- * across a flash operation. */
+ * Ordering is the whole game under QEMU (CI evidence: reads after a
+ * partition-wide erase came back garbage with ESP_OK, and a 6 MB runtime
+ * esp_partition_mmap SIGFPE'd the QEMU MMU model):
+ *   - esp_ota_begin(OTA_WITH_SEQUENTIAL_WRITES): no upfront erase —
+ *     esp_ota_write erases each destination sector just-in-time;
+ *   - one-chunk read-ahead: chunk k+1 is read into a second buffer
+ *     BEFORE any flash op of chunk k, so every source read completes
+ *     before the first flash mutation of the copy. A read that fails
+ *     without any prior flash op names the driver, not the erase. */
 static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *dst) {
   esp_ota_handle_t h = 0;
-  esp_err_t e = esp_ota_begin(dst, 0, &h);
+  esp_err_t e = esp_ota_begin(dst, OTA_WITH_SEQUENTIAL_WRITES, &h);
   if (e != ESP_OK) {
     printf("ota: copy begin err=0x%x (%s)\n", (int)e, esp_err_to_name(e));
     return 0;
   }
-  printf("ota: copy src=%s @0x%lx -> dst=%s @0x%lx\n", src->label,
+  printf("ota: copy src=%s @0x%lx -> dst=%s @0x%lx (sequential)\n", src->label,
          (unsigned long)src->address, dst->label, (unsigned long)dst->address);
 
-  esp_partition_mmap_handle_t mh = 0;
-  const uint8_t *mm = nullptr;
-  e = esp_partition_mmap(src, 0, src->size, ESP_PARTITION_MMAP_DATA,
-                         (const void **)&mm, &mh);
-  if (e != ESP_OK) {
-    printf("ota: copy mmap err=0x%x (%s)\n", (int)e, esp_err_to_name(e));
+  uint8_t *bufs[2] = {static_cast<uint8_t *>(malloc(4096)),
+                      static_cast<uint8_t *>(malloc(4096))};
+  if (!bufs[0] || !bufs[1]) {
+    printf("ota: copy OOM\n");
+    free(bufs[0]);
+    free(bufs[1]);
     esp_ota_abort(h);
     return 0;
   }
 
-  uint8_t *buf = static_cast<uint8_t *>(malloc(4096));
-  if (!buf) {
-    printf("ota: copy OOM\n");
-    esp_partition_munmap(mh);
-    esp_ota_abort(h);
-    return 0;
-  }
   OtaImgScan scan;
-  uint32_t off = 0;
+  uint32_t off = 0;        /* image bytes handed to esp_ota_write so far */
+  uint32_t read_off = 0;   /* next source offset to prefetch */
+  uint32_t have = 0;       /* valid bytes in bufs[cur] */
+  int cur = 0;
   bool done = false, ok = true;
-  while (!done && ok) {
-    const uint32_t chunk =
-        (off + 4096 <= src->size) ? 4096 : (src->size - off);
-    if (chunk == 0) {
-      printf("ota: copy ran past partition end (image end not found)\n");
-      ok = false;
-      break;
+
+  e = esp_partition_read(src, 0, bufs[cur], 4096);
+  if (e != ESP_OK) {
+    printf("ota: copy read err=0x%x at off=0\n", (int)e);
+    ok = false;
+  } else {
+    have = 4096;
+    read_off = have;
+  }
+
+  while (ok && !done) {
+    /* prefetch chunk k+1 into the spare buffer before touching flash */
+    const int nxt = cur ^ 1;
+    uint32_t have_nxt = 0;
+    if (read_off < src->size) {
+      e = esp_partition_read(src, read_off, bufs[nxt], 4096);
+      if (e != ESP_OK) {
+        printf("ota: copy read err=0x%x at off=%lu\n", (int)e,
+               (unsigned long)read_off);
+        ok = false;
+        break;
+      }
+      have_nxt = (read_off + 4096 <= src->size) ? 4096 : (src->size - read_off);
+      read_off += have_nxt;
     }
-    memcpy(buf, mm + off, chunk);
-    ota_img_scan(&scan, buf, chunk);
+
+    ota_img_scan(&scan, bufs[cur], have);
     if (scan.bad) {
       printf("ota: copy scan bad at off=%lu stage=%u hdr=%02x %02x %02x %02x\n",
              (unsigned long)off, (unsigned)scan.stage, scan.hdr[0],
@@ -190,7 +206,7 @@ static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *d
       ok = false;
       break;
     }
-    uint32_t take = chunk;
+    uint32_t take = have;
     if (scan.done) {
       if (scan.img_len <= off) {
         printf("ota: copy short scan img_len=%lu off=%lu\n",
@@ -201,21 +217,30 @@ static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *d
       /* the checksum+SHA tail can span past this chunk — only finish when
        * the whole image lies inside the bytes copied so far, else write
        * the full chunk and pick the tail up next round */
-      if (scan.img_len <= off + chunk) {
+      if (scan.img_len <= off + have) {
         take = scan.img_len - off;
         done = true;
       }
     }
-    e = esp_ota_write(h, buf, take);
+    e = esp_ota_write(h, bufs[cur], take);
     if (e != ESP_OK) {
       printf("ota: copy write err=0x%x at off=%lu take=%lu\n", (int)e,
              (unsigned long)off, (unsigned long)take);
       ok = false;
+      break;
     }
     off += take;
+    if (done) break;
+    if (have_nxt == 0) {
+      printf("ota: copy image end not found\n");
+      ok = false;
+      break;
+    }
+    cur = nxt;
+    have = have_nxt;
   }
-  free(buf);
-  esp_partition_munmap(mh);
+  free(bufs[0]);
+  free(bufs[1]);
   if (!ok) {
     esp_ota_abort(h);
     return 0;
