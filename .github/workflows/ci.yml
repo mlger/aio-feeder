@@ -132,6 +132,17 @@ jobs:
             0x8000 hub/build/partition_table/partition-table.bin \
             0x10000 hub/build/aio-feeder-hub.bin \
             0xFA0000 tools/qemu/badapp/build/badapp.bin
+      - name: Dump merged image ground truth (OTA selftest diagnosis)
+        run: |
+          python3 - <<'EOF'
+          b = open('hub/build/flash.img', 'rb')
+          for off in (0x0, 0x8000, 0x10000, 0x610000, 0x620000, 0xFA0000):
+              b.seek(off)
+              print(f"flash.img @0x{off:06X}: {b.read(16).hex(' ')}")
+          EOF
+          . $IDF_PATH/export.sh
+          esptool.py --chip esp32s3 image-info hub/build/aio-feeder-hub.bin 2>/dev/null | head -12 || \
+            esptool.py image_info hub/build/aio-feeder-hub.bin | head -12
       - name: Run the boot walk in QEMU
         run: |
           (sudo apt-get update -qq && sudo apt-get install -y -qq \
