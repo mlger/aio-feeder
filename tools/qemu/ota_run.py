@@ -66,23 +66,30 @@ def main() -> int:
     ok = False
     try:
         while time.time() < deadline:
-            if qemu.poll() is not None:
-                print(f"[ota-selftest] qemu exited early (rc={qemu.returncode})")
-                break
-            time.sleep(0.3)
+            exited = qemu.poll() is not None
             try:
                 with open(args.serial, "rb") as f:
                     f.seek(pos)
                     chunk = f.read().decode("utf-8", errors="replace")
                     pos = f.tell()
             except FileNotFoundError:
-                continue
+                chunk = ""
             while pending and re.search(pending[0], chunk):
                 print(f"[ota-selftest] marker: {pending[0]}")
                 pending.pop(0)
             if not pending:
                 ok = True
+                if exited:
+                    print("[ota-selftest] walk complete — qemu exited after "
+                          "the last marker (model artifact, walk stands)")
                 break
+            if exited:
+                # drain once more before giving up: the guest may have
+                # printed the final marker in the same instant the model
+                # died, before any poll wakeup got to read it
+                print(f"[ota-selftest] qemu exited early (rc={qemu.returncode})")
+                break
+            time.sleep(0.3)
     finally:
         if qemu.poll() is None:
             qemu.terminate()

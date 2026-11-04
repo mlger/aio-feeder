@@ -92,4 +92,12 @@ M8a additions (v0.11):
   `boot_select()` tries the IDF API once and, when it refuses, writes
   otadata directly with `esp_rewrite_ota_data()` semantics (IDF v5.4)
   over the SPI read/erase/write path (`otadata_raw_select()`); the
-  bootloader still owns image validation at the next boot.
+  bootloader still owns image validation at the next boot. Round 5 went
+  further: `read_otadata()` mmaps otadata even in app context (behind
+  `esp_ota_get_state_partition` / `esp_ota_mark_app_valid_cancel_rollback`
+  / `esp_ota_get_next_update_partition`), and the rollback boot died in
+  exactly that path after four boots had read the same sectors fine — so
+  the selftest build now resolves its update slot by label and does all
+  state lookups (`slot_state_raw`) and the health confirm
+  (`ota_confirm_raw`) through the SPI path too, leaving zero runtime-cache
+  operations in the walk.

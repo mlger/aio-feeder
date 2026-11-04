@@ -162,16 +162,20 @@ static const esp_partition_t *slot_by_label(const char *label) {
  *     stage0. Below the 8 MB line the failure is a clean hash verdict,
  *     not a SIGSEGV — and no retry helps: the window stays wrong.
  * So NO cache-backed runtime verification may gate the selftest —
- * neither esp_ota_end (dropped) nor set_boot's internal one. The copy is
- * gated by copy_is_exact() (SPI reads) and the boot slot by boot_select()
- * below: the IDF API first, then a raw otadata write mirroring
- * esp_rewrite_ota_data() (IDF v5.4 esp_ota_ops.c) through esp_partition
- * read/erase/write — the bootloader owns the real image validation with
- * its own (proven) mapping path at the next boot. The QEMU sdkconfig
- * overlays pin DIO flash mode (reads correct) and partitions_qemu_ota.csv
- * keeps every executed slot below the 8 MB line where the boot path is
- * proven. The one-shot "copy diag" line prints the first source bytes so
- * a CI round proves the mode fix without a second run. */
+ * neither esp_ota_end (dropped) nor set_boot's internal one, and after
+ * round 5 no cache-backed otadata read either (read_otadata() mmaps in
+ * app context; the rollback boot died in it after four boots had read
+ * the same sectors fine). The copy is gated by copy_is_exact() (SPI
+ * reads), the boot slot by boot_select() below (IDF API first, then a
+ * raw otadata write mirroring esp_rewrite_ota_data() — IDF v5.4
+ * esp_ota_ops.c — through esp_partition read/erase/write), and every
+ * state lookup/confirm by the raw SPI helpers. The bootloader owns the
+ * real image validation with its own (proven) mapping path at the next
+ * boot. The QEMU sdkconfig overlays pin DIO flash mode (reads correct)
+ * and partitions_qemu_ota.csv keeps every executed slot below the 8 MB
+ * line where the boot path is proven. The one-shot "copy diag" line
+ * prints the first source bytes so a CI round proves the mode fix
+ * without a second run. */
 /* Selftest-only: compare `len` bytes of src vs dst through the (now
  * correct) read path; on the first divergence print it and stop. */
 static bool copy_is_exact(const esp_partition_t *src, const esp_partition_t *dst,
@@ -278,6 +282,77 @@ static bool boot_select(const esp_partition_t *dst) {
   if (esp_ota_set_boot_partition(dst) == ESP_OK) return true;
   printf("ota: set_boot refused — runtime-cache verify mis-read (QEMU model); raw otadata select\n");
   return otadata_raw_select(dst);
+}
+
+/* Selftest-only state lookup through the SPI path: esp_ota_get_state_partition
+ * reads otadata through esp_partition_mmap — the runtime-cache path the QEMU
+ * model dies on (round 5: the rollback boot SIGSEGV'd QEMU right there, after
+ * four boots had read the same two sectors without complaint — read_otadata()
+ * mmaps in app context too). Mirrors the IDF lookup exactly: the entry whose
+ * (seq-1) % count maps to the partition's slot and whose CRC checks out wins;
+ * no match → false (the caller treats it like ESP_ERR_NOT_FOUND). */
+static bool slot_state_raw(const esp_partition_t *p, esp_ota_img_states_t *out) {
+  const esp_partition_t *otadata = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, nullptr);
+  if (!otadata || !p) return false;
+  const int slot = (int)p->subtype - (int)ESP_PARTITION_SUBTYPE_APP_OTA_MIN;
+  const int count = esp_ota_get_app_partition_count();
+  if (count == 0 || slot < 0 || slot >= count) return false;
+  for (int i = 0; i < 2; i++) {
+    esp_ota_select_entry_t e;
+    if (esp_partition_read(otadata, (size_t)i * otadata->erase_size, &e,
+                           sizeof(e)) != ESP_OK)
+      return false;
+    if (e.ota_seq != UINT32_MAX &&
+        e.crc == bootloader_common_ota_select_crc(&e) &&
+        (uint32_t)((e.ota_seq - 1) % (uint32_t)count) == (uint32_t)slot) {
+      *out = (esp_ota_img_states_t)e.ota_state;
+      return true;
+    }
+  }
+  return false;
+}
+
+/* Selftest-only confirm: esp_ota_mark_app_valid_cancel_rollback() reads
+ * otadata through esp_partition_mmap as well. Mirror its
+ * esp_ota_current_ota_is_workable(true) core over the SPI path: the active
+ * entry for the running slot is marked VALID and rewritten in place (same
+ * sector, same seq — the sector-swap scheme is untouched). */
+static bool ota_confirm_raw(void) {
+  const esp_partition_t *otadata = esp_partition_find_first(
+      ESP_PARTITION_TYPE_DATA, ESP_PARTITION_SUBTYPE_DATA_OTA, nullptr);
+  const esp_partition_t *run = esp_ota_get_running_partition();
+  if (!otadata || !run ||
+      (int)run->subtype < (int)ESP_PARTITION_SUBTYPE_APP_OTA_MIN)
+    return false;
+  const int slot = (int)run->subtype - (int)ESP_PARTITION_SUBTYPE_APP_OTA_MIN;
+  const int count = esp_ota_get_app_partition_count();
+  if (count == 0 || slot < 0 || slot >= count) return false;
+
+  esp_ota_select_entry_t sel[2];
+  if (esp_partition_read(otadata, 0, &sel[0], sizeof(sel[0])) != ESP_OK ||
+      esp_partition_read(otadata, otadata->erase_size, &sel[1],
+                         sizeof(sel[1])) != ESP_OK)
+    return false;
+  const bool valid[2] = {bootloader_common_ota_select_valid(&sel[0]),
+                         bootloader_common_ota_select_valid(&sel[1])};
+  const int active =
+      (valid[0] && valid[1]) ? (sel[0].ota_seq >= sel[1].ota_seq ? 0 : 1)
+                             : (valid[0] ? 0 : (valid[1] ? 1 : -1));
+  if (active < 0 ||
+      (int)((sel[active].ota_seq - 1) % (uint32_t)count) != slot)
+    return false;
+  if (sel[active].ota_state == ESP_OTA_IMG_VALID) return true;
+  sel[active].ota_state = ESP_OTA_IMG_VALID;
+  const size_t off = (size_t)active * otadata->erase_size;
+  if (esp_partition_erase_range(otadata, off, otadata->erase_size) != ESP_OK)
+    return false;
+  if (esp_partition_write(otadata, off, &sel[active],
+                          sizeof(sel[active])) != ESP_OK)
+    return false;
+  printf("ota: otadata[%d] := seq=%lu state=VALID — raw confirm\n", active,
+         (unsigned long)sel[active].ota_seq);
+  return true;
 }
 
 static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *dst) {
@@ -525,7 +600,14 @@ void tick(uint32_t now_ms) {
     return;
   }
   if ((int32_t)(now_ms - s_confirm_at) < 0) return;
-  if (esp_ota_mark_app_valid_cancel_rollback() == ESP_OK) {
+#if defined(CONFIG_AIO_OTA_SELFTEST) && CONFIG_AIO_OTA_SELFTEST
+  /* the selftest build confirms through the SPI path — the IDF helper
+   * mmaps otadata (round 5) */
+  const bool confirmed = ota_confirm_raw();
+#else
+  const bool confirmed = esp_ota_mark_app_valid_cancel_rollback() == ESP_OK;
+#endif
+  if (confirmed) {
     printf("ota: image confirmed valid (%s)\n", s_ver);
     save_status(OTA_RES_OK, OTA_ERR_NONE, s_ver,
                 s_unix ? (uint32_t)s_unix() : 0);
@@ -560,7 +642,10 @@ static void selftest_boot(const esp_partition_t *run) {
 
   switch (stage) {
     case 0: {
-      const esp_partition_t *dst = esp_ota_get_next_update_partition(run);
+      /* fixed selftest table: the first walk copies into ota_0, resolved
+       * by label — esp_ota_get_next_update_partition() would read otadata
+       * through esp_partition_mmap, the cache path (round 5) */
+      const esp_partition_t *dst = slot_by_label("ota_0");
       printf("ota: selftest stage0 — copying the running image into %s\n",
              dst ? dst->label : "?");
       const uint32_t len = dst ? stream_copy(run, dst) : 0;
@@ -617,10 +702,12 @@ static void selftest_boot(const esp_partition_t *run) {
        * ESP_OTA_IMG_INVALID is only ever written by the explicit app-side
        * rollback API) — and ota_select_invalid() excludes ABORTED from
        * boot candidates, which is what performs the fallback. Accept both
-       * states here; the running-partition check is the hard evidence. */
+       * states here; the running-partition check is the hard evidence.
+       * State comes through the SPI path (round 5: the cache-backed
+       * esp_ota_get_state_partition killed the model on this exact boot). */
       const bool fell_back = strcmp(run->label, "ota_0") == 0;
       const bool dead_slot =
-          ota1 && esp_ota_get_state_partition(ota1, &st) == ESP_OK &&
+          ota1 && slot_state_raw(ota1, &st) &&
           (st == ESP_OTA_IMG_INVALID || st == ESP_OTA_IMG_ABORTED);
       printf("ota: selftest rollback %s (running %s, ota_1 state %d)\n",
              (fell_back && dead_slot) ? "VERIFIED" : "not-invalid",
@@ -651,8 +738,13 @@ void begin(IHubStore *store, int64_t (*unix_fn)(void)) {
 #endif
 
   esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
-  if (esp_ota_get_state_partition(run, &st) == ESP_OK &&
-      st == ESP_OTA_IMG_PENDING_VERIFY) {
+#if defined(CONFIG_AIO_OTA_SELFTEST) && CONFIG_AIO_OTA_SELFTEST
+  /* SPI-path state lookup — esp_ota_get_state_partition() mmaps (round 5) */
+  const bool have_state = slot_state_raw(run, &st);
+#else
+  const bool have_state = esp_ota_get_state_partition(run, &st) == ESP_OK;
+#endif
+  if (have_state && st == ESP_OTA_IMG_PENDING_VERIFY) {
     s_confirm_at = 0; /* set by the first tick */
     set_phase(OTA_PENDING);
     printf("ota: running %s %s — PENDING_VERIFY (confirm window %d s)\n",
