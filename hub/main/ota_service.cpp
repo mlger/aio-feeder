@@ -175,7 +175,7 @@ static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *d
     esp_partition_read(src, 0, spi, sizeof(spi));
     const void *dp = nullptr;
     esp_partition_mmap_handle_t dh = 0;
-    if (esp_partition_mmap(src, 0, sizeof(mmu), ESP_PARTITION_MMAP_DATA_READ,
+    if (esp_partition_mmap(src, 0, sizeof(mmu), ESP_PARTITION_MMAP_DATA,
                            &dp, &dh) == ESP_OK) {
       memcpy(mmu, dp, sizeof(mmu));
       esp_partition_munmap(dh);
@@ -208,7 +208,7 @@ static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *d
       const size_t len =
           (src->size - base) < WIN ? (size_t)(src->size - base) : (size_t)WIN;
       const void *p = nullptr;
-      e = esp_partition_mmap(src, base, len, ESP_PARTITION_MMAP_DATA_READ, &p,
+      e = esp_partition_mmap(src, base, len, ESP_PARTITION_MMAP_DATA, &p,
                              &mh);
       if (e != ESP_OK) {
         printf("ota: copy mmap err=0x%x (%s) at base=0x%lx\n", (int)e,
