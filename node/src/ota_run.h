@@ -15,11 +15,15 @@
 #define AIO_OTA_RUN_H
 
 #include <Arduino.h>
-#include <HTTPClient.h>
+/* core 3.x header names differ per target: ESP32 ships HTTPClient.h; the
+ * 8266 core names it ESP8266HTTPClient.h — there is no plain HTTPClient.h
+ * on the 8266 (each error here masked the next one in CI). */
 #if defined(AIO_NODE_8266)
 #include <WiFiClient.h>
+#include <ESP8266HTTPClient.h>
 #include <WiFiClientSecureBearSSL.h>
 #else
+#include <HTTPClient.h>
 #include <WiFiClientSecure.h>
 #endif
 

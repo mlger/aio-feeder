@@ -122,10 +122,23 @@ struct Hal {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
   }
-  bool ota_begin(size_t len) { return Update.begin(len ? len : (size_t)UPDATE_SIZE_UNKNOWN); }
+  /* 8266 Updater needs a real size (begin(0) = UPDATE_ERROR_SIZE); when the
+   * length is unknown, cap at the free sketch space — getFreeSketchSpace()
+   * is sector-aligned, exactly what begin()'s space check accepts. */
+  bool ota_begin(size_t len) {
+    if (len == 0) len = ESP.getFreeSketchSpace();
+    return Update.begin(len);
+  }
   size_t ota_write(const uint8_t *buf, size_t len) { return Update.write((uint8_t *)buf, len); }
   bool ota_end() { return Update.end(true); }
-  void ota_abort() { Update.abort(); }
+  /* 8266 has no bootloader rollback and no Update.abort(): end(false) on an
+   * unfinished/errored update only resets state and writes no eboot command,
+   * so the partial image can never be selected at boot. A finished-but-
+   * refused image is inert the same way (no eboot cmd); its updater state is
+   * only droppable by a reboot — the OTA lock persists across it. */
+  void ota_abort() {
+    if (!Update.isFinished()) Update.end(false);
+  }
   /* 8266 has no bootloader rollback — the sha pin (checked before reboot) is
    * the confirmation; nothing to mark valid here. */
   void ota_mark_valid() {}
