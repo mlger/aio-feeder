@@ -1,0 +1,26 @@
+# AIO Feeder hub — QEMU OTA selftest partition table (16 MB flash).
+#
+# Same roles as partitions.csv, but every EXECUTED region (factory,
+# ota_0, ota_1) sits below the 8 MB line: the espressif QEMU 9.2.2 cache
+# model host-SIGSEGVs when the runtime (app-context) cache maps flash at
+# or above ~0x800000, and the stage2 walk died exactly there (esp_ota_end
+# verifying the badapp copy in ota_1 @0xA60000 — see ota_service.cpp).
+# The bootloader's own mapping path is proven fine below 0x620000, so the
+# selftest build keeps its executed slots in that proven range.
+#
+# Data-only partitions (nfw, badapp, coredump) keep their production
+# offsets: esp_partition_read/write never goes through the cache, and the
+# CI merge step writes badapp.bin at 0xFA0000 unchanged.
+#
+# App size (selftest build, no UI/radio) ≈ 0x60000; 1.75 MB slots leave
+# >60% headroom. Do NOT use this table on hardware — partitions.csv is
+# the production layout.
+# Name,   Type, SubType, Offset,   Size,     Flags
+nvs,      data, nvs,      0x9000,   0x5000,
+factory,  app,  factory,  0x10000,  0x1C0000,
+otadata,  data, ota,      0x1D0000, 0x2000,
+ota_0,    app,  ota_0,    0x1E0000, 0x1C0000,
+ota_1,    app,  ota_1,    0x3A0000, 0x1C0000,
+nfw,      data, 0x41,     0xEA0000, 0x100000,
+badapp,   data, 0x40,     0xFA0000, 0x40000,
+coredump, data, coredump, 0xFE0000, 0x20000,

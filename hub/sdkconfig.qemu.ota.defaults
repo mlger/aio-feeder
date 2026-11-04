@@ -14,3 +14,9 @@ CONFIG_AIO_OTA_CONFIRM_MS=5000
 # Flash mode: DIO under QEMU — the QIO fast-read model shifts every
 # response by two phantom bytes (see sdkconfig.qemu.defaults).
 CONFIG_ESPTOOLPY_FLASHMODE_DIO=y
+
+# Partition layout: the QEMU cache model host-SIGSEGVs on runtime mappings
+# of flash at/above ~8 MB (the stage2 walk died verifying ota_1 @0xA60000
+# — see ota_service.cpp). Keep every executed slot in the proven range;
+# data-only partitions (badapp at 0xFA0000 for the CI merge) stay put.
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions_qemu_ota.csv"

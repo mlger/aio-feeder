@@ -146,10 +146,22 @@ static const esp_partition_t *slot_by_label(const char *label) {
  *     returned `00 00 e9 06` — the QIO fast-read model prepends two
  *     phantom bytes to every response, shifting the stream by two while
  *     the bootloader's standard reads validate and boot the same bytes.
- * The QEMU sdkconfig overlays therefore pin DIO flash mode, whose model
- * reads correctly; mmap is off the table. The one-shot "copy diag" line
- * prints the first source bytes so a CI round proves the mode fix
- * without a second run. */
+ *   - v0.12.0 round 3 (DIO pinned, reads right): esp_ota_end still can't
+ *     run in the guest. Its internal esp_image_verify maps the staged
+ *     image through the runtime cache, and the model host-SIGSEGV'd QEMU
+ *     (rc=-11) mid-walk on the ota_1 mapping (0xa60000) — the copy was
+ *     already byte-identical on flash. Even in the surviving 0x62 range
+ *     the first post-write window pass mis-reads: esp_ota_end refused a
+ *     byte-identical copy (ESP_ERR_OTA_VALIDATE_FAILED) that a follow-up
+ *     esp_image_verify (set_boot's) accepted moments later.
+ * The QEMU sdkconfig overlays pin DIO flash mode (reads correct) and
+ * partitions_qemu_ota.csv keeps every executed slot below the 8 MB line
+ * where the boot path is proven. mmap stays off the table at runtime, so
+ * the selftest drops esp_ota_end entirely: copy_is_exact() below is the
+ * acceptance gate, and the next boot's bootloader does the real
+ * validation with its own (working) mapping path. The one-shot "copy
+ * diag" line prints the first source bytes so a CI round proves the
+ * mode fix without a second run. */
 /* Selftest-only: compare `len` bytes of src vs dst through the (now
  * correct) read path; on the first divergence print it and stop. */
 static bool copy_is_exact(const esp_partition_t *src, const esp_partition_t *dst,
@@ -171,6 +183,18 @@ static bool copy_is_exact(const esp_partition_t *src, const esp_partition_t *dst
     }
   }
   return true;
+}
+
+/* Selftest-only: esp_ota_set_boot_partition re-verifies the target through
+ * the runtime cache, and the QEMU model's first post-write window pass can
+ * mis-read (round 3: esp_ota_end refused bytes a follow-up verify
+ * accepted — see the QEMU story above). Retry once before giving up. */
+static bool set_boot_with_retry(const esp_partition_t *dst) {
+  for (int attempt = 1;; ++attempt) {
+    if (esp_ota_set_boot_partition(dst) == ESP_OK) return true;
+    if (attempt >= 2) return false;
+    printf("ota: set_boot attempt %d failed — retrying\n", attempt);
+  }
 }
 
 static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *dst) {
@@ -240,27 +264,18 @@ static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *d
     esp_ota_abort(h);
     return 0;
   }
-  e = esp_ota_end(h);
-  if (e != ESP_OK) {
-    /* QEMU: esp_ota_end re-verifies the staged image and its verifier can
-     * refuse a copy that is byte-identical to the source (model quirk on
-     * top of the mmap/QIO ones). Selftest-only fallback: compare the
-     * copied bytes ourselves — if they match exactly, the bootloader
-     * validates the image for real at the next boot, so proceed. */
-    if (e == ESP_ERR_OTA_VALIDATE_FAILED &&
-        copy_is_exact(src, dst, scan.img_len)) {
-      uint8_t t[8] = {};
-      esp_partition_read(src, scan.img_len, t, sizeof(t));
-      printf("ota: copy end refused but %lu bytes match the source — "
-             "proceeding (tail: %02x%02x%02x%02x%02x%02x%02x%02x)\n",
-             (unsigned long)scan.img_len, t[0], t[1], t[2], t[3], t[4], t[5],
-             t[6], t[7]);
-      esp_ota_abort(h);
-      return scan.img_len;
-    }
-    printf("ota: copy end err=0x%x (%s) img_len=%lu\n", (int)e,
-           esp_err_to_name(e), (unsigned long)scan.img_len);
-    esp_ota_abort(h);
+  /* Round 3 (see the QEMU story above): esp_ota_end never runs in the
+   * guest — its verifier mmaps the staged image and the model kills the
+   * host on the ota_1 range before it can even return. copy_is_exact()
+   * is the acceptance gate instead; esp_ota_abort() releases the handle
+   * without touching the written bytes, and set_boot_partition() hands
+   * the slot to the bootloader, which validates it for real at the next
+   * boot (the same chain the round-2 fallback proved in stage0). */
+  const bool exact = copy_is_exact(src, dst, scan.img_len);
+  esp_ota_abort(h);
+  if (!exact) {
+    printf("ota: copy mismatch vs source (%lu B)\n",
+           (unsigned long)scan.img_len);
     return 0;
   }
   return scan.img_len;
@@ -471,7 +486,7 @@ static void selftest_boot(const esp_partition_t *run) {
       if (!len) return; /* stay: CI will see a missing marker */
       /* esp_ota_begin only erases — otadata needs an explicit boot select
        * or the next boot lands back in factory and the walk stalls */
-      if (esp_ota_set_boot_partition(dst) != ESP_OK) {
+      if (!set_boot_with_retry(dst)) {
         printf("ota: selftest stage0 set_boot FAILED\n");
         stage = 0;
         store_put(*s_store, SELF_KEY, 1, &stage, 1);
@@ -499,7 +514,7 @@ static void selftest_boot(const esp_partition_t *run) {
       if (!len) return;
       stage = 3;
       store_put(*s_store, SELF_KEY, 1, &stage, 1);
-      if (esp_ota_set_boot_partition(dst) != ESP_OK) {
+      if (!set_boot_with_retry(dst)) {
         printf("ota: selftest set_boot FAILED\n");
         stage = 0;
         store_put(*s_store, SELF_KEY, 1, &stage, 1);
@@ -512,11 +527,21 @@ static void selftest_boot(const esp_partition_t *run) {
     case 3: {
       const esp_partition_t *ota1 = slot_by_label("ota_1");
       esp_ota_img_states_t st = ESP_OTA_IMG_UNDEFINED;
-      const bool invalid =
+      /* The walk VERIFIES rollback when the hub is back on the previous
+       * valid slot AND the unconfirmed slot is dead. IDF 5.4's bootloader
+       * downgrades a slot that rebooted without confirming to
+       * ESP_OTA_IMG_ABORTED — unconditionally (no reset-reason check;
+       * ESP_OTA_IMG_INVALID is only ever written by the explicit app-side
+       * rollback API) — and ota_select_invalid() excludes ABORTED from
+       * boot candidates, which is what performs the fallback. Accept both
+       * states here; the running-partition check is the hard evidence. */
+      const bool fell_back = strcmp(run->label, "ota_0") == 0;
+      const bool dead_slot =
           ota1 && esp_ota_get_state_partition(ota1, &st) == ESP_OK &&
-          st == ESP_OTA_IMG_INVALID;
+          (st == ESP_OTA_IMG_INVALID || st == ESP_OTA_IMG_ABORTED);
       printf("ota: selftest rollback %s (running %s, ota_1 state %d)\n",
-             invalid ? "VERIFIED" : "not-invalid", run->label, (int)st);
+             (fell_back && dead_slot) ? "VERIFIED" : "not-invalid",
+             run->label, (int)st);
       stage = 0;
       store_put(*s_store, SELF_KEY, 1, &stage, 1);
       return;

@@ -135,8 +135,10 @@ jobs:
       - name: Dump merged image ground truth (OTA selftest diagnosis)
         run: |
           python3 - <<'EOF'
+          # offsets match hub/partitions_qemu_ota.csv (selftest build):
+          # bootloader, part-table, factory, otadata, ota_0, ota_1, badapp
           b = open('hub/build/flash.img', 'rb')
-          for off in (0x0, 0x8000, 0x10000, 0x610000, 0x620000, 0xFA0000):
+          for off in (0x0, 0x8000, 0x10000, 0x1D0000, 0x1E0000, 0x3A0000, 0xFA0000):
               b.seek(off)
               print(f"flash.img @0x{off:06X}: {b.read(16).hex(' ')}")
           EOF

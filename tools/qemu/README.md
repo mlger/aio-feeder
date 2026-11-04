@@ -65,13 +65,25 @@ M8a additions (v0.11):
   action-strip remap on the new pane.
 - **OTA selftest** (`ci.yml` job `ota-selftest`): a second hub build with
   `sdkconfig.qemu.ota.defaults` (AIO_NO_RADIO, no UI, 5 s confirm window,
-  `CONFIG_AIO_OTA_SELFTEST`) boots beside `tools/qemu/badapp` (a
-  deliberately non-confirming image merged into the `badapp` data
-  partition at 0xFA0000). The walk is five real guest reboots in one QEMU
-  process — `tools/qemu/ota_run.py` omits capture.py's `-no-reboot` for
-  exactly that reason — and asserts the marker order: stage0 staged
-  (running image copied into ota_0 through the full esp_ota_ops path) →
-  PENDING_VERIFY → health confirm → stage2 staged (badapp → ota_1) →
-  badapp runs and never confirms → bootloader invalidates ota_1 and falls
-  back (`rollback VERIFIED`). A boot counter in NVS aborts the walk if it
-  ever loops past 14 boots.
+  `CONFIG_AIO_OTA_SELFTEST`, `partitions_qemu_ota.csv`) boots beside
+  `tools/qemu/badapp` (a deliberately non-confirming image merged into the
+  `badapp` data partition at 0xFA0000). The walk is five real guest reboots
+  in one QEMU process — `tools/qemu/ota_run.py` omits capture.py's
+  `-no-reboot` for exactly that reason — and asserts the marker order:
+  stage0 staged (running image copied into ota_0 through the esp_ota_ops
+  write path) → PENDING_VERIFY → health confirm → stage2 staged (badapp →
+  ota_1) → badapp runs and never confirms → bootloader downgrades the
+  unconfirmed ota_1 (ABORTED — IDF 5.4 marks it at the next boot and
+  ota_select_invalid() skips dead slots when selecting) and falls back
+  (`rollback VERIFIED`). A boot counter in NVS aborts the
+  walk if it ever loops past 14 boots.
+
+  Two QEMU-model constraints shaped the selftest (full saga in
+  `hub/main/ota_service.cpp`): runtime cache mmap is unusable in the guest
+  (the esp_ota_end verifier host-SIGSEGVs QEMU on mappings at/above ~8 MB,
+  and even below that the window data read back wrong), so the selftest
+  copies are gated by an in-app byte compare instead of `esp_ota_end` —
+  the bootloader does the real validation with its own working path; and
+  `partitions_qemu_ota.csv` keeps every executed slot (factory, ota_0,
+  ota_1) below that line. Data-only partitions (read/write never mmaps)
+  keep their production offsets.
