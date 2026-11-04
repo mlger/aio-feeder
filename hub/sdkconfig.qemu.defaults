@@ -33,3 +33,10 @@ CONFIG_AIO_UI_SHOT=y
 # depends on !AIO_UI_SHOT); state it explicitly so the shot build never
 # grows a panel/touch dependency.
 # CONFIG_AIO_HW_DISPLAY is not set
+
+# Flash mode: QEMU's QSPI fast-read model prepends two phantom bytes to
+# every QIO read response (the app then reads factory@0x10000 as
+# `00 00 e9 06` — the true `e9 06 02 4f` shifted — while the bootloader's
+# standard reads validate and boot the same bytes fine). Pin DIO for the
+# emulated builds; the model handles dual-output reads correctly.
+CONFIG_ESPTOOLPY_FLASHMODE_DIO=y

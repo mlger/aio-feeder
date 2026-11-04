@@ -136,23 +136,20 @@ static const esp_partition_t *slot_by_label(const char *label) {
  * image length. Returns the length, 0 on failure. Used by the selftest
  * (partition→slot copy); the HTTP path has its own reader.
  *
- * Source reads go through esp_partition_mmap, NOT esp_partition_read.
- * CI evidence (v0.11.0 → v0.12.0, esp-develop-9.2.2-20260417): QEMU's
- * SPI-flash read path returns garbage with ESP_OK after any flash
- * mutation in the same power cycle — the NVS bookkeeping write this boot
- * performs before the copy is enough, so the very first chunk read back
- * `00 00 e9 06` from factory@0x10000 (bytes the bootloader had just
- * booted fine). The MMU/cache path — the one the CPU executes from — is
- * unaffected, so the source is copied through one-page mappings:
- *
- *   - window = one MMU page (64 KB on the S3): a 6 MB runtime map
- *     SIGFPE'd the QEMU MMU model (v0.11.0 CI), single-page windows do
- *     not (the map/unmap churn stays at one live page);
- *   - esp_ota_begin(OTA_WITH_SEQUENTIAL_WRITES) keeps the destination
- *     erase just-in-time, which is fine now that reads never traverse
- *     the SPI path;
- *   - both paths are dumped once before the copy ("copy diag") so a CI
- *     round pins the diverging reader without a second run. */
+ * Source reads are plain esp_partition_read — sequential, no ordering
+ * tricks. The QEMU story so far (all CI-pinned):
+ *   - v0.11.0: a 6 MB runtime esp_partition_mmap SIGFPE'd the QEMU MMU
+ *     model, and reads after a partition-wide erase looked poisoned;
+ *   - v0.12.0: even a 16-byte esp_partition_mmap reset the guest
+ *     instantly, and the ground-truth flash dump proved the merge right:
+ *     factory@0x10000 holds `e9 06 02 4f`, yet esp_partition_read
+ *     returned `00 00 e9 06` — the QIO fast-read model prepends two
+ *     phantom bytes to every response, shifting the stream by two while
+ *     the bootloader's standard reads validate and boot the same bytes.
+ * The QEMU sdkconfig overlays therefore pin DIO flash mode, whose model
+ * reads correctly; mmap is off the table. The one-shot "copy diag" line
+ * prints the first source bytes so a CI round proves the mode fix
+ * without a second run. */
 static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *dst) {
   esp_ota_handle_t h = 0;
   esp_err_t e = esp_ota_begin(dst, OTA_WITH_SEQUENTIAL_WRITES, &h);
@@ -160,78 +157,40 @@ static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *d
     printf("ota: copy begin err=0x%x (%s)\n", (int)e, esp_err_to_name(e));
     return 0;
   }
-  printf("ota: copy src=%s @0x%lx -> dst=%s @0x%lx (mmap windowed)\n", src->label,
+  printf("ota: copy src=%s @0x%lx -> dst=%s @0x%lx (sequential)\n", src->label,
          (unsigned long)src->address, dst->label, (unsigned long)dst->address);
 
-#ifndef CONFIG_MMU_PAGE_SIZE
-#define CONFIG_MMU_PAGE_SIZE 0x10000
-#endif
-  constexpr uint32_t WIN = CONFIG_MMU_PAGE_SIZE; /* one S3 MMU page */
-
-  /* one-shot diagnostic: first 16 source bytes via BOTH flash paths —
-   * they must agree; on QEMU the SPI one diverges post-mutation */
+  /* one-shot diagnostic: the first 8 source bytes as the SPI path sees
+   * them — `e9 06 02 4f ...` when the flash mode model is right */
   {
-    uint8_t spi[16] = {}, mmu[16] = {};
-    esp_partition_read(src, 0, spi, sizeof(spi));
-    const void *dp = nullptr;
-    esp_partition_mmap_handle_t dh = 0;
-    if (esp_partition_mmap(src, 0, sizeof(mmu), ESP_PARTITION_MMAP_DATA,
-                           &dp, &dh) == ESP_OK) {
-      memcpy(mmu, dp, sizeof(mmu));
-      esp_partition_munmap(dh);
-    } else {
-      printf("ota: copy diag mmap of src failed\n");
-    }
-    printf("ota: copy diag spi=%02x%02x%02x%02x mmu=%02x%02x%02x%02x\n", spi[0],
-           spi[1], spi[2], spi[3], mmu[0], mmu[1], mmu[2], mmu[3]);
+    uint8_t d[8] = {};
+    esp_partition_read(src, 0, d, sizeof(d));
+    printf("ota: copy diag first=%02x %02x %02x %02x %02x %02x %02x %02x\n",
+           d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7]);
   }
 
+  static uint8_t buf[4096]; /* selftest-only, one caller at boot */
   OtaImgScan scan;
   uint32_t off = 0; /* image bytes handed to esp_ota_write so far */
   bool done = false;
 
-  esp_partition_mmap_handle_t mh = 0;
-  const uint8_t *win = nullptr;
-  uint32_t win_base = 0;
-  bool win_open = false;
-
   while (!done) {
-    if (off >= src->size) {
-      printf("ota: copy image end not found (scanned %lu B)\n",
-             (unsigned long)off);
+    uint32_t want = sizeof(buf);
+    if (off + want > src->size) want = src->size - off;
+    e = esp_partition_read(src, off, buf, want);
+    if (e != ESP_OK) {
+      printf("ota: copy read err=0x%x (%s) at off=%lu\n", (int)e,
+             esp_err_to_name(e), (unsigned long)off);
       break;
     }
-    /* (re)open the single-page window covering `off` */
-    const uint32_t base = off & ~(WIN - 1);
-    if (!win_open || base != win_base) {
-      if (win_open) esp_partition_munmap(mh);
-      const size_t len =
-          (src->size - base) < WIN ? (size_t)(src->size - base) : (size_t)WIN;
-      const void *p = nullptr;
-      e = esp_partition_mmap(src, base, len, ESP_PARTITION_MMAP_DATA, &p,
-                             &mh);
-      if (e != ESP_OK) {
-        printf("ota: copy mmap err=0x%x (%s) at base=0x%lx\n", (int)e,
-               esp_err_to_name(e), (unsigned long)base);
-        break;
-      }
-      win = static_cast<const uint8_t *>(p);
-      win_base = base;
-      win_open = true;
-    }
-
-    const uint32_t in_win = WIN - (off - win_base);
-    uint32_t chunk = in_win < 4096 ? in_win : 4096;
-    if (off + chunk > src->size) chunk = src->size - off;
-
-    ota_img_scan(&scan, win + (off - win_base), chunk);
+    ota_img_scan(&scan, buf, want);
     if (scan.bad) {
       printf("ota: copy scan bad at off=%lu stage=%u hdr=%02x %02x %02x %02x\n",
              (unsigned long)off, (unsigned)scan.stage, scan.hdr[0],
              scan.hdr[1], scan.hdr[2], scan.hdr[3]);
       break;
     }
-    uint32_t take = chunk;
+    uint32_t take = want;
     if (scan.done) {
       if (scan.img_len <= off) {
         printf("ota: copy short scan img_len=%lu off=%lu\n",
@@ -241,20 +200,19 @@ static uint32_t stream_copy(const esp_partition_t *src, const esp_partition_t *d
       /* the checksum+SHA tail can span past this chunk — only finish when
        * the whole image lies inside the bytes copied so far, else write
        * the full chunk and pick the tail up next round */
-      if (scan.img_len <= off + chunk) {
+      if (scan.img_len <= off + want) {
         take = scan.img_len - off;
         done = true;
       }
     }
-    e = esp_ota_write(h, win + (off - win_base), take);
+    e = esp_ota_write(h, buf, take);
     if (e != ESP_OK) {
-      printf("ota: copy write err=0x%x at off=%lu take=%lu\n", (int)e,
-             (unsigned long)off, (unsigned long)take);
+      printf("ota: copy write err=0x%x (%s) at off=%lu take=%lu\n", (int)e,
+             esp_err_to_name(e), (unsigned long)off, (unsigned long)take);
       break;
     }
     off += take;
   }
-  if (win_open) esp_partition_munmap(mh);
   if (!done) {
     esp_ota_abort(h);
     return 0;
