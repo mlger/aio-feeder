@@ -89,15 +89,15 @@ M8a additions (v0.11):
   keep their production offsets. Round 4 showed `esp_ota_set_boot_partition()`
   hits the same wall — its pre-verify maps the staged image through the
   runtime cache and refused a byte-exact ota_0 copy twice — so
-  `boot_select()` tries the IDF API once and, when it refuses, writes
-  otadata directly with `esp_rewrite_ota_data()` semantics (IDF v5.4)
-  over the SPI read/erase/write path (`otadata_raw_select()`); the
-  bootloader still owns image validation at the next boot. Round 5 went
-  further: `read_otadata()` mmaps otadata even in app context (behind
-  `esp_ota_get_state_partition` / `esp_ota_mark_app_valid_cancel_rollback`
-  / `esp_ota_get_next_update_partition`), and the rollback boot died in
-  exactly that path after four boots had read the same sectors fine — so
-  the selftest build now resolves its update slot by label and does all
-  state lookups (`slot_state_raw`) and the health confirm
-  (`ota_confirm_raw`) through the SPI path too, leaving zero runtime-cache
-  operations in the walk.
+  `boot_select()` writes otadata directly with `esp_rewrite_ota_data()`
+  semantics (IDF v5.4) over the SPI read/erase/write path
+  (`otadata_raw_select()`); the bootloader still owns image validation at
+  the next boot. Rounds 5/6 sealed it: `read_otadata()` mmaps otadata even
+  in app context (behind every `esp_ota_*` state API), and the model's
+  runtime-cache path proved to be an outright lottery — across three runs
+  the set_boot pre-verify produced a false hash verdict, a correct read,
+  and a host SIGSEGV on identical bytes. The walk therefore performs zero
+  runtime-cache operations: boot-select, the slot copy (raw erase +
+  `esp_partition_write` — `esp_ota_begin()` mmaps too), state lookups
+  (`slot_state_raw`) and the health confirm (`ota_confirm_raw`) all go
+  through the SPI path.
