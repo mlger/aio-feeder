@@ -165,7 +165,8 @@ jobs:
   pages:
     name: Deploy web flasher to GitHub Pages
     if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
-    needs: build
+    # qemu-hub too: the ui/ gallery publishes its hub-ui-screens artifact
+    needs: [build, qemu-hub]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -193,10 +194,16 @@ jobs:
           for d in build/fw-*; do
             mv "$d" "build/${d#build/fw-}"
           done
+      - name: Download hub UI screenshots (QEMU captures)
+        uses: actions/download-artifact@v4
+        with:
+          name: hub-ui-screens
+          path: build/ui-screens
       - name: Assemble flasher site
         run: |
           VERSION=$(git describe --tags --always --dirty)
-          python tools/flasher/make_manifests.py --build-dir build --version "$VERSION"
+          python tools/flasher/make_manifests.py --build-dir build --version "$VERSION" \
+            --screens build/ui-screens
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

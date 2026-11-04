@@ -18,8 +18,11 @@ M4a screenshot run (`CONFIG_AIO_UI_SHOT`): the QEMU build also enables the
 LVGL dashboard, in-firmware sim nodes (`hub/main/sim_nodes.h`) and a pinned
 wall clock; `tools/qemu/capture.py` boots the same flash image with a monitor
 socket, waits for `AIO_SHOT <screen>` markers on serial and dumps the LVGL
-framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, converting each frame to
-`screens/<name>.png` (uploaded as the `hub-ui-screens` artifact). Captured:
+framebuffer (ELF symbol `g_shot_fb`) via `pmemsave`, composing each frame into
+the 800×480 panel PNG the hardware displays (2× nearest-neighbor into the
+centered 704×480 window, 48 px black side bars — display_hw.cpp flush_cb) as
+`screens/<name>.png` (uploaded as the `hub-ui-screens` artifact; the pages
+job republishes them as the site's `ui/` gallery). Captured:
 `dashboard`, `node_detail`, `sched_editor`, `history`, `alerts` — the five
 M4a screens — plus the M4b pairing steps `pairing`, `pairing_code`,
 `pairing_form`, `pairing_done`, the calibration wizard steps `calib`,

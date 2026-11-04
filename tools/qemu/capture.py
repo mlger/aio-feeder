@@ -5,7 +5,10 @@ AIO Feeder — QEMU UI screenshot runner (PLAN.md §7.7, §12 M4a).
 Boots the hub flash image in the Espressif QEMU fork (esp32s3 machine),
 watches the serial log for the firmware's "AIO_SHOT <name>" markers, and
 dumps the LVGL framebuffer (ELF symbol g_shot_fb) via the QEMU human
-monitor `pmemsave` command. Each dump is converted RGB565 → PNG.
+monitor `pmemsave` command. Each dump is composed into the 800×480 panel
+image the hardware shows (display_hw.cpp flush_cb: the 352×240 LVGL
+render 2× nearest-neighbor expanded into the centered 704×480 window,
+48 px black side bars) and written as PNG.
 
 No third-party Python deps (hand-rolled PNG writer on zlib).
 
@@ -35,8 +38,19 @@ import zlib
 
 MARKER = re.compile(rb"AIO_SHOT\s+([A-Za-z0-9_\-]+)")
 FB_SYMBOL = "g_shot_fb"
-FB_W, FB_H = 352, 240  # must match hub/main/ui/ui.cpp
+FB_W, FB_H = 352, 240  # LVGL logical render — must match hub/main/ui/ui.cpp
 FB_BYTES = FB_W * FB_H * 2
+
+# The 800×480 ST7262 panel image (display_hw.cpp board constants): the
+# logical frame ×2 nearest-neighbor expanded into a 704×480 window centered
+# in the panel — 48 px black bars left and right, full-height. Captures are
+# composed to this size so the PNGs show what the device actually displays,
+# not the shrunken logical canvas.
+PANEL_W, PANEL_H = 800, 480
+SCALE = 2
+WIN_W = FB_W * SCALE          # 704
+WIN_H = FB_H * SCALE          # 480 (no top/bottom bars)
+WIN_X = (PANEL_W - WIN_W) // 2  # 48 px bars
 
 
 def fb_addr_from_elf(elf: str, symbol: str, nm: str) -> int:
@@ -75,6 +89,29 @@ def rgb565le_to_rgb888(data: bytes, w: int, h: int) -> bytes:
         out[3 * i + 1] = g | (g >> 6)
         out[3 * i + 2] = b | (b >> 5)
     return bytes(out)
+
+
+def compose_panel(fb: bytes) -> bytes:
+    """Replicate display_hw.cpp flush_cb on the host: the 352×240 LVGL
+    frame ×2 nearest-neighbor expanded into the 704×480 window, centered
+    in the 800×480 panel. Bars stay black from the zeroed buffer exactly
+    like the panel framebuffer's init memset."""
+    logical = rgb565le_to_rgb888(fb, FB_W, FB_H)
+    panel = bytearray(PANEL_W * PANEL_H * 3)  # zeroed → black bars
+    win_row = bytearray(WIN_W * 3)            # one expanded logical row
+    row = FB_W * 3
+    for ly in range(FB_H):
+        src = logical[ly * row:(ly + 1) * row]
+        for lx in range(FB_W):
+            s3 = lx * 3
+            d6 = lx * 6
+            px = src[s3:s3 + 3]
+            win_row[d6:d6 + 3] = px
+            win_row[d6 + 3:d6 + 6] = px
+        for dy in (0, 1):  # each logical row lands on two panel rows
+            dst = (ly * SCALE + dy) * PANEL_W * 3 + WIN_X * 3
+            panel[dst:dst + WIN_W * 3] = win_row
+    return bytes(panel)
 
 
 class Monitor:
@@ -221,9 +258,10 @@ def main() -> int:
                     png = os.path.join(args.out, f"{name}.png")
                     with open(raw, "rb") as f:
                         data = f.read()
-                    write_png(png, FB_W, FB_H, rgb565le_to_rgb888(data, FB_W, FB_H))
+                    write_png(png, PANEL_W, PANEL_H, compose_panel(data))
                     os.remove(raw)
-                    print(f"[capture] saved {png} ({len(data)} bytes raw)")
+                    print(f"[capture] saved {png} "
+                          f"({PANEL_W}x{PANEL_H} panel, {len(data)} bytes raw fb)")
                     pending.discard(name)
                     captured.append(name)
                 seen_markers.add(name)

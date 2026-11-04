@@ -19,7 +19,9 @@
  *     AIO_SHOT dashboard
  *
  * every 5 s; the runner dumps g_shot_fb via the QEMU monitor `pmemsave`
- * (symbol address resolved from the ELF with nm) and converts it to PNG.
+ * (symbol address resolved from the ELF with nm) and composes each frame
+ * into the 800×480 panel PNG (2× expand + bars, as display_hw.cpp does on
+ * silicon) before writing it.
  * The frame is stable between markers because the snapshot only changes on
  * engine updates and the sim clock is pinned.
  *
