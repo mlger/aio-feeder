@@ -86,4 +86,10 @@ M8a additions (v0.11):
   the bootloader does the real validation with its own working path; and
   `partitions_qemu_ota.csv` keeps every executed slot (factory, ota_0,
   ota_1) below that line. Data-only partitions (read/write never mmaps)
-  keep their production offsets.
+  keep their production offsets. Round 4 showed `esp_ota_set_boot_partition()`
+  hits the same wall — its pre-verify maps the staged image through the
+  runtime cache and refused a byte-exact ota_0 copy twice — so
+  `boot_select()` tries the IDF API once and, when it refuses, writes
+  otadata directly with `esp_rewrite_ota_data()` semantics (IDF v5.4)
+  over the SPI read/erase/write path (`otadata_raw_select()`); the
+  bootloader still owns image validation at the next boot.
