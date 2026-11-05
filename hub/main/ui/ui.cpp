@@ -33,6 +33,7 @@
 #include <freertos/FreeRTOS.h>
 #include <freertos/task.h>
 
+#include <atomic>
 #include <cstdio>
 #include <cstring>
 
@@ -45,6 +46,24 @@
 
 namespace aio {
 namespace ui {
+
+/* Engine → UI snapshot counters: release on publish, acquire on read. The
+ * plain-volatile sequence allowed the snapshot copy to reorder after the
+ * seq bump on the dual-core S3, so the UI task could render a half-written
+ * frame. seq_load/seq_store are the only sanctioned accessors. */
+static inline uint32_t seq_load(const std::atomic<uint32_t> &a) {
+  return a.load(std::memory_order_acquire);
+}
+static inline void seq_store(std::atomic<uint32_t> &a, uint32_t v) {
+  a.store(v, std::memory_order_release);
+}
+
+/* One-shot request hand-off (LVGL task → engine task): every multi-field
+ * unit below (take_actions, pad_commit's entry payload, the PIN digits +
+ * OK snapshot) is written and consumed under this spinlock — single-flag
+ * stores are atomic on their own, but a flag + payload pair is not, and
+ * take_actions' copy+clear must not interleave with a callback's writes. */
+static portMUX_TYPE s_ui_mux = portMUX_INITIALIZER_UNLOCKED;
 
 #define UI_W 352
 #define UI_H 240
@@ -83,22 +102,22 @@ static NodeDetail s_det_snap[2];
 static SchedEditor s_edit_snap[2];
 static HistoryView s_hist_snap[2];
 static AlertsView s_alr_snap[2];
-static volatile uint32_t s_seq = 0;
-static volatile uint32_t s_det_seq = 0;
-static volatile uint32_t s_edit_seq = 0;
-static volatile uint32_t s_hist_seq = 0;
-static volatile uint32_t s_alr_seq = 0;
+static std::atomic<uint32_t> s_seq{0};
+static std::atomic<uint32_t> s_det_seq{0};
+static std::atomic<uint32_t> s_edit_seq{0};
+static std::atomic<uint32_t> s_hist_seq{0};
+static std::atomic<uint32_t> s_alr_seq{0};
 static PairingView s_pair_snap[2];
-static volatile uint32_t s_pair_seq = 0;
+static std::atomic<uint32_t> s_pair_seq{0};
 static uint32_t s_pair_seen = 0;
 static CalibView s_cal_snap[2];
-static volatile uint32_t s_cal_seq = 0;
+static std::atomic<uint32_t> s_cal_seq{0};
 static uint32_t s_cal_seen = 0;
 static SettingsView s_set_snap[2];
-static volatile uint32_t s_set_seq = 0;
+static std::atomic<uint32_t> s_set_seq{0};
 static uint32_t s_set_seen = 0;
 static WizardView s_wiz_snap[2];
-static volatile uint32_t s_wiz_seq = 0;
+static std::atomic<uint32_t> s_wiz_seq{0};
 static uint32_t s_wiz_seen = 0;
 static char s_pin_note[32] = {0}; /* PIN pad status line (view-side) */
 static uint32_t s_seen = 0;
@@ -109,84 +128,98 @@ static uint32_t s_alr_seen = 0;
 static volatile uint8_t s_detail_id = 1; /* which node the detail screen shows */
 
 void publish(const Dashboard &d) {
-  const uint32_t s = s_seq;
+  const uint32_t s = seq_load(s_seq);
   s_snap[s & 1] = d;
-  s_seq = s + 1;
+  seq_store(s_seq, s + 1);
 }
 
 void publish_detail(const NodeDetail &d) {
-  const uint32_t s = s_det_seq;
+  const uint32_t s = seq_load(s_det_seq);
   s_det_snap[s & 1] = d;
-  s_det_seq = s + 1;
+  seq_store(s_det_seq, s + 1);
 }
 
 void publish_sched_editor(const SchedEditor &e) {
-  const uint32_t s = s_edit_seq;
+  const uint32_t s = seq_load(s_edit_seq);
   s_edit_snap[s & 1] = e;
-  s_edit_seq = s + 1;
+  seq_store(s_edit_seq, s + 1);
 }
 
 void publish_history(const HistoryView &h) {
-  const uint32_t s = s_hist_seq;
+  const uint32_t s = seq_load(s_hist_seq);
   s_hist_snap[s & 1] = h;
-  s_hist_seq = s + 1;
+  seq_store(s_hist_seq, s + 1);
 }
 
 void publish_alerts(const AlertsView &v) {
-  const uint32_t s = s_alr_seq;
+  const uint32_t s = seq_load(s_alr_seq);
   s_alr_snap[s & 1] = v;
-  s_alr_seq = s + 1;
+  seq_store(s_alr_seq, s + 1);
 }
 
 void publish_pairing(const PairingView &p) {
-  const uint32_t s = s_pair_seq;
+  const uint32_t s = seq_load(s_pair_seq);
   s_pair_snap[s & 1] = p;
-  s_pair_seq = s + 1;
+  seq_store(s_pair_seq, s + 1);
 }
 
 void publish_calib(const CalibView &c) {
-  const uint32_t s = s_cal_seq;
+  const uint32_t s = seq_load(s_cal_seq);
   s_cal_snap[s & 1] = c;
-  s_cal_seq = s + 1;
+  seq_store(s_cal_seq, s + 1);
 }
 
 void publish_settings(const SettingsView &v) {
-  const uint32_t s = s_set_seq;
+  const uint32_t s = seq_load(s_set_seq);
   s_set_snap[s & 1] = v;
-  s_set_seq = s + 1;
+  seq_store(s_set_seq, s + 1);
 }
 
 void publish_wizard(const WizardView &v) {
-  const uint32_t s = s_wiz_seq;
+  const uint32_t s = seq_load(s_wiz_seq);
   s_wiz_snap[s & 1] = v;
-  s_wiz_seq = s + 1;
+  seq_store(s_wiz_seq, s + 1);
 }
 
 /* --- PIN pad (§8 lock: 4 digits, view-side state) -------------------------------- */
 
 static char s_pin[5] = {0};
 static uint8_t s_pin_len = 0;
+static char s_pin_submitted[5] = {0}; /* snapshot taken when OK is pressed */
 
 void pin_press(char c) {
   if (c == 'C') {
     pin_clear();
     return;
   }
-  if (c < '0' || c > '9' || s_pin_len >= 4) return;
-  s_pin[s_pin_len++] = c;
-  s_pin[s_pin_len] = '\0';
+  if (c < '0' || c > '9') return;
+  portENTER_CRITICAL(&s_ui_mux);
+  if (s_pin_len < 4) {
+    s_pin[s_pin_len++] = c;
+    s_pin[s_pin_len] = '\0';
+  }
+  portEXIT_CRITICAL(&s_ui_mux);
 }
 
 void pin_clear() {
+  portENTER_CRITICAL(&s_ui_mux);
   s_pin_len = 0;
   s_pin[0] = '\0';
+  portEXIT_CRITICAL(&s_ui_mux);
 }
 
-uint8_t pin_entered_len() { return s_pin_len; }
-const char *pin_entered() { return s_pin; }
+uint8_t pin_entered_len() {
+  portENTER_CRITICAL(&s_ui_mux);
+  const uint8_t n = s_pin_len;
+  portEXIT_CRITICAL(&s_ui_mux);
+  return n;
+}
+const char *pin_entered() { return s_pin_submitted; }
 
 void pin_note(const char *note) {
+  portENTER_CRITICAL(&s_ui_mux);
   snprintf(s_pin_note, sizeof(s_pin_note), "%s", note ? note : "");
+  portEXIT_CRITICAL(&s_ui_mux);
 }
 
 uint8_t detail_node() { return s_detail_id; }
@@ -1602,6 +1635,10 @@ static void build_pin_screen() {
 
 static void update_pin_screen() {
   char buf[24];
+  char note[32]; /* snapshot: s_pin_note is written on the engine task */
+  portENTER_CRITICAL(&s_ui_mux);
+  snprintf(note, sizeof(note), "%s", s_pin_note);
+  portEXIT_CRITICAL(&s_ui_mux);
   if (s_pin_dots_lbl) {
     if (s_pin_len == 0)
       snprintf(buf, sizeof(buf), "-  -  -  -");
@@ -1616,10 +1653,10 @@ static void update_pin_screen() {
     lv_label_set_text(s_pin_dots_lbl, buf);
   }
   if (s_pin_note_lbl) {
-    lv_label_set_text(s_pin_note_lbl, s_pin_note);
+    lv_label_set_text(s_pin_note_lbl, note);
     lv_obj_set_style_text_color(
         s_pin_note_lbl,
-        lv_color_hex(strncmp(s_pin_note, "unlocked", 8) == 0 ? C_ONLINE : C_ALERT), 0);
+        lv_color_hex(strncmp(note, "unlocked", 8) == 0 ? C_ONLINE : C_ALERT), 0);
   }
 }
 
@@ -1854,13 +1891,17 @@ static void show(nav::Screen s) {
   switch (s) {
     case nav::SC_DETAIL:
       set_detail_node(s_nav.node);
+      portENTER_CRITICAL(&s_ui_mux);
       s_acts.detail = true;
       s_acts.detail_node = s_nav.node;
+      portEXIT_CRITICAL(&s_ui_mux);
       break;
     case nav::SC_EDIT:
       set_detail_node(s_nav.node);
+      portENTER_CRITICAL(&s_ui_mux);
       s_acts.editor = true;
       s_acts.editor_node = s_nav.node;
+      portEXIT_CRITICAL(&s_ui_mux);
       break;
     case nav::SC_HIST: s_acts.history = true; break;
     case nav::SC_ALERTS: s_acts.alerts = true; break;
@@ -1870,8 +1911,10 @@ static void show(nav::Screen s) {
 }
 
 void take_actions(nav::Actions &out) {
+  portENTER_CRITICAL(&s_ui_mux);
   out = s_acts;
   s_acts.clear();
+  portEXIT_CRITICAL(&s_ui_mux);
 }
 
 void nav_sync_lock(bool locked) { s_cmd_lock = locked ? 1 : -1; }
@@ -1932,8 +1975,8 @@ static void set_section_tap_cb(lv_event_t *e) {
  * lands its own zone). */
 /* latest published settings section (255 = none yet) */
 static uint8_t tap_section_now() {
-  if (!s_set_seq) return 255;
-  return s_set_snap[(s_set_seq - 1) & 1].section;
+  if (!seq_load(s_set_seq)) return 255;
+  return s_set_snap[(seq_load(s_set_seq) - 1) & 1].section;
 }
 
 static void set_action_tap_cb(lv_event_t *e) {
@@ -1972,8 +2015,17 @@ static void pin_key_tap_cb(lv_event_t *e) {
   int row = (p.y - 34) / 32;
   if (col < 0 || col > 2 || row < 0 || row > 3) return;
   const char cell = "123456789C0!"[row * 3 + col];
-  if (cell == '!') s_acts.pin_submit = true;
-  else pin_press(cell);
+  if (cell == '!') {
+    /* OK: snapshot the digits WITH the flag — the engine reads the
+     * snapshot after take_actions, so a digit pressed meanwhile can
+     * never pair with this submit (§8). */
+    portENTER_CRITICAL(&s_ui_mux);
+    snprintf(s_pin_submitted, sizeof(s_pin_submitted), "%s", s_pin);
+    s_acts.pin_submit = true;
+    portEXIT_CRITICAL(&s_ui_mux);
+  } else {
+    pin_press(cell);
+  }
 }
 
 /* pairing: candidate rows (list lane, ≤4 lines at (10,38)) + bottom strip
@@ -2013,11 +2065,11 @@ static void cal_action_tap_cb(lv_event_t *e) {
     /* Run only in the runtime step (mark_sent needs it; a stray Run in the
      * weigh step would send a test FEED the session never watches) */
     case 1:
-      if (s_cal_snap[(s_cal_seq - 1) & 1].step == CAL_RUNTIME)
+      if (s_cal_snap[(seq_load(s_cal_seq) - 1) & 1].step == CAL_RUNTIME)
         s_acts.cal_run = true;
       break;
     case 2:
-      if (s_cal_snap[(s_cal_seq - 1) & 1].step == CAL_WEIGH)
+      if (s_cal_snap[(seq_load(s_cal_seq) - 1) & 1].step == CAL_WEIGH)
         pad_open_num(entry::ENT_CAL_WEIGH, 0);
       break;
     case 3: s_acts.cal_save = true; break;
@@ -2028,7 +2080,7 @@ static void cal_action_tap_cb(lv_event_t *e) {
  * fields — step-aware) + bottom strip "Back | Next | Save | Close" */
 static void wiz_list_tap_cb(lv_event_t *e) {
   (void)e;
-  const WizardView &v = s_wiz_snap[(s_wiz_seq - 1) & 1];
+  const WizardView &v = s_wiz_snap[(seq_load(s_wiz_seq) - 1) & 1];
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
   const int row = (p.y - 38) / 14;
@@ -2068,7 +2120,7 @@ static void wiz_action_tap_cb(lv_event_t *e) {
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
   const int zone = p.x < 45 ? 0 : p.x < 85 ? 1 : p.x < 125 ? 2 : 3;
-  const WizardView &v = s_wiz_snap[(s_wiz_seq - 1) & 1];
+  const WizardView &v = s_wiz_snap[(seq_load(s_wiz_seq) - 1) & 1];
   switch (zone) {
     case 0: s_acts.wiz_back = true; break;
     case 1:
@@ -2091,7 +2143,7 @@ static void wiz_action_tap_cb(lv_event_t *e) {
  * 2/3 open the capacity pads */
 static void pair_form_tap_cb(lv_event_t *e) {
   (void)e;
-  const PairingView &v = s_pair_snap[(s_pair_seq - 1) & 1];
+  const PairingView &v = s_pair_snap[(seq_load(s_pair_seq) - 1) & 1];
   if (v.step != PAIR_FORM) return;
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
@@ -2109,7 +2161,7 @@ static void pair_form_tap_cb(lv_event_t *e) {
  * from y=50, 14 px apart) — tap selects; below the rows drafts a new one */
 static void ed_list_tap_cb(lv_event_t *e) {
   (void)e;
-  const SchedEditor &ed = s_edit_snap[(s_edit_seq - 1) & 1];
+  const SchedEditor &ed = s_edit_snap[(seq_load(s_edit_seq) - 1) & 1];
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
   if (!ed.found) return;
@@ -2124,7 +2176,7 @@ static void ed_list_tap_cb(lv_event_t *e) {
 /* schedule editor draft row: left half = time pad, right half = amount pad */
 static void ed_draft_tap_cb(lv_event_t *e) {
   (void)e;
-  const SchedEditor &ed = s_edit_snap[(s_edit_seq - 1) & 1];
+  const SchedEditor &ed = s_edit_snap[(seq_load(s_edit_seq) - 1) & 1];
   if (!ed.found) return;
   lv_point_t p{0, 0};
   if (const lv_indev_t *indev = lv_indev_active()) lv_indev_get_point(indev, &p);
@@ -2270,6 +2322,7 @@ static void pad_close_view() {
 
 /* OK submits the parsed value as one engine request; X just closes. */
 static void pad_commit() {
+  portENTER_CRITICAL(&s_ui_mux);
   s_acts.entry_tgt = s_pad.tgt;
   s_acts.entry_text[0] = '\0';
   s_acts.entry_u32 = 0;
@@ -2282,6 +2335,7 @@ static void pad_commit() {
     s_acts.entry_u32 = s_pad.value();
   }
   s_acts.entry_commit = true;
+  portEXIT_CRITICAL(&s_ui_mux);
   pad_close_view();
 }
 
@@ -2534,47 +2588,47 @@ static void log_pool() {
 
 /* drain snapshot buffers into the widgets (shared by both loops) */
 static void pump_snapshots(bool pin_screen) {
-  const uint32_t s = s_seq;
+  const uint32_t s = seq_load(s_seq);
   if (s != s_seen) {
     update_dashboard(s_snap[(s - 1) & 1]);
     s_seen = s;
   }
-  const uint32_t ds = s_det_seq;
+  const uint32_t ds = seq_load(s_det_seq);
   if (ds != s_det_seen) {
     update_detail(s_det_snap[(ds - 1) & 1]);
     s_det_seen = ds;
   }
-  const uint32_t es = s_edit_seq;
+  const uint32_t es = seq_load(s_edit_seq);
   if (es != s_edit_seen) {
     update_edit(s_edit_snap[(es - 1) & 1]);
     s_edit_seen = es;
   }
-  const uint32_t hs = s_hist_seq;
+  const uint32_t hs = seq_load(s_hist_seq);
   if (hs != s_hist_seen) {
     update_history(s_hist_snap[(hs - 1) & 1]);
     s_hist_seen = hs;
   }
-  const uint32_t as = s_alr_seq;
+  const uint32_t as = seq_load(s_alr_seq);
   if (as != s_alr_seen) {
     update_alerts(s_alr_snap[(as - 1) & 1]);
     s_alr_seen = as;
   }
-  const uint32_t ps = s_pair_seq;
+  const uint32_t ps = seq_load(s_pair_seq);
   if (ps != s_pair_seen) {
     update_pairing(s_pair_snap[(ps - 1) & 1]);
     s_pair_seen = ps;
   }
-  const uint32_t cs = s_cal_seq;
+  const uint32_t cs = seq_load(s_cal_seq);
   if (cs != s_cal_seen) {
     update_calib(s_cal_snap[(cs - 1) & 1]);
     s_cal_seen = cs;
   }
-  const uint32_t sts = s_set_seq;
+  const uint32_t sts = seq_load(s_set_seq);
   if (sts != s_set_seen) {
     update_settings(s_set_snap[(sts - 1) & 1]);
     s_set_seen = sts;
   }
-  const uint32_t ws = s_wiz_seq;
+  const uint32_t ws = seq_load(s_wiz_seq);
   if (ws != s_wiz_seen) {
     update_wizard(s_wiz_snap[(ws - 1) & 1]);
     s_wiz_seen = ws;
@@ -2659,8 +2713,8 @@ static void ui_task(void *) {
   uint32_t tap_marked_at = 0;
   /* section of the last published settings snapshot (255 = none yet) */
   auto tap_section = [&]() -> uint8_t {
-    if (!s_set_seq) return 255;
-    return s_set_snap[(s_set_seq - 1) & 1].section;
+    if (!seq_load(s_set_seq)) return 255;
+    return s_set_snap[(seq_load(s_set_seq) - 1) & 1].section;
   };
 
   for (;;) {
@@ -2789,7 +2843,7 @@ static void ui_task(void *) {
         case SH_HIST: shot_name = "history"; break;
         case SH_ALERTS: shot_name = "alerts"; break;
         case SH_PAIR: {
-          const PairingView &pv = s_pair_snap[(s_pair_seq - 1) & 1];
+          const PairingView &pv = s_pair_snap[(seq_load(s_pair_seq) - 1) & 1];
           shot_name = pv.step == PAIR_CODE   ? "pairing_code"
                       : pv.step == PAIR_FORM ? "pairing_form"
                       : pv.step == PAIR_DONE ? "pairing_done"
@@ -2799,21 +2853,25 @@ static void ui_task(void *) {
         case SH_CAL: {
           /* the driver in main.cpp paces the flow so WEIGH and DONE hold
            * across a marker beat; RUNTIME/DISPENSE share "calib" */
-          const CalibView &cv = s_cal_snap[(s_cal_seq - 1) & 1];
+          const CalibView &cv = s_cal_snap[(seq_load(s_cal_seq) - 1) & 1];
           shot_name = cv.step == CAL_WEIGH ? "calib_weigh"
                       : cv.step == CAL_DONE ? "calib_done"
                                             : "calib";
           break;
         }
         case SH_SET: {
-          const SettingsView &sv = s_set_snap[(s_set_seq - 1) & 1];
+          const SettingsView &sv = s_set_snap[(seq_load(s_set_seq) - 1) & 1];
           shot_name = sv.section == SET_SEC_SECURITY ? "settings_security"
                       : sv.section == SET_SEC_BACKUP ? "settings_backup"
                                                      : "settings";
           break;
         }
         case SH_PIN: {
-          const bool unlocked = strncmp(s_pin_note, "unlocked", 8) == 0;
+          char note[32]; /* engine-task variable — snapshot under the mux */
+          portENTER_CRITICAL(&s_ui_mux);
+          snprintf(note, sizeof(note), "%s", s_pin_note);
+          portEXIT_CRITICAL(&s_ui_mux);
+          const bool unlocked = strncmp(note, "unlocked", 8) == 0;
           if (s_pin_len >= 4)
             shot_name = unlocked ? "pin_ok" : "pin_wrong";
           else
@@ -2821,7 +2879,7 @@ static void ui_task(void *) {
           break;
         }
         case SH_WIZ: {
-          const WizardView &wv = s_wiz_snap[(s_wiz_seq - 1) & 1];
+          const WizardView &wv = s_wiz_snap[(seq_load(s_wiz_seq) - 1) & 1];
           shot_name = wv.step == WIZ_NODE  ? "wizard_node"
                       : wv.step == WIZ_CAP ? "wizard_cap"
                       : wv.step == WIZ_SCHED ? "wizard_sched"

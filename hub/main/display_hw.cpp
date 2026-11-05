@@ -86,6 +86,10 @@ uint16_t *s_panel_fb = nullptr; /* the panel's single PSRAM framebuffer */
 uint16_t *s_lv_buf = nullptr;   /* LVGL full-frame draw buffer (PSRAM) */
 }  // namespace
 
+/* Bounded bus timeouts: a wedged peripheral must fail the call, not hang
+ * the boot/UI task forever (§3.3 — display failure keeps the hub feeding). */
+constexpr int I2C_TIMEOUT_MS = 100;
+
 /* --- CH422G ------------------------------------------------------------- */
 
 static bool ch422g_init() {
@@ -103,13 +107,13 @@ static bool ch422g_init() {
   /* push-pull outputs enabled (WR-SET bit0 IO_OE; power-on default is 1,
    * write it anyway so the chip is in a known state) */
   uint8_t set = board::CH422G_IO_OE;
-  if (i2c_master_transmit(s_ch422g_set, &set, 1, -1) != ESP_OK) return false;
+  if (i2c_master_transmit(s_ch422g_set, &set, 1, I2C_TIMEOUT_MS) != ESP_OK) return false;
 
   /* EXIO levels: everything high except the backlight (DISP off until the
    * panel is up). SD_CS deasserted; LCD_RST / TP_RST high after the dances
    * below. */
   uint8_t io = 0xFF & ~(1u << board::EXIO_DISP);
-  if (i2c_master_transmit(s_ch422g_io, &io, 1, -1) != ESP_OK) return false;
+  if (i2c_master_transmit(s_ch422g_io, &io, 1, I2C_TIMEOUT_MS) != ESP_OK) return false;
   return true;
 }
 
@@ -119,7 +123,7 @@ static bool ch422g_exio(int bit, int level) {
     levels |= (uint8_t)(1u << bit);
   else
     levels &= (uint8_t)~(1u << bit);
-  return i2c_master_transmit(s_ch422g_io, &levels, 1, -1) == ESP_OK;
+  return i2c_master_transmit(s_ch422g_io, &levels, 1, I2C_TIMEOUT_MS) == ESP_OK;
 }
 
 /* --- reset dances (ordering from the Waveshare demo) -------------------- */
@@ -220,7 +224,10 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
   lv_display_flush_ready(disp);
 }
 
-/* GT911 poll → logical coords (undo the ×2 window). */
+/* GT911 poll → logical coords (undo the ×2 window). Touches that land in
+ * the 48 px bezel bars are IGNORED, not clamped onto the edge — a stray
+ * bezel press used to register as a tap on the leftmost/rightmost logical
+ * column (nav gear / settings rows). */
 static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data) {
   (void)indev;
   uint16_t x[1] = {0}, y[1] = {0};
@@ -228,14 +235,21 @@ static void touch_cb(lv_indev_t *indev, lv_indev_data_t *data) {
   esp_lcd_touch_read_data(s_touch);
   bool pressed = esp_lcd_touch_get_coordinates(s_touch, x, y, nullptr, &n, 1) && n > 0;
   if (pressed) {
-    int lx = ((int)x[0] - board::WIN_X) / board::SCALE;
-    int ly = (int)y[0] / board::SCALE;
-    if (lx < 0) lx = 0;
-    if (lx >= board::LOGICAL_W) lx = board::LOGICAL_W - 1;
-    if (ly < 0) ly = 0;
-    if (ly >= board::LOGICAL_H) ly = board::LOGICAL_H - 1;
-    data->point.x = (lv_coord_t)lx;
-    data->point.y = (lv_coord_t)ly;
+    if (x[0] < board::WIN_X || x[0] >= board::WIN_X + board::WIN_W ||
+        y[0] >= board::PANEL_H) {
+      pressed = false; /* bezel bar / out of range — not a touch */
+    } else {
+      int lx = ((int)x[0] - board::WIN_X) / board::SCALE;
+      int ly = (int)y[0] / board::SCALE;
+      if (lx < 0) lx = 0;
+      if (lx >= board::LOGICAL_W) lx = board::LOGICAL_W - 1;
+      if (ly < 0) ly = 0;
+      if (ly >= board::LOGICAL_H) ly = board::LOGICAL_H - 1;
+      data->point.x = (lv_coord_t)lx;
+      data->point.y = (lv_coord_t)ly;
+    }
+  }
+  if (pressed) {
     data->state = LV_INDEV_STATE_PRESSED;
   } else {
     data->state = LV_INDEV_STATE_RELEASED;

@@ -244,10 +244,12 @@ static inline size_t remote_node_state_json(const HubNode &n, const EventLog &lo
   }();
   const HubEvent *last = remote_last_event(log, n.id);
   const bool online = live.state == ui::NODE_ONLINE;
+  char name_esc[PROFILE_NAME_LEN * 2 + 2];
+  json_escape(name_esc, sizeof(name_esc), 0, n.profile.name);
   size_t o = (size_t)snprintf(out, cap,
                               "{\"online\":%s,\"name\":\"%s\",\"unit\":\"%s\","
                               "\"vin\":%u.%02u,\"hb_age\":%u",
-                              online ? "true" : "false", n.profile.name,
+                              online ? "true" : "false", name_esc,
                               remote_unit_name(n.profile.unit),
                               (unsigned)(live.vin_mv / 1000),
                               (unsigned)((live.vin_mv % 1000) / 10),
@@ -275,12 +277,14 @@ static inline size_t remote_node_state_json(const HubNode &n, const EventLog &lo
 /* Profile summary (retained `aio/node/<id>/config`). */
 static inline size_t remote_node_config_json(const HubNode &n, char *out, size_t cap) {
   const node_profile_t &p = n.profile;
+  char name_esc[PROFILE_NAME_LEN * 2 + 2];
+  json_escape(name_esc, sizeof(name_esc), 0, p.name);
   const size_t o = (size_t)snprintf(
       out, cap,
       "{\"name\":\"%s\",\"mech\":\"%s\",\"unit\":\"%s\",\"cal_ms\":%u,"
       "\"cool\":%u,\"max_hour\":%u,\"max_day\":%u,\"cap\":%u,"
       "\"policy\":\"%s\",\"en\":%s}",
-      p.name, remote_mech_name(p.mech), remote_unit_name(p.unit),
+      name_esc, remote_mech_name(p.mech), remote_unit_name(p.unit),
       (unsigned)p.cal_ms_per_unit_x100, (unsigned)p.cooldown_ms,
       (unsigned)p.max_units_per_hour, (unsigned)p.max_units_per_day,
       (unsigned)p.storage_capacity, p.missed_policy == 1 ? "catchup" : "skip",
@@ -629,10 +633,12 @@ static inline bool mqtt_discovery_entity(const HubNode &n, uint8_t idx, char *to
   const uint8_t id = n.id;
   char devid[16];
   snprintf(devid, sizeof(devid), "aio-node%u", (unsigned)id);
-  char dev[96];
+  char dev[112];
+  char name_esc[PROFILE_NAME_LEN * 2 + 2];
+  json_escape(name_esc, sizeof(name_esc), 0, n.profile.name);
   snprintf(dev, sizeof(dev),
            "\"dev\":{\"ids\":[\"%s\"],\"name\":\"%s\",\"mf\":\"aio-feeder\"}",
-           devid, n.profile.name);
+           devid, name_esc);
   const char *state_t = "aio/node/%u/state";
   char st[32];
   snprintf(st, sizeof(st), state_t, (unsigned)id);

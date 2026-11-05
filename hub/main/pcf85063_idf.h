@@ -27,14 +27,18 @@ class PcfI2cIdf : public PcfI2cIf {
     return i2c_master_bus_add_device(bus, &dev, &dev_) == ESP_OK;
   }
 
+  /* Bounded timeouts: the shared bus is also carried by the display/touch
+   * path; a wedged RTC must fail the read (caller distrusts and re-syncs),
+   * never hang boot or the UI task forever (§3.3, §7.4). */
+  static constexpr int I2C_TIMEOUT_MS = 100;
   int read_regs(uint8_t reg, uint8_t *out, uint8_t n) override {
-    return i2c_master_transmit_receive(dev_, &reg, 1, out, n, -1) == ESP_OK ? 0 : -1;
+    return i2c_master_transmit_receive(dev_, &reg, 1, out, n, I2C_TIMEOUT_MS) == ESP_OK ? 0 : -1;
   }
   int write_regs(const uint8_t *tx, uint8_t n) override {
-    return i2c_master_transmit(dev_, tx, n, -1) == ESP_OK ? 0 : -1;
+    return i2c_master_transmit(dev_, tx, n, I2C_TIMEOUT_MS) == ESP_OK ? 0 : -1;
   }
   int probe() override {
-    return i2c_master_probe(i2c::bus(), Pcf85063Dev::ADDR, -1) == ESP_OK ? 0 : -1;
+    return i2c_master_probe(i2c::bus(), Pcf85063Dev::ADDR, I2C_TIMEOUT_MS) == ESP_OK ? 0 : -1;
   }
 
  private:

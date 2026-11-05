@@ -22,6 +22,9 @@
 #include <cstdint>
 #include <cstring>
 
+#include <cerrno>
+#include <cstdio>
+
 #include "../../link_core/link.h"
 
 namespace aio {
@@ -36,7 +39,15 @@ class UdpLink : public ILinkTransport {
     a.sin_family = AF_INET;
     a.sin_port = htons(bind_port);
     a.sin_addr.s_addr = htonl(INADDR_ANY);
-    ::bind(fd_, (sockaddr *)&a, sizeof(a)); /* fixed test ports; no EADDRINUSE in CI */
+    /* fail loudly: an ignored bind error (port held by a leftover sim)
+     * used to look like a passing setup, then every datagram went nowhere
+     * and the suite died in receive timeouts */
+    if (::bind(fd_, (sockaddr *)&a, sizeof(a)) != 0) {
+      printf("[sim] udp bind failed on port %u: %s\n", (unsigned)bind_port,
+             strerror(errno));
+      ::close(fd_);
+      fd_ = -1;
+    }
     int fl = ::fcntl(fd_, F_GETFL, 0);
     ::fcntl(fd_, F_SETFL, fl | O_NONBLOCK);
     if (remote_ip) set_remote(remote_ip, remote_port);

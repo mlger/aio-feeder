@@ -235,6 +235,8 @@ def main() -> int:
         mon.connect()
 
         pos = 0
+        tail = b""  # rolling window: markers repeat every 5 s, but a split
+        # line costs a whole 25 s slot — search a carried-over tail instead
         while pending and time.time() < deadline:
             if qemu.poll() is not None:
                 print("[capture] qemu exited early")
@@ -247,13 +249,20 @@ def main() -> int:
                     pos = f.tell()
             except FileNotFoundError:
                 continue
-            for m in MARKER.finditer(chunk):
+            tail += chunk
+            if len(tail) > 512:
+                tail = tail[-512:]
+            for m in MARKER.finditer(tail):
                 name = m.group(1).decode()
                 if name in pending:
                     # frame settled: firmware prints the marker ≥400 ms after
                     # the last flush and nothing invalidates afterwards
                     time.sleep(0.8)
                     raw = os.path.join(args.out, f"{name}.raw")
+                    # a stale dump left by a previously crashed run would
+                    # satisfy pmemsave's size check before QEMU wrote it
+                    if os.path.exists(raw):
+                        os.remove(raw)
                     mon.pmemsave(addr, FB_BYTES, raw)
                     png = os.path.join(args.out, f"{name}.png")
                     with open(raw, "rb") as f:
@@ -268,12 +277,18 @@ def main() -> int:
     finally:
         if mon.sock:
             mon.quit()
+            try:
+                mon.sock.close()
+            except OSError:
+                pass
+            mon.sock = None
         if qemu.poll() is None:
             qemu.terminate()
             try:
                 qemu.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 qemu.kill()
+        qemu_out.close()
 
     missing = [s for s in screens if s not in captured]
     if missing:

@@ -94,4 +94,9 @@ void tearDown(void);
 #define UNITY_TEST_ASSERT_EQUAL_UINT(e, a, l) TEST_ASSERT_EQUAL_INT(e, a)
 #define UNITY_TEST_ASSERT_EQUAL_UINT8(e, a, l, ...) TEST_ASSERT_EQUAL_INT(e, a)
 
+/* used by test_link_core (frame echo) and test_ota (descriptor compare);
+ * their absence aborted tools/test-local/run.sh at the second suite */
+#define TEST_ASSERT_EQUAL_STRING_LEN(e, a, n) TEST_ASSERT(strncmp((e), (a), (n)) == 0)
+#define TEST_ASSERT_EQUAL_MEMORY(e, a, n) TEST_ASSERT(memcmp((e), (a), (n)) == 0)
+
 #endif /* AIO_TEST_LOCAL_UNITY_SHIM_H */

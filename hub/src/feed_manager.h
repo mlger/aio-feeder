@@ -75,13 +75,17 @@ class FeedManager {
   uint8_t stagger_max() const { return stagger_; }
   void set_stagger(uint8_t n) { stagger_ = n ? n : 1; }
 
-  /* False if the node already has a queued or in-flight feed (§9.5 mutex).
-   * The WAL intent is durable from this moment: a crash before the FEED
-   * frame ever leaves also surfaces as FEED_UNKNOWN after reboot. */
+  /* False if the node already has a queued or in-flight feed (§9.5 mutex),
+   * or the WAL intent could not be made durable (NVS write failed): the
+   * header comment below is only true if the intent record landed, so a
+   * failed store_put refuses the job — feeding without a recoverable
+   * intent would turn a hub crash into a silent missed feed (§6.6). */
   bool submit(const FeedJob &j) {
     if (j.node == 0 || node_busy(j.node)) return false;
     PendingIntent p{PENDING_VERSION, j.feed_id, j.amount, j.node, j.kind};
-    store_put(*store_, pend_key_for(j.node), PENDING_VERSION, &p, sizeof(p));
+    if (!store_put(*store_, pend_key_for(j.node), PENDING_VERSION, &p,
+                   sizeof(p)))
+      return false;
     queue_[q_tail_ % HUB_MAX_NODES] = j;
     q_tail_++;
     return true;

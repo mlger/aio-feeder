@@ -12,6 +12,7 @@
 #include <Arduino.h>
 #include "../../lib/proto/pairing.h"
 #include "../../link_core/link.h"
+#include "../../node_core/local_sched.h" /* LOCAL_FEED_ID_MARK */
 #include "node_config.h"
 
 /* RAM-only bench modes for the M2 loopback (never persisted):
@@ -271,7 +272,11 @@ static void cli_poll(CliCtx &c) {
       }
       if (!a1) { Serial.println(F("usage: feed <amount>")); continue; }
       aio::FeedRequest req{};
-      req.feed_id = ++c.cfg->feed_id_seq;
+      /* node-local id space (§9.6, LOCAL_FEED_ID_MARK): bare ids share the
+       * hub's 1000+ feed_id_seq, so the SR6 journal "deduped" the hub's
+       * first feeds against stale bench ids and never actuated them. The
+       * hub routes marked results through note_local_result (D37). */
+      req.feed_id = aio::LOCAL_FEED_ID_MARK | ++c.cfg->feed_id_seq;
       req.amount = (uint32_t)atol(a1);
       req.scheduled = !strcmp(cmd, "feeds") && *c.bench_mode == BENCH_OFF;
       req.time_ok = *c.time_ok;

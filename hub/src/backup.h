@@ -212,7 +212,11 @@ static inline bool json_parse_string(const char **p, char *out, size_t cap) {
               v = (v << 4) | (unsigned)(h <= '9' ? h - '0' : (h | 0x20) - 'a' + 10);
             }
             *p += 4;
-            if (n + 4 < cap) n += (size_t)snprintf(out + n, cap - n, "%u", v & 0xFF);
+            /* the writer only emits \u00XX (bytes < 0x20) — decode to the
+             * raw byte so names/SSIDs round-trip ("\u0041" used to become
+             * the three ASCII digits "65") */
+            if (n + 1 >= cap) return false;
+            out[n++] = (char)(v & 0xFF);
             continue;
           }
           return false;
@@ -414,9 +418,13 @@ static inline bool backup_json_write(const HubRegistry &reg, const HubSettings &
 
 static inline bool backup_parse_hex(const char **p, uint8_t *out, uint8_t bytes) {
   for (int b = 0; b < bytes; b++) {
+    /* step only while two hex chars are present — a truncated file used to
+     * walk one byte past the NUL terminator */
     char hex[3] = {0};
-    hex[0] = *(*p)++;
-    hex[1] = *(*p)++;
+    hex[0] = (*p)[0];
+    hex[1] = (*p)[1];
+    if (!hex[0] || !hex[1]) return false;
+    *p += 2;
     char *end = nullptr;
     const long v = strtol(hex, &end, 16);
     if (end != hex + 2) return false;
@@ -444,7 +452,7 @@ static inline bool backup_parse_node_obj(const char **p, BackupNodeImg *n) {
     } else if (!strcmp(key, "key")) {
       json_skip_ws(p);
       if (!json_expect(p, '"')) return false;
-      uint8_t raw[32];
+      uint8_t raw[32] = {}; /* zeroed: a klen mismatch must not persist garbage */
       uint8_t cnt = 0;
       json_skip_ws(p);
       while (**p != '"') {
@@ -478,19 +486,19 @@ static inline bool backup_parse_node_obj(const char **p, BackupNodeImg *n) {
           if (!json_parse_uint(p, &v) || v > 2) return false;
           n->profile.unit = (uint8_t)v;
         } else if (!strcmp(key, "cal")) {
-          if (!json_parse_uint(p, &v)) return false;
+          if (!json_parse_uint(p, &v) || v > 0xFFFF) return false;
           n->profile.cal_ms_per_unit_x100 = (uint16_t)v;
         } else if (!strcmp(key, "pon")) {
-          if (!json_parse_uint(p, &v)) return false;
+          if (!json_parse_uint(p, &v) || v > 0xFFFF) return false;
           n->profile.pulse_on_ms = (uint16_t)v;
         } else if (!strcmp(key, "poff")) {
-          if (!json_parse_uint(p, &v)) return false;
+          if (!json_parse_uint(p, &v) || v > 0xFFFF) return false;
           n->profile.pulse_off_ms = (uint16_t)v;
         } else if (!strcmp(key, "maxon")) {
-          if (!json_parse_uint(p, &v)) return false;
+          if (!json_parse_uint(p, &v) || v > 0xFFFF) return false;
           n->profile.max_on_ms_single = (uint16_t)v;
         } else if (!strcmp(key, "cool")) {
-          if (!json_parse_uint(p, &v)) return false;
+          if (!json_parse_uint(p, &v) || v > 0xFFFF) return false;
           n->profile.cooldown_ms = (uint16_t)v;
         } else if (!strcmp(key, "maxh")) {
           if (!json_parse_uint(p, &v)) return false;
@@ -618,7 +626,9 @@ static inline bool backup_json_parse(const char *json, BackupImage *img) {
       img->sv = (uint16_t)v;
     } else if (!strcmp(key, "nnid")) {
       uint32_t v;
-      if (!json_parse_uint(&p, &v) || !v) return false;
+      /* 255 would wrap: the next pair assigns id 0 — invisible to by_id()
+       * and skipped by the backup writer while count still counts it */
+      if (!json_parse_uint(&p, &v) || !v || v > 254) return false;
       img->nnid = (uint8_t)v;
     } else if (!strcmp(key, "fid")) {
       if (!json_parse_uint(&p, &img->fid)) return false;

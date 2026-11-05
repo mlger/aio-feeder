@@ -20,6 +20,7 @@ flashes as one image at 0x0.
 from __future__ import annotations
 
 import argparse
+import html
 import hashlib
 import json
 import shutil
@@ -76,8 +77,10 @@ def ui_gallery_html(version: str, shots: list[Path]) -> str:
     panel screenshots blend into their frames."""
     figures = []
     for shot in shots:
-        name = shot.stem
-        label = name.replace("_", " ")
+        # escape everything: --screens accepts any directory, so a crafted
+        # filename must not inject into the href/alt/caption markup
+        name = html.escape(shot.stem, quote=True)
+        label = html.escape(shot.stem.replace("_", " "), quote=True)
         figures.append(
             f'<figure><a href="{name}.png" target="_blank" rel="noopener">'
             f'<img src="{name}.png" alt="hub {label} screen" loading="lazy" '
@@ -85,6 +88,7 @@ def ui_gallery_html(version: str, shots: list[Path]) -> str:
             f'<figcaption><span>{label}</span>'
             f'<span class="mono">{name}.png</span></figcaption></figure>'
         )
+    version = html.escape(version, quote=True)
     return f"""<!doctype html>
 <html lang="en">
 <head>

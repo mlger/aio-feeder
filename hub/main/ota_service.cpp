@@ -538,6 +538,8 @@ static void download_task(void *arg) {
         s_err.store(OTA_ERR_SETBOOT, std::memory_order_release);
       }
       esp_http_client_cleanup(c);
+      if (!ok && h) esp_ota_abort(h); /* abandon the half-written slot —
+                                       * the next begin() re-erases it */
       if (ok) {
         printf("ota: staged %s (%lld KB) — reboot to apply\n", s_target,
                (long long)(total / 1024));

@@ -97,7 +97,19 @@ static inline RtcReading rtc_read() {
   }
   r.t.sec = rtc_bcd_dec(Wire.read() & 0x7F);
   r.t.min = rtc_bcd_dec(Wire.read() & 0x7F);
-  r.t.hour = rtc_bcd_dec(Wire.read() & 0x3F);
+  {
+    /* hour reg: bit7=12h mode, bit5=PM (in 12h mode) — a chip left in 12h
+     * mode by other tooling used to decode "PM 9" as 09:00 and the
+     * fallback schedule fired 12 h off the wall clock. Writes always
+     * force 24h mode (bcd_enc(0..23) clears bit 6). */
+    const uint8_t hr = Wire.read();
+    if (hr & 0x40) {
+      const uint8_t h12 = rtc_bcd_dec((uint8_t)(hr & 0x1F));
+      r.t.hour = (uint8_t)(h12 % 12 + ((hr & 0x20) ? 12 : 0));
+    } else {
+      r.t.hour = rtc_bcd_dec((uint8_t)(hr & 0x3F));
+    }
+  }
   r.t.wday = Wire.read() & 0x07;
   r.t.mday = rtc_bcd_dec(Wire.read() & 0x3F);
   r.t.mon = rtc_bcd_dec(Wire.read() & 0x1F);

@@ -377,6 +377,18 @@ static esp_err_t h_ota(httpd_req_t *req) {
       httpd_resp_sendstr(req, "{\"ok\":false,\"error\":\"bad url\"}");
       return ESP_FAIL;
     }
+    /* NEED_REBOOT: an image is already staged — this tap APPLIES it
+     * (reboot_staged) instead of silently re-downloading, matching the
+     * page copy ("the hub reboots once you tap Update again"). */
+    aio::OtaBrief br;
+    aio::ota::brief(&br);
+    if (br.phase == aio::OTA_NEED_REBOOT) {
+      const bool applied = aio::ota::reboot_staged();
+      httpd_resp_set_type(req, "application/json");
+      return httpd_resp_sendstr(
+          req, applied ? "{\"ok\":true,\"apply\":true}"
+                       : "{\"ok\":false,\"error\":\"apply failed\"}");
+    }
     if (!aio::ota::start(url)) {
       httpd_resp_set_status(req, "409 Conflict");
       httpd_resp_set_type(req, "application/json");

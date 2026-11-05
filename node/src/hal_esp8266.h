@@ -28,6 +28,24 @@
 #define HAL_GATE_PIN 16     /* D0 — gate reed to GND w/ external pullup: LOW = closed */
 
 static volatile bool g_relay_off_fired = false;
+static uint32_t g_relay_deadline_ms = 0;  /* absolute millis deadline (loop task) */
+static uint32_t g_relay_chunk_end_ms = 0; /* when the armed chunk expires */
+
+/* FRC1 single-shot is 23-bit: one load covers ~26.8 s at 3.2 us/tick.
+ * Longer on-times are chained from the loop (relay_off_service re-arms
+ * before the armed chunk expires); if the loop dies, the armed chunk still
+ * expires and the ISR cuts the relay (SR2 preserved). A raw timer1_write
+ * of >8.4 M ticks used to wrap and fire seconds into a long pump dose,
+ * cutting the relay early and latching FAULT. */
+static constexpr uint32_t RELAY_CHUNK_MAX_MS = 26000;
+
+static void arm_relay_chunk() {
+  const uint32_t now = millis();
+  uint32_t remain = g_relay_deadline_ms - now; /* unsigned: wrap-safe */
+  if (remain > RELAY_CHUNK_MAX_MS) remain = RELAY_CHUNK_MAX_MS;
+  g_relay_chunk_end_ms = now + remain;
+  timer1_write(remain * 312UL); /* 80 MHz / 256 = 3.2 us per tick */
+}
 
 void IRAM_ATTR hal_relay_off_isr() {
   /* force the relay pin LOW straight from the timer ISR (SR2) */
@@ -60,12 +78,21 @@ struct Hal {
     digitalWrite(HAL_RELAY_PIN, on == HAL_RELAY_ACTIVE_HIGH ? HIGH : LOW);
   }
 
-  /* Arm the relay-off backstop; max single-loop ≈ 26.8 s at 3.2 µs/tick. */
+  /* Arm the relay-off backstop for an on-time of ms (any length; chunks). */
   void arm_relay_off(uint32_t ms) {
     g_relay_off_fired = false;
-    timer1_write(ms * 312UL); /* 80 MHz / 256 = 3.2 µs per tick */
+    g_relay_deadline_ms = millis() + ms;
+    arm_relay_chunk();
   }
-  void cancel_relay_off() { timer1_disable(); timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE); }
+  /* Re-arm the current chunk near expiry — call from loop() every pass. */
+  void relay_off_service() {
+    if (!g_relay_deadline_ms || g_relay_off_fired) return;
+    if ((int32_t)(g_relay_chunk_end_ms - millis()) <= 250) arm_relay_chunk();
+  }
+  void cancel_relay_off() {
+    g_relay_deadline_ms = 0;
+    timer1_disable(); timer1_enable(TIM_DIV256, TIM_EDGE, TIM_SINGLE);
+  }
   bool relay_off_fired() { return g_relay_off_fired; }
 
   void feed_wdt() { ESP.wdtFeed(); }

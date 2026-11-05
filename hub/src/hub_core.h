@@ -97,6 +97,48 @@ class HubCore {
   void note_local_result(uint8_t node) {
     if (node > 0 && node < sizeof(local_fed_)) local_fed_[node] = true;
   }
+
+  /* After a backup restore the registry is fresh (run.last_done[] zeroed —
+   * the image format carries no occurrence bookkeeping). Without this,
+   * eval() would see every past occurrence as "unhandled" and re-fire
+   * today's feeds — a double dose for everything that ran before the
+   * restore. Reconcile WITHOUT firing: mark the latest arrived occurrence
+   * of each entry handled and log one skip event (§9.4: skip is the safe
+   * direction); occurrences still in the future fire normally. Caller
+   * holds the state lock (same context as tick()). */
+  void reconcile_after_restore(int64_t unix_now) {
+    const LocalTime now = local_from_unix(unix_now, tz());
+    for (int i = 0; i < HUB_MAX_NODES; i++) {
+      HubNode *n = reg_->node(i);
+      if (!n || !n->id || !n->sched.enabled) continue;
+      for (uint8_t e = 0; e < n->sched.entry_count && e < HUB_SCHED_MAX_ENTRIES;
+           e++) {
+        const sched_entry_t &en = n->sched.entries[e];
+        if (en.min_of_day >= 1440) continue;
+        /* newest occurrence (this scan window) that has already arrived */
+        OccRef latest{0, 0};
+        uint16_t older = 0;
+        for (uint8_t back = 0; back <= MISSED_SCAN_DAYS; back++) {
+          const int64_t day = now.day_start - (int64_t)back * 86400;
+          const uint8_t wday = wday_from_days(day / 86400);
+          if (!sched_day_due(en.days_mask, wday)) continue;
+          OccRef occ{(uint32_t)day, en.min_of_day};
+          if (!occ_ref_le(occ, OccRef{(uint32_t)now.day_start, now.min_of_day}))
+            continue; /* strictly in the future — leave it alone */
+          if (!latest.day_start) {
+            latest = occ;
+          } else {
+            older++;
+          }
+        }
+        if (!latest.day_start) continue;
+        n->run.last_done[e] = latest;
+        reg_->save(*store_);
+        log_->push((uint32_t)unix_now, n->id, EV_SKIPPED_MISSED, 0, 0,
+                   en.amount, (int16_t)(older + 1));
+      }
+    }
+  }
   void on_feed_unknown(uint32_t feed_id, uint8_t node, uint32_t unix_now) {
     fm_.on_unknown(feed_id, node, unix_now);
   }

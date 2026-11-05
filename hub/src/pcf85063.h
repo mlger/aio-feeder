@@ -16,6 +16,8 @@
 
 #include <stdint.h>
 
+#include "hub_time.h" /* days_in_month for the calendar-valid mday check */
+
 namespace aio {
 
 static inline uint8_t pcf_bcd_dec(uint8_t v) { return (uint8_t)((v & 0x0F) + (v >> 4) * 10); }
@@ -60,8 +62,12 @@ class Pcf85063 {
     t.mday = pcf_bcd_dec((uint8_t)(buf[4] & 0x3F));
     t.mon = pcf_bcd_dec((uint8_t)(buf[5] & 0x1F));
     t.year = (uint16_t)(2000 + pcf_bcd_dec(buf[6]));
-    if (t.mon < 1 || t.mon > 12 || t.mday < 1 || t.mday > 31 || t.hour > 23 ||
+    if (t.mon < 1 || t.mon > 12 || t.mday < 1 || t.hour > 23 ||
         t.min > 59 || t.sec > 59)
+      return false;
+    /* month length incl. leap years — "Feb 31" from a corrupt read used to
+     * pass the 1..31 check and shift days_from_civil into March (§7.4). */
+    if (t.mday > aio::days_in_month((int64_t)t.year, (unsigned)t.mon))
       return false;
     return true;
   }

@@ -84,7 +84,7 @@ static inline bool ota_stream(Hal &hal, HTTPClient &http, int total, const uint8
   size_t got = 0;
   bool io_ok = true;
   WiFiClient *stream = http.getStreamPtr();
-  const uint32_t t0 = millis();
+  uint32_t last_data_ms = millis();
   while (http.connected() && (total < 0 || got < (size_t)total)) {
     const int avail = stream->available();
     if (avail > 0) {
@@ -92,10 +92,16 @@ static inline bool ota_stream(Hal &hal, HTTPClient &http, int total, const uint8
       if (!n || hal.ota_write(buf, n) != n) { io_ok = false; break; }
       sha256_update(&ctx, buf, n);
       got += n;
+      last_data_ms = millis(); /* timeout anchors to the LAST data, not start */
       hal.feed_wdt();
-    } else if (millis() - t0 > 60000) {
-      io_ok = false; /* stalled 60 s */
-      break;
+    } else {
+      /* idle: keep feeding the WDT — a TCP stall used to hit the hardware
+       * watchdog long before this graceful abort could run */
+      hal.feed_wdt();
+      if (millis() - last_data_ms > 60000) {
+        io_ok = false; /* stalled 60 s with no data */
+        break;
+      }
     }
   }
   if (!io_ok || (total > 0 && got != (size_t)total)) {

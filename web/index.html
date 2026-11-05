@@ -339,7 +339,7 @@ footer a{color:var(--accent-ink);text-underline-offset:3px}
 
         <article class="chapter" id="g-build">
           <span class="eyebrow">03</span><h3>Build a flashable image</h3>
-          <p>The hub is a pure ESP-IDF build (four parts); the C3 node is an Arduino/PlatformIO build (merge into one factory image); the ESP8266 is a single image. Each block below prints the exact commands and offsets the hosted manifests use.</p>
+          <p>The hub is a pure ESP-IDF build (three parts); the C3 node is an Arduino/PlatformIO build (four parts, merged into one factory image); the ESP8266 is a single image. Each block below prints the exact commands and offsets the hosted manifests use.</p>
           <pre class="code"><button class="copy" type="button" data-copy="merge-text">Copy</button><span id="merge-text"></span></pre>
           <div class="note"><b>Native-USB boards:</b> enable <code>ARDUINO_USB_CDC_ON_BOOT=1</code> (PlatformIO) on the C3 so serial logs come over the same cable you flash with.</div>
         </article>
@@ -428,9 +428,9 @@ footer a{color:var(--accent-ink);text-underline-offset:3px}
         'Plug in USB while holding <kbd>BOOT</kbd>, then release after two seconds.',
         'The port appears as an <b>ESP32-S3</b> device. Choose it in the prompt.'],
       hint:'Hold BOOT while plugging in if the port doesn’t connect.',
-      parts:'bootloader 0x0 · partitions 0x8000 · boot_app0 0xe000 · app 0x10000',
+      parts:'bootloader 0x0 · partitions 0x8000 · app 0x10000',
       build:
-`# Hub — pure ESP-IDF (v5.4+), four parts
+`# Hub — pure ESP-IDF (v5.4+), three parts
 git clone https://github.com/mlger/aio-feeder && cd aio-feeder
 idf.py -C hub set-target esp32s3
 idf.py -C hub build

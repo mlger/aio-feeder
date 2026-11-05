@@ -15,7 +15,12 @@ CXXFLAGS="-std=c++17 -fpermissive -Wall -Wextra -Wno-unused-parameter -O1 -g"
 
 suites=("$@")
 if [ ${#suites[@]} -eq 0 ]; then
-  suites=(test_proto test_link_core test_node_core test_hub_core test_e2e_sim test_ui_model test_pairing test_calib test_settings test_backup test_wizard test_entry test_remote test_ota)
+  # every suite under test/ — the hardcoded list went stale when
+  # test_ui_nav landed (it compiled and passed only if named explicitly)
+  suites=()
+  for d in test/test_*/; do
+    [ -f "$d/test_main.cpp" ] && suites+=("$(basename "$d")")
+  done
 fi
 
 rc=0

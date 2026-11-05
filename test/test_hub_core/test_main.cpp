@@ -75,9 +75,12 @@ struct Hub {
   void begin(int64_t unix_now) { core.begin(&reg, &link, &store, &log, unix_now); }
   /* reboot on the same storage device (one NVS) */
   Hub *reborn(int64_t unix_now) {
+    /* assert in the caller: TEST_ASSERT's failure path is a bare `return;`
+     * — ill-formed in a non-void function without -fpermissive, and the
+     * returned pointer would dangle if a failure ever fired */
     Hub *h = new Hub();
     h->store = store;
-    TEST_ASSERT_TRUE(h->reg.load(store));
+    h->reg.load(store);
     h->begin(unix_now);
     return h;
   }
@@ -96,7 +99,6 @@ static int64_t local_at(int64_t day, int min) { return day * 86400 + min * 60; }
 static HubNode *add_node(Hub &h, uint16_t min_of_day, uint8_t days = 0x7F) {
   static const uint8_t mac[6] = {0x24, 0x6F, 0x28, 0x00, 0x00, 0x01};
   HubNode *n = h.reg.add(mac, 1);
-  TEST_ASSERT_NOT_NULL(n);
   n->sched.entries[0] = {min_of_day, days, 20};
   n->sched.entry_count = 1;
   n->sched.enabled = 1;

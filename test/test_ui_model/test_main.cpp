@@ -34,9 +34,10 @@ void setUp(void) {
 void tearDown(void) {}
 
 static HubNode *add_node(uint8_t keyc, uint16_t min_of_day, uint16_t amount) {
+  /* no TEST_ASSERT here: the failure path is a bare `return;`, ill-formed
+   * in a non-void function — callers dereference the result */
   const uint8_t mac[6] = {0x02, 0x00, 0x00, 0x00, 0x00, (uint8_t)(0x10 + reg.count() + 1)};
   HubNode *n = reg.add(mac, 1);
-  TEST_ASSERT_NOT_NULL(n);
   memset(n->key, keyc, 32);
   n->key_len = 32;
   n->sched.entry_count = 1;

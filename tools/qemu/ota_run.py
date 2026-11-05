@@ -63,6 +63,10 @@ def main() -> int:
     deadline = time.time() + args.timeout
     pending = list(MARKERS)
     pos = 0
+    # rolling window: each selftest marker prints exactly ONCE across the
+    # five guest reboots, so a line split across two serial polls must not
+    # be lost (per-chunk search used to fail the job intermittently)
+    tail = ""
     ok = False
     try:
         while time.time() < deadline:
@@ -74,9 +78,12 @@ def main() -> int:
                     pos = f.tell()
             except FileNotFoundError:
                 chunk = ""
-            while pending and re.search(pending[0], chunk):
+            tail += chunk
+            while pending and re.search(pending[0], tail):
                 print(f"[ota-selftest] marker: {pending[0]}")
                 pending.pop(0)
+            if len(tail) > 512:
+                tail = tail[-512:]
             if not pending:
                 ok = True
                 if exited:

@@ -101,21 +101,36 @@ static NowTransportEsp32 nowt;
 /* --- persistence ------------------------------------------------------------ */
 
 /* RAM → blob mirror, then commit one slot (alternating). */
-static void persist_now() {
+/* cfg → one parity slot, committed. persist_write() stores cfg AS-IS (boot
+ * paths); persist_now() additionally mirrors the live limits/time/tx state
+ * (runtime paths). Split because the boot paths (OTA confirm, journal
+ * resolve, first boot) run BEFORE limits/tv/eng are restored — mirroring
+ * their zero defaults wiped counters, time-sync, the SR8 confirmation and
+ * the tx replay window on exactly the boots those systems exist for. */
+static bool persist_write() {
   memcpy(cfg.journal, (const void *)journal.entries(), sizeof(cfg.journal));
+  cfg.write_seq++;
+  /* Fill ONLY the parity-selected slot; the other slot keeps the previous
+   * state (config_slots.h picks the newer valid one at boot). The old code
+   * filled slot A then memcpy'd the other slot over it on even write_seqs:
+   * every second persist silently stored the PREVIOUS state (a pairing or
+   * time-sync followed by a power cut rolled back) and both slots were
+   * always identical, so the A/B recovery path was dead code. */
+  uint8_t *dst = region + (cfg.write_seq & 1 ? CONFIG_SLOT_SIZE : 0);
+  config_fill_slot(dst, cfg);
+  const bool ok = hal.storage_write(region, kStorageRegion);
+  journal.dirty = false;
+  last_persist_ms = millis();
+  persist_pending = false;
+  return ok;
+}
+
+static bool persist_now() {
   cfg.counters = limits.counters();
   cfg.sync_unix = tv.sync_unix();
   cfg.limits_confirmed = limits.limits_confirmed ? 1 : 0;
   cfg.tx_seq = eng.current_tx_seq();
-  cfg.write_seq++;
-  config_fill_slot(region, cfg);
-  uint8_t *dst = region + (cfg.write_seq & 1 ? CONFIG_SLOT_SIZE : 0);
-  uint8_t *src = region + (cfg.write_seq & 1 ? 0 : CONFIG_SLOT_SIZE);
-  memcpy(dst, src, CONFIG_SLOT_SIZE);
-  hal.storage_write(region, kStorageRegion);
-  journal.dirty = false;
-  last_persist_ms = millis();
-  persist_pending = false;
+  return persist_write();
 }
 
 /* Factory reset: both slots overwritten, nothing recoverable. */
@@ -283,8 +298,15 @@ static void handle_time_sync(const time_sync_payload_t &t) {
   int64_t rtc_before = 0;
   hal.rtc_healthy(&rtc_before, &osf);
   if (hal.rtc_write_unix((int64_t)t.unix_time)) {
-    cfg.rtc_drift_ms =
-        rtc_before ? (int32_t)((rtc_before - (int64_t)t.unix_time) * 1000) : 0;
+    /* saturate: a far-off-but-range-ok RTC (e.g. year 2099 vs a 2026 sync)
+     * used to overflow int32 into misleading persisted telemetry */
+    cfg.rtc_drift_ms = 0;
+    if (rtc_before) {
+      const int64_t dm = (rtc_before - (int64_t)t.unix_time) * 1000;
+      cfg.rtc_drift_ms = dm > 2147483647LL ? (int32_t)2147483647LL
+                         : dm < -2147483648LL ? (int32_t)(-2147483647LL - 1)
+                                              : (int32_t)dm;
+    }
     tv.on_sync((int64_t)t.unix_time, millis());
     cfg.tz_rule = t.tz_rule; /* §9.6: the fallback schedule runs in local time */
     rtc_ref_unix = 0;        /* RTC was rewritten: re-anchor the sanity window */
@@ -459,7 +481,7 @@ static void ota_boot_resolve() {
   if (cfg.ota_stage == OTA_STAGE_DONE && cfg.ota_from_ver != AIO_NODE_FW_VER) {
     cfg.ota_lock = 0;
     cfg.ota_stage = OTA_STAGE_NONE;
-    persist_now();
+    persist_write(); /* boot path: OTA-confirm boot, nothing restored yet */
     Serial.printf("OTA: update %s -> %s confirmed, actuation lock cleared\n", from, now_);
   } else {
     Serial.printf("OTA: LOCK ACTIVE (from %s, running %s, stage %u) — actuation"
@@ -513,12 +535,13 @@ static void apply_commands() {
     const aio::ActuatorCmd &c = cmds[i];
     switch (c.kind) {
       case aio::ActuatorCmd::PersistIntent:
-        /* SR6: the journal write MUST land before the relay. */
+        /* SR6: the journal write MUST land before the relay — propagate the
+         * storage result (a failed commit used to still energise the
+         * relay, feeding without a recoverable intent). */
         saw_intent = true;
         intent_ok = false;
         if (journal.dirty || persist_pending) {
-          persist_now();
-          intent_ok = true;
+          intent_ok = persist_now();
         }
         break;
       case aio::ActuatorCmd::RelayOn:
@@ -625,12 +648,12 @@ void setup() {
     cfg.profile = profile_default();
     cfg.feed_id_seq = 1000;
     Serial.println("first boot: default config written");
-    persist_now();
+    persist_write(); /* boot path: limits/tv/eng not restored yet */
   }
   if (!profile_valid(&cfg.profile)) {
     cfg.profile = profile_default();
     Serial.println("profile CRC bad → defaults restored");
-    persist_now();
+    persist_write(); /* boot path */
   }
   if (cfg.sched_count > SCHEDULE_STORE_MAX) cfg.sched_count = 0;
 
@@ -644,7 +667,7 @@ void setup() {
   if (attempted) {
     Serial.printf("boot: %u in-progress feed(s) marked attempted (never repeated)\n",
                   attempted);
-    persist_now();
+    persist_write(); /* boot path: mirrors wiped counters/sync/tx otherwise */
   }
 
   limits.configure(cfg.profile.max_units_per_hour, cfg.profile.max_units_per_day,
@@ -717,6 +740,7 @@ void setup() {
 void loop() {
   uint32_t now = millis();
   hal.feed_wdt();
+  hal.relay_off_service(); /* chain the ESP8266 23-bit backstop chunks */
 
   if (hal.relay_off_fired()) {
     Serial.println("HARD TIMER fired: loop stalled, relay forced OFF, fault latched");

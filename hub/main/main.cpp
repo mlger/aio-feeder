@@ -283,11 +283,15 @@ static void cb_heartbeat(uint8_t node_id, const heartbeat_payload_t &hb, uint32_
    * (§6.2 scan trigger) stays fed on an otherwise quiet link (D30). */
   aio::LinkPeer *p = eng.peer_by_node(node_id);
   if (p && p->last_flags == 0) eng.send_status_req(node_id, ms_now());
-  /* §7.4: TIME_SYNC at least per heartbeat when the node's time looks off. */
+  /* §7.4: TIME_SYNC at least per heartbeat when the node's time looks off.
+   * last_full_hb_push_ms throttles the periodic full push to one per
+   * 10 minutes hub-wide (it was never updated before — every heartbeat
+   * after minute 10 pushed TIME_SYNC forever). */
   const uint32_t now = ms_now();
   const bool stale_push = (uint32_t)(now - last_full_hb_push_ms) > 10u * 60u * 1000u;
   if (time_valid() && p &&
       ((hb.flags & HB_FLAG_TIME_INVALID) || abs(hb.rtc_drift_ms) > 2000 || stale_push)) {
+    last_full_hb_push_ms = now;
     const time_sync_payload_t t{(uint32_t)hub_unix_now(), reg.data().tz_rule};
     eng.send_time_sync(node_id, t, now);
   }
@@ -434,6 +438,12 @@ static void backup_restore_op(const char *name) {
   g_set = set; /* PIN + Wi-Fi password kept by the applier (§9.12) */
   settings_persist();
   reg.save(nvs);
+  /* The image carries no occurrence bookkeeping (run.last_done[] stays
+   * zeroed by the fresh RegistryData) — without a reconcile, eval() would
+   * see every past occurrence as unhandled and re-fire today's feeds
+   * (double dosing). Mark them handled without firing (§9.4: skip is the
+   * safe direction); future occurrences fire normally. */
+  core.reconcile_after_restore(hub_unix_now());
   /* rebuild the link peer table from the restored registry */
   while (eng.peer_count()) {
     aio::LinkPeer *p = eng.peer_by_index(0);
@@ -2184,7 +2194,8 @@ extern "C" void app_main(void) {
   g_pin.configure(g_set);
   g_wiz.bind_registry(&reg);
   g_sd = backup_store_create();
-  if (!g_sd->mount()) printf("backup store: %s unavailable\n", backup_store_kind());
+  if (!g_sd || !g_sd->mount())
+    printf("backup store: %s unavailable\n", backup_store_kind());
   sd_refresh_note();
   backup_list_note();
   printf("settings: brightness=%u screenoff=%us retention=%ud pin=%s sd=%s\n",
@@ -2279,8 +2290,11 @@ extern "C" void app_main(void) {
    * QEMU shot build (docs/bench-m4b.md). The REPL skip below pays for it. */
   xTaskCreate(aio_loop_task, "aio-loop", 8192, nullptr, 5, nullptr);
 
-#if defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT
-  aio::ui::start(); /* LVGL dashboard + AIO_SHOT markers (QEMU shot build) */
+#if (defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT) || \
+    (defined(CONFIG_AIO_HW_DISPLAY) && CONFIG_AIO_HW_DISPLAY)
+  aio::ui::start(); /* shot build: AIO_SHOT markers; hardware: panel + touch.
+                     * The OTA-selftest build has both off (no UI) and stays
+                     * headless — ui.cpp picks the variant at compile time. */
 #endif
 
 #if !(defined(CONFIG_AIO_UI_SHOT) && CONFIG_AIO_UI_SHOT)
