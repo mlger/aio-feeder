@@ -2713,8 +2713,11 @@ static void ui_task(void *) {
   uint32_t tap_marked_at = 0;
   /* section of the last published settings snapshot (255 = none yet) */
   auto tap_section = [&]() -> uint8_t {
-    if (!seq_load(s_set_seq)) return 255;
-    return s_set_snap[(seq_load(s_set_seq) - 1) & 1].section;
+    /* single load per call: two loads let a publish between them index
+     * the other double-buffer and return the previous section */
+    const uint32_t sts = seq_load(s_set_seq);
+    if (!sts) return 255;
+    return s_set_snap[(sts - 1) & 1].section;
   };
 
   for (;;) {

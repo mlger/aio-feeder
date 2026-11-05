@@ -178,9 +178,18 @@ static inline void ota_img_scan(OtaImgScan *s, const uint8_t *chunk, size_t n) {
           s->stage = 1;
         break;
       }
-      default: { /* tail: checksum byte at the next 16-byte boundary */
-        const uint32_t pad = (16 - (s->off % 16)) % 16;
-        s->img_len = s->off + pad + 1 + (s->hash_appended ? 32 : 0);
+      default: { /* tail: checksum byte right after the data, 0xFF pad to the
+                   * next 16-byte block, then the appended SHA256 —
+                   * esp_image_format.c process_checksum reads the block
+                   * [unpadded, ALIGN16(unpadded + 1)) and the hash right
+                   * after it. The old pad-then-checksum model computed a
+                   * 7-15 byte short length: copy_is_exact passed (prefix)
+                   * but the bootloader hash-failed the truncated slot —
+                   * only when the data end sat at off%16 >= 2, which is why
+                   * the selftest was green on some binaries and broken on
+                   * others. */
+        const uint32_t blk = ((s->off + 1 + 15) & ~15u);
+        s->img_len = blk + (s->hash_appended ? 32 : 0);
         s->done = true;
         return;
       }

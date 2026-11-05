@@ -129,12 +129,13 @@ static uint32_t make_image(std::vector<uint8_t> *img, const uint32_t *seg_lens,
       off++;
     }
   }
-  while (off % 16) { /* 0xEF pad to the checksum boundary */
+  img->push_back(0x5A); /* checksum byte right after the data */
+  off++;
+  while (off % 16) { /* 0xEF pad to the next 16-byte block — IDF pads AFTER
+                      * the checksum (esp_image_format.c process_checksum) */
     img->push_back(0xEF);
     off++;
   }
-  img->push_back(0x5A); /* checksum byte */
-  off++;
   if (hash) {
     for (int i = 0; i < 32; i++) img->push_back((uint8_t)i);
     off += 32;
@@ -152,8 +153,8 @@ static void test_scan_two_segments_hash(void) {
   std::vector<uint8_t> img;
   const uint32_t lens[2] = {5, 3};
   const uint32_t expect = make_image(&img, lens, 2, true);
-  TEST_ASSERT_EQUAL_UINT(81, expect); /* 24+13+11=48, pad 0, +1+32 */
-  TEST_ASSERT_EQUAL_UINT(81, img.size());
+  TEST_ASSERT_EQUAL_UINT(96, expect); /* 24+13+11=48, checksum+pad→64, +32 */
+  TEST_ASSERT_EQUAL_UINT(96, img.size());
 
   OtaImgScan s;
   scan_all(&s, img, 7); /* ugly chunking across all boundaries */
@@ -167,8 +168,8 @@ static void test_scan_one_segment_nohash_odd_chunks(void) {
   std::vector<uint8_t> img;
   const uint32_t lens[1] = {19};
   const uint32_t expect = make_image(&img, lens, 1, false);
-  /* 24 + 8 + 19 = 51 → pad = (16-51%16)%16 = 13 → 51+13+1 = 65 */
-  TEST_ASSERT_EQUAL_UINT(65, expect);
+  /* 24 + 8 + 19 = 51 → checksum at 51, pad to 64 → 64 */
+  TEST_ASSERT_EQUAL_UINT(64, expect);
 
   const size_t chunks[] = {1, 3, 13, 24, 1000};
   for (size_t c : chunks) {

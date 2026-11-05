@@ -38,7 +38,7 @@ struct CliCtx {
   bool *pair_acc_valid;
   uint16_t vin_mv;
   bool vin_present;
-  void (*persist_fn)();
+  bool (*persist_fn)(); /* storage commit result (SR6 intent_ok) */
   void (*erase_fn)();
 };
 

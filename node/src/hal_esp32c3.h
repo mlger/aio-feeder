@@ -71,6 +71,9 @@ struct Hal {
     timerAlarmEnable(g_timer);
   }
   void cancel_relay_off() { timerAlarmDisable(g_timer); }
+  /* ESP32 Arduino hw_timer alarms are 64-bit — one shot covers any on-time,
+   * no chunking needed; the shared loop() calls this on every HAL. */
+  void relay_off_service() {}
   bool relay_off_fired() { return g_relay_off_fired; }
 
   void feed_wdt() { feedLoopWDT(); }
