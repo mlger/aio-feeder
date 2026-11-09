@@ -510,6 +510,7 @@ cp node/.pio/build/node_esp8266/firmware.bin node-esp8266.factory.bin
     let rel = null;
     try { const r = await fetch('releases.json'); rel = r.ok ? await r.json() : null; }
     catch(e){ rel = null; }
+    sel.textContent = ''; /* drop the static placeholder */
     if (rel && rel.latest){
       (rel.releases || []).forEach((d, i) => {
         const o = document.createElement('option');
