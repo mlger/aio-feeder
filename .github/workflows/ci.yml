@@ -200,10 +200,17 @@ jobs:
           name: hub-ui-screens
           path: build/ui-screens
       - name: Assemble flasher site
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           VERSION=$(git describe --tags --always --dirty)
           python tools/flasher/make_manifests.py --build-dir build --version "$VERSION" \
             --screens build/ui-screens
+          # Per-release firmware dirs + version picker index. The newest
+          # release is promoted into the site root so the hub's default OTA
+          # URL (ota_core.h OTA_URL_DEF) always serves the latest tag.
+          python tools/flasher/release_site.py --out site --repo "$GITHUB_REPOSITORY" \
+            --token "$GH_TOKEN" --main-version "$VERSION"
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
         with:

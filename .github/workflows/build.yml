@@ -35,6 +35,11 @@ jobs:
       image: espressif/idf:v5.4
     steps:
       - uses: actions/checkout@v4
+        with:
+          # full history: the app version comes from `git describe --tags`
+          # (release builds stamp the tag itself, e.g. v0.12.2, instead of
+          # falling back to a SHA-only describe on a depth-1 checkout)
+          fetch-depth: 0
       - name: Build
         run: |
           . $IDF_PATH/export.sh

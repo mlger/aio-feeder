@@ -233,10 +233,15 @@ footer a{color:var(--accent-ink);text-underline-offset:3px}
       <div class="step">
         <div class="step-h"><span class="n">02</span>Pick firmware</div>
         <div class="seg" role="group" aria-label="Firmware source">
-          <button type="button" id="src-hosted" aria-pressed="true">Latest release</button>
+          <button type="button" id="src-hosted" aria-pressed="true">Hosted firmware</button>
           <button type="button" id="src-custom" aria-pressed="false">My own .bin</button>
         </div>
         <div class="src-body" id="body-hosted">
+          <div class="field">
+            <select id="fw-version" aria-label="Firmware version" aria-describedby="hosted-path">
+              <option value="">Latest build</option>
+            </select>
+          </div>
           <div class="path mono" id="hosted-path"></div>
           <div class="fw-status" id="fw-status"><i></i><span>Checking…</span></div>
         </div>
@@ -398,7 +403,7 @@ footer a{color:var(--accent-ink);text-underline-offset:3px}
     <div>
       <details><summary>No serial port appears in the browser prompt</summary><div class="ans">Swap to a known data cable and a different USB port. On ESP32 / ESP8266 boards with a USB-UART bridge, install the <b>CH340 / CP210x</b> driver. The hub and the C3 enumerate natively — if they don’t, they are in a user firmware that crashed the USB stack: enter download mode by hand (chapter 02).</div></details>
       <details><summary>“Failed to connect to ESP” or a timeout</summary><div class="ans">Hold <kbd>BOOT</kbd>, tap <kbd>RST</kbd>, release <kbd>BOOT</kbd>, then retry. Close any serial monitor first — only one program can hold the port.</div></details>
-      <details><summary>The hosted build says firmware is missing</summary><div class="ans">The Pages site serves the latest CI release. If a target shows “not found”, the release workflow may still be running — check the <a class="link" href="https://github.com/mlger/aio-feeder/releases" target="_blank" rel="noopener">releases page</a>, or flash a local build with <b>My own .bin</b>.</div></details>
+      <details><summary>The hosted build says firmware is missing</summary><div class="ans">The version picker lists every GitHub release plus the CI dev build. If a target shows “not found”, the Pages deploy may still be running — check the <a class="link" href="https://github.com/mlger/aio-feeder/releases" target="_blank" rel="noopener">releases page</a>, or flash a local build with <b>My own .bin</b>.</div></details>
       <details><summary>Flashed, but the hub screen stays black</summary><div class="ans">The panel bring-up is logged on serial — look for <code>aio-display: panel 800x480</code>. A backlit-but-black screen is a timing/pin-map mismatch (constants in <code>hub/main/display_hw.cpp</code>); a dead-dark screen is the backlight (CH422G EXIO2). The hub keeps running headless either way — feeding never depends on the display.</div></details>
       <details><summary>The C3 reboots in a loop after flashing</summary><div class="ans">Usually an app-only image written at <code>0x0</code> instead of <code>0x10000</code>, or a merged image missing the bootloader. Prefer the hosted build, or re-merge with the command from chapter 03.</div></details>
       <details><summary>Does anything leave my computer?</summary><div class="ans">No. Hosted builds come straight from this site to the board over Web Serial; a file you pick is read locally and never uploaded. See <a class="link" href="https://esphome.github.io/esp-web-tools/" target="_blank" rel="noopener">ESP Web Tools</a>.</div></details>
@@ -485,20 +490,60 @@ cp node/.pio/build/node_esp8266/firmware.bin node-esp8266.factory.bin
 
   function setStatus(el, cls, txt){ el.className = 'fw-status ' + cls; el.querySelector('span').textContent = txt; }
 
-  /* ---- hosted build status + release version ---------------------------- */
-  const siteInfo = fetch('build-info.json')
-    .then(r => r.ok ? r.json() : null)
-    .then(d => { if (d && d.version) $('#fw-release').textContent = d.version; return d; })
-    .catch(() => { $('#fw-release').textContent = 'unknown'; return null; });
+  /* ---- hosted firmware versions (releases.json, written by CI) ----------
+   * The newest GitHub release lives at the site root (hub/ and the node
+   * dirs) — that also keeps the hub's default OTA URL pointing at the
+   * latest release — older releases under fw/<tag>/, the CI main build
+   * under fw/main/. */
+  let fwDir = '', curVersion = null;
+  function manifestFor(b){ return (fwDir ? fwDir + '/' : '') + b.manifest; }
+  function onVersionChange(){
+    const sel = $('#fw-version');
+    const o = sel.options[sel.selectedIndex];
+    fwDir = o && o.value ? o.value.replace(/\/+$/, '') : '';
+    curVersion = o && o.dataset.v ? o.dataset.v : null;
+    if (curVersion) $('#fw-release').textContent = curVersion;
+    refresh();
+  }
+  async function loadReleases(){
+    const sel = $('#fw-version');
+    let rel = null;
+    try { const r = await fetch('releases.json'); rel = r.ok ? await r.json() : null; }
+    catch(e){ rel = null; }
+    if (rel && rel.latest){
+      (rel.releases || []).forEach((d, i) => {
+        const o = document.createElement('option');
+        o.value = d.dir || '';
+        o.dataset.v = d.tag;
+        o.textContent = d.tag + (d.prerelease ? ' (pre)' : '') + (i === 0 ? ' — latest' : '');
+        sel.appendChild(o);
+      });
+    }
+    if (rel && rel.main && rel.main.version){
+      const o = document.createElement('option');
+      o.value = rel.main.dir || 'fw/main';
+      o.dataset.v = rel.main.version;
+      o.textContent = 'main (CI dev build) · ' + rel.main.version;
+      sel.appendChild(o);
+    }
+    if (!sel.options.length){
+      const o = document.createElement('option');
+      o.value = ''; o.textContent = 'Latest build';
+      sel.appendChild(o);
+    }
+    if (!curVersion) $('#fw-release').textContent = 'unknown';
+    sel.addEventListener('change', onVersionChange);
+    onVersionChange();
+  }
 
   async function checkHosted(){
     const b = BOARDS[board], st = $('#fw-status');
-    $('#hosted-path').textContent = b.manifest + '  →  ' + b.parts;
+    const m = manifestFor(b);
+    $('#hosted-path').textContent = m + '  →  ' + b.parts;
     setStatus(st, '', 'Checking…');
     try {
-      const info = await siteInfo;
-      const r = await fetch(b.manifest, {method:'HEAD'});
-      const v = info && info.version ? ' · ' + info.version : '';
+      const r = await fetch(m, {method:'HEAD'});
+      const v = curVersion ? ' · ' + curVersion : '';
       r.ok ? setStatus(st, 'ok', 'Firmware found' + v)
            : setStatus(st, 'warn', 'Manifest not deployed yet — use My own .bin');
     } catch(e){ setStatus(st, 'warn', 'Can’t check from this context — use My own .bin'); }
@@ -580,7 +625,7 @@ cp node/.pio/build/node_esp8266/firmware.bin node-esp8266.factory.bin
     $('#merge-text').textContent = b.build;
     $$('#boot-tabs button').forEach(t => t.setAttribute('aria-selected', t.dataset.b === board));
     $('#boot-steps').innerHTML = b.boot.map(s => '<li>' + s + '</li>').join('');
-    if (source === 'hosted'){ installer.manifest = b.manifest; checkHosted(); }
+    if (source === 'hosted'){ installer.manifest = manifestFor(b); checkHosted(); }
     else { const f = $('#bin-file').files[0]; if (f) buildCustomManifest(f); }
   }
 
@@ -650,6 +695,7 @@ cp node/.pio/build/node_esp8266/firmware.bin node-esp8266.factory.bin
   ['flash','demo','guide','help'].forEach(id => spy2.observe(document.getElementById(id)));
 
   refresh();
+  loadReleases();
 })();
 </script>
 </body>
