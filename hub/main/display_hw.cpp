@@ -180,7 +180,7 @@ static bool panel_init() {
   cfg.timings.vsync_front_porch = board::VFP;
   cfg.timings.flags.pclk_active_neg = 1; /* demo: sample on the falling edge */
   cfg.flags.fb_in_psram = 1;
-  cfg.flags.refresh_on_demand = 1; /* flush_cb restarts the one-shot DMA */
+  cfg.flags.refresh_on_demand = 1; /* flush_cb triggers esp_lcd_rgb_panel_refresh() */
 
   if (esp_lcd_new_rgb_panel(&cfg, &s_panel) != ESP_OK) {
     ESP_LOGE(TAG, "rgb panel init failed");
@@ -205,7 +205,8 @@ static bool panel_init() {
 /* --- LVGL glue ---------------------------------------------------------- */
 
 /* 2× nearest-neighbor expand: LVGL 352×240 → 704×480 centered in 800×480.
- * Straight rows for the top/bottom bars stay black from init. */
+ * Straight rows for the top/bottom bars stay black from init. Ends with
+ * esp_lcd_rgb_panel_refresh() — one one-shot DMA pass over the fb. */
 static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map) {
   (void)area;
   const uint16_t *src = (const uint16_t *)px_map;
@@ -220,7 +221,17 @@ static void flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px_map)
     }
     memcpy(dst + board::PANEL_W, dst, board::WIN_W * sizeof(uint16_t));
   }
-  esp_lcd_rgb_panel_restart(s_panel);
+  /* Refresh-on-demand mode: start one one-shot DMA transmission of the
+   * fb. NOT esp_lcd_rgb_panel_restart() — since IDF 5.2 restart() is
+   * stream-mode-only and returns ESP_ERR_INVALID_STATE here (silently, if
+   * unchecked), leaving the panel's DMA never started: backlight on,
+   * screen black forever. refresh() -> lcd_rgb_panel_start_transmission()
+   * is the documented trigger (esp_lcd_panel_rgb.h, IDF v5.4). A refresh
+   * racing the previous 25.6 ms frame at worst tears one frame; the DMA
+   * restart path is the same one the vsync ISR uses in stream mode. */
+  if (esp_lcd_rgb_panel_refresh(s_panel) != ESP_OK) {
+    ESP_LOGE(TAG, "panel refresh failed");
+  }
   lv_display_flush_ready(disp);
 }
 

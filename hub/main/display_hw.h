@@ -12,8 +12,10 @@
  *     dance selects 0x5D).
  *   - LVGL runs at the UI's logical 352×240 (ui.cpp UI_W/UI_H); flush
  *     expands ×2 into the 704×480 window centered on the panel (48 px bars
- *     each side) and restarts the panel's one-shot DMA refresh
- *     (refresh_on_demand = 1 → no tearing mid-write).
+ *     each side) and starts the panel's one-shot DMA refresh via
+ *     esp_lcd_rgb_panel_refresh() (refresh_on_demand = 1 → no tearing
+ *     mid-write; restart() is stream-mode-only since IDF 5.2 and would
+ *     silently no-op here).
  *
  * Compiled but inert unless CONFIG_AIO_HW_DISPLAY; the QEMU shot build
  * never calls it (Kconfig: depends on !AIO_UI_SHOT). A display failure
